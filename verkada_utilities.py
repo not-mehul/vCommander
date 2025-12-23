@@ -1,4 +1,4 @@
-### Verkada Utilities
+# Verkada Utilities
 # This module provides utility functions for ProjectDecommission.
 import os
 from typing import Optional
