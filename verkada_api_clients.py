@@ -1,7 +1,6 @@
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Union
-from zipfile import error
+from typing import Any, Dict, List, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -233,12 +232,14 @@ class VerkadaInternalAPIClient:
 
     def get_object(
         self,
-        object_type: str,
+        categories: str,
     ) -> List[Dict[str, Any]]:
         """
         Get a list of objects of a given type.
         """
-        match object_type:
+        if not self.auth_data:
+            raise PermissionError("Not authenticated. Please call login() first.")
+        match categories:
             case "intercoms":
                 subdomain = "api"
                 path = f"vinter/v1/user/organization/{self.org_id}/device"
@@ -250,7 +251,8 @@ class VerkadaInternalAPIClient:
                 error_signature = ""
                 request_type = "GET"
                 payload = ""
-            case "accessControllers":
+                object_type = "intercoms"
+            case "access_controllers":
                 subdomain = "vcerberus"
                 path = f"access/v2/user/access_controllers"
                 mapping_func = lambda x: {
@@ -261,7 +263,8 @@ class VerkadaInternalAPIClient:
                 error_signature = ""
                 request_type = "GET"
                 payload = ""
-            case "sensorDevice":
+                object_type = "accessControllers"
+            case "sensors":
                 subdomain = "vsensor"
                 path = f"devices/list"
                 mapping_func = lambda x: {
@@ -272,8 +275,68 @@ class VerkadaInternalAPIClient:
                 error_signature = ""
                 request_type = "POST"
                 payload = {"organizationId": self.org_id}
+                object_type = "sensorDevice"
+            case "mailroom_sites":
+                subdomain = "vdoorman"
+                path = f"package_site/org/{self.org_id}"
+                mapping_func = lambda x: {
+                    "id": x["siteId"],
+                    "name": x["siteName"],
+                }
+                error_signature = ""
+                request_type = "GET"
+                payload = ""
+                object_type = "package_sites"
+            case "desk_stations":
+                subdomain = "api"
+                path = f"vinter/v1/user/organization/{self.org_id}/device"
+                mapping_func = lambda x: {
+                    "id": x["deviceId"],
+                    "name": x["name"],
+                }
+                error_signature = ""
+                request_type = "GET"
+                payload = ""
+                object_type = "deskApps"
+            case "alarm_sites":
+                subdomain = "vproresponse"
+                path = "response/site/list"
+                mapping_func = lambda x: {
+                    "site_id": x["siteId"],
+                    "alarm_site_id": x["id"],
+                    "name": x["businessName"],
+                    "alarm_system_id": x.get("alarmSystemId"),
+                }
+                error_signature = ""
+                request_type = "POST"
+                payload = {"includeResponseConfigs": True}
+                object_type = "responseSites"
+            case "alarm_devices":
+                subdomain = "vproconfig"
+                path = "org/get_devices_and_alarm_systems"
+                mapping_func = lambda x: {
+                    "id": x["id"],
+                    "name": x["name"],
+                    "serial_number": x["verkadaDeviceConfig"]["serialNumber"],
+                }
+                error_signature = ""
+                request_type = "POST"
+                payload = {}
+                object_type = "devices"
+            case "unassigned_devices":
+                subdomain = "vconductor"
+                path = f"org/{self.org_id}/unassigned_devices"
+                mapping_func = lambda x: {
+                    "id": x["deviceId"],
+                    "name": x["name"],
+                    "serial_number": x["serialNumber"],
+                }
+                error_signature = ""
+                request_type = "GET"
+                payload = {}
+                object_type = "devices"
             case _:
-                raise ValueError(f"Unknown device type: {object_type}")
+                raise ValueError(f"Unknown device type: {categories}")
 
         url = (
             f"https://{subdomain}.command.verkada.com/__v/{self.org_short_name}/{path}"
@@ -379,6 +442,14 @@ class VerkadaExternalAPIClient:
                     "name": x.get("site_name"),
                 }
                 error_signature = "must include guest sites"
+            case "access_members":
+                path = "access/v1/access_users"
+                mapping_func = lambda x: {
+                    "id": x.get("user_id"),
+                    "name": x.get("name"),
+                    "email": x.get("email"),
+                }
+                error_signature = "must include users"
             case _:
                 raise ValueError(f"Unknown device type: {object_type}")
 
@@ -414,6 +485,31 @@ class VerkadaExternalAPIClient:
             logger.error(f"Unexpected error in generic fetcher: {e}")
             return []
 
+    def get_users(
+        self, exclude_user_id: Optional[str] = None, exclude_email: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetches a list of users using the generic fetcher pattern.
+        Optionally filters out a specific user ID (e.g., the current admin).
+        """
+        users = self.get_object("access_members")
+        if exclude_user_id:
+            initial_count = len(users)
+            users = [u for u in users if str(u["id"]) != str(exclude_user_id)]
+            if len(users) < initial_count:
+                logger.info(
+                    f"Filtered out admin user ({exclude_user_id}) from inventory."
+                )
+
+        if exclude_email:
+            initial_count = len(users)
+            users = [u for u in users if u["email"] != exclude_email]
+            if len(users) < initial_count:
+                logger.info(
+                    f"Filtered out user with email ({exclude_email}) from inventory."
+                )
+        return users
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -434,19 +530,29 @@ internal_client = VerkadaInternalAPIClient(
 
 # Login to internal API
 internal_client.login()
-external_api_key = internal_client.create_external_api_key()
-external_client = VerkadaExternalAPIClient(external_api_key, org_short_name, region)
+# external_api_key = internal_client.create_external_api_key()
+# external_client = VerkadaExternalAPIClient(external_api_key, org_short_name, region)
 
-# sensors = internal_client.get_object("sensorDevice")
+# sensors = internal_client.get_object("sensors")
 
 
 # intercoms = internal_client.get_object("intercoms")
 # access_controllers = sanitize_list(
-#     intercoms, internal_client.get_object("accessControllers")
+#     intercoms, internal_client.get_object("access_controllers")
 # )
 # cameras = sanitize_list(intercoms, external_client.get_object("cameras"))
 
-guest_sites = external_client.get_object("guest_sites")
+# guest_sites = external_client.get_object("guest_sites")
+# mailroom_sites = internal_client.get_object("mailroom_sites")
+
+# desk_stations = internal_client.get_object("desk_stations")
+
+# users = external_client.get_users()
+
+# alarm_sites = internal_client.get_object("alarm_sites")
+# alarm_devices = internal_client.get_object("alarm_devices")
+
+unassigned_devices = internal_client.get_object("unassigned_devices")
 
 # Print serial numbers of intercoms and cameras
 # for intercom in intercoms:
@@ -463,5 +569,25 @@ guest_sites = external_client.get_object("guest_sites")
 # for camera in cameras:
 #     print(f"Camera ID: {camera['id']}, Serial Number: {camera['serial_number']}")
 
-for guest_site in guest_sites:
-    print(f"Guest Site ID: {guest_site['id']}, Name: {guest_site['name']}")
+# for guest_site in guest_sites:
+#     print(f"Guest Site ID: {guest_site['id']}, Name: {guest_site['name']}")
+
+# for mailroom_site in mailroom_sites:
+#     print(f"Mailroom Site ID: {mailroom_site['id']}, Name: {mailroom_site['name']}")
+
+# for desk_station in desk_stations:
+#     print(f"Desk Station ID: {desk_station['id']}, Name: {desk_station['name']}")
+
+# for user in users:
+#     print(f"User ID: {user['id']}, Email: {user['email']}")
+
+# for alarm in alarm_sites:
+#     print(
+#         f"Alarms: \n Site ID: {alarm['site_id']}, Alarm Site ID: {alarm['alarm_site_id']}, Name: {alarm['name']}, Alarm System ID: {alarm['alarm_system_id']}"
+#     )
+
+# for device in alarm_devices:
+#     print(f"AlarmDevices: \n Device ID: {device['id']}, Name: {device['name']}")
+
+for device in unassigned_devices:
+    print(f"Unassigned Device ID: {device['id']}, Serial Number: {device['name']}")
