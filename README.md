@@ -1,8 +1,8 @@
-# ProjectDecommission 
+# Project Decommission 
 Project Decommission is a specialized automation tool designed to inventory and decommission assets within a Verkada organization. It utilizes a hybrid approach, leveraging both Verkada's public API and internal private endpoints to ensure comprehensive coverage of all device types and configurations.
 
-## ⚠️ Critical Warning
-**This tool is destructive**. It is designed to **delete** users, devices, sites, and configurations. Once the deletion process begins, it cannot be undone. Always review the generated inventory report carefully before confirming the deletion prompt.
+> [!CAUTION]  
+> **This tool is destructive**. It is designed to **delete** users, devices, sites, and configurations. Once the deletion process begins, it cannot be undone. Always review the generated inventory report carefully before confirming the deletion prompt. **Do not run this tool in a production environment** unless you intend to wipe the organization completely.
 
 ## Key Features
 
@@ -43,6 +43,28 @@ The project relies primarily on the `requests` library.
 
 ``` pip install requests```
 
+## Installation
+
+1. Clone the repository:
+
+```
+git clone https://github.com/not-mehul/ProjectDecommission
+cd ProjectDecommission
+```
+
+2. Set up a Virtual Environment (Recommended):
+
+```
+python -m venv venv
+source venv/bin/activate  # On Windows use: venv\Scripts\activate
+```
+
+3. Install Dependencies
+
+```
+pip install requests
+```
+
 ## Configuration
 
 The application is configured entirely via Environment Variables to ensure security. You must set the following variables before running the script:
@@ -57,12 +79,18 @@ The application is configured entirely via Environment Variables to ensure secur
 
 ## Usage
 
-1. **Set Environment Variables** (example for Linux/Mac):
+1. **Set Environment Variables** :
 
 ```
+# For Linux/Mac
 export ADMIN_EMAIL="admin@example.com"
 export ADMIN_PASSWORD="SuperSecretPassword"
 export ORG_SHORT_NAME="my-org-name"
+
+# For Windows(Powershell)
+$env:ADMIN_EMAIL="admin@example.com"
+$env:ADMIN_PASSWORD="SuperSecretPassword"
+$env:ORG_SHORT_NAME="my-org-name"
 ```
 
 2. **Run the Script:**
@@ -98,11 +126,19 @@ WARNING: This action cannot be undone.
 Delete ALL assets? (y/n):
 ```
 
-- Type `y`  to proceed with permanent deletion.
+- Type `y`  to proceed with permanent deletion or `n` to stop the script.
 
 ## Architecture Overview
 
 The solution is split into four modular files:
+
+```
+project-decommission/
+├── verkada_decommission.py    # Entry Point: Orchestrates flow & UI
+├── verkada_api_clients.py     # Core Logic: Internal & External API Classes
+├── verkada_reporting.py       # Output: ASCII tables & File generation
+└── verkada_utilities.py       # Helpers: Deduplication & Deletion logic
+```
 
 1. `verkada_decommission.py` **(Entry Point)**
 
@@ -152,6 +188,12 @@ To avoid dependency errors (e.g., "Cannot delete site because devices are still 
 
 10. **Alarm Systems & Sites**
 
-## Disclaimer
+## Credits
 
-This software is an unofficial tool and is not supported by Verkada. It uses internal APIs which may change without notice. Use at your own risk. Always test in a non-production environment first.
+Special thanks to the following contributors for their work on identifying internal APIs and building initial versions of these tools:
+
+- **Ian Young** - [Delete Device API Scripts](https://github.com/ian-young/API_Scripts/blob/main/VCE/delete_device.py)
+- **Matt Delaney** - [Org Reset Tool](https://github.com/matt-verkada/org_reset_tool)
+
+> [!IMPORTANT]  
+> This software is an unofficial tool and is not supported by Verkada. It uses internal APIs which may change without notice. Use at your own risk. Always test in a non-production environment first.
