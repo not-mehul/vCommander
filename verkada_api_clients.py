@@ -111,9 +111,10 @@ class VerkadaInternalAPIClient:
         }
 
         logger.info(f"Logging in as {self.email}...")
-        response = Response
+        response = None
 
         try:
+            response = Response
             response = self.session.post(login_url, json=payload)
             # We don't raise_for_status immediately because 400 is used for MFA challenges
 
@@ -239,6 +240,7 @@ class VerkadaInternalAPIClient:
         """
         if not self.auth_data:
             raise PermissionError("Not authenticated. Please call login() first.")
+        payload = None
         match categories:
             case "intercoms":
                 subdomain = "api"
@@ -248,9 +250,7 @@ class VerkadaInternalAPIClient:
                     "name": x["name"],
                     "serial_number": x["serialNumber"],
                 }
-                error_signature = ""
                 request_type = "GET"
-                payload = ""
                 object_type = "intercoms"
             case "access_controllers":
                 subdomain = "vcerberus"
@@ -260,9 +260,7 @@ class VerkadaInternalAPIClient:
                     "name": x["name"],
                     "serial_number": x["serialNumber"],
                 }
-                error_signature = ""
                 request_type = "GET"
-                payload = ""
                 object_type = "accessControllers"
             case "sensors":
                 subdomain = "vsensor"
@@ -272,7 +270,6 @@ class VerkadaInternalAPIClient:
                     "name": x["name"],
                     "serial_number": x["claimedSerialNumber"],
                 }
-                error_signature = ""
                 request_type = "POST"
                 payload = {"organizationId": self.org_id}
                 object_type = "sensorDevice"
@@ -283,9 +280,7 @@ class VerkadaInternalAPIClient:
                     "id": x["siteId"],
                     "name": x["siteName"],
                 }
-                error_signature = ""
                 request_type = "GET"
-                payload = ""
                 object_type = "package_sites"
             case "desk_stations":
                 subdomain = "api"
@@ -294,9 +289,7 @@ class VerkadaInternalAPIClient:
                     "id": x["deviceId"],
                     "name": x["name"],
                 }
-                error_signature = ""
                 request_type = "GET"
-                payload = ""
                 object_type = "deskApps"
             case "alarm_sites":
                 subdomain = "vproresponse"
@@ -307,7 +300,6 @@ class VerkadaInternalAPIClient:
                     "name": x["businessName"],
                     "alarm_system_id": x.get("alarmSystemId"),
                 }
-                error_signature = ""
                 request_type = "POST"
                 payload = {"includeResponseConfigs": True}
                 object_type = "responseSites"
@@ -319,9 +311,7 @@ class VerkadaInternalAPIClient:
                     "name": x["name"],
                     "serial_number": x["verkadaDeviceConfig"]["serialNumber"],
                 }
-                error_signature = ""
                 request_type = "POST"
-                payload = {}
                 object_type = "devices"
             case "unassigned_devices":
                 subdomain = "vconductor"
@@ -331,9 +321,7 @@ class VerkadaInternalAPIClient:
                     "name": x["name"],
                     "serial_number": x["serialNumber"],
                 }
-                error_signature = ""
                 request_type = "GET"
-                payload = {}
                 object_type = "devices"
             case _:
                 raise ValueError(f"Unknown device type: {categories}")
@@ -343,7 +331,7 @@ class VerkadaInternalAPIClient:
         )
         headers = self._get_headers()
         logger.debug(f"Fetching data from {url}...")
-        logger.info(f"Finding {object_type}...")
+        logger.info(f"Finding {categories}...")
         if request_type == "POST":
             response = self.session.post(url, headers=headers, json=payload)
         else:
@@ -353,16 +341,13 @@ class VerkadaInternalAPIClient:
             response.raise_for_status()
             data = response.json()
             results = [mapping_func(item) for item in data[object_type]]
-            logger.info(f"Retrieved {len(results)} {object_type}s")
+            logger.info(f"Retrieved {len(results)} {categories}")
             return results
         except (HTTPError, JSONDecodeError) as e:
-            if error_signature in response.text:
-                logger.info(f"Found 0 {object_type}.")
-                return []
-            logger.error(f"Failed to fetch {object_type}: {e}")
+            logger.error(f"Failed to fetch {categories}: {e}")
             return []
         except Exception as e:
-            logger.error(f"Unexpected error fetching {object_type}: {e}")
+            logger.error(f"Unexpected error fetching {categories}: {e}")
             return []
 
 
@@ -424,9 +409,10 @@ class VerkadaExternalAPIClient:
 
     def get_object(
         self,
-        object_type: str,
+        categories: str,
     ) -> List[Dict[str, Any]]:
-        match object_type:
+        error_signature = None
+        match categories:
             case "cameras":
                 path = "cameras/v1/devices"
                 mapping_func = lambda x: {
@@ -435,33 +421,35 @@ class VerkadaExternalAPIClient:
                     "serial_number": x.get("serial"),
                 }
                 error_signature = "must include cameras"
+                object_type = "cameras"
             case "guest_sites":
                 path = "guest/v1/sites"
                 mapping_func = lambda x: {
                     "id": x.get("site_id"),
                     "name": x.get("site_name"),
                 }
-                error_signature = "must include guest sites"
-            case "access_members":
+                object_type = "guest_sites"
+            case "users":
                 path = "access/v1/access_users"
                 mapping_func = lambda x: {
                     "id": x.get("user_id"),
-                    "name": x.get("name"),
+                    "name": x.get("full_name"),
                     "email": x.get("email"),
                 }
-                error_signature = "must include users"
+                object_type = "access_members"
             case _:
-                raise ValueError(f"Unknown device type: {object_type}")
+                raise ValueError(f"Unknown device type: {categories}")
 
         url = f"https://{self.region}.verkada.com/{path}"
         headers = {"accept": "application/json", "x-verkada-auth": self.api_token}
         params = {"page_size": 200}
         logger.debug(f"Fetching data from {url}...")
+        logger.info(f"Finding {categories}...")
         response = self.session.get(url, headers=headers, params=params)
 
         if response.status_code == 400:
-            if error_signature in response.text:
-                logger.info(f"Found 0 {object_type}.")
+            if error_signature and error_signature in response.text:
+                logger.info(f"Found 0 {categories}.")
                 return []
 
         try:
@@ -471,11 +459,11 @@ class VerkadaExternalAPIClient:
                 json_data[object_type], list
             ):
                 logger.warning(
-                    f"Response missing '{object_type}' array. Response keys: {list(json_data.keys())}"
+                    f"Response missing '{categories}' array. Response keys: {list(json_data.keys())}"
                 )
                 return []
             results = [mapping_func(item) for item in json_data[object_type]]
-            logger.info(f"Found {len(results)} {object_type}.")
+            logger.info(f"Retrieved {len(results)} {categories}")
             return results
 
         except HTTPError as e:
@@ -490,24 +478,30 @@ class VerkadaExternalAPIClient:
     ) -> List[Dict[str, Any]]:
         """
         Fetches a list of users using the generic fetcher pattern.
-        Optionally filters out a specific user ID (e.g., the current admin).
+        Optionally filters out a specific user ID or emails (e.g., the current admin).
         """
-        users = self.get_object("access_members")
-        if exclude_user_id:
+        users = self.get_object("users")
+        if exclude_user_id is not None:
             initial_count = len(users)
-            users = [u for u in users if str(u["id"]) != str(exclude_user_id)]
+            clean_exclude_id = str(exclude_user_id).strip()
+            users = [
+                u for u in users if str(u.get("id", "")).strip() != clean_exclude_id
+            ]
             if len(users) < initial_count:
-                logger.info(
-                    f"Filtered out admin user ({exclude_user_id}) from inventory."
-                )
+                logger.info(f"Filtered out user ({exclude_user_id}) from inventory.")
+                pass
 
         if exclude_email:
             initial_count = len(users)
-            users = [u for u in users if u["email"] != exclude_email]
+            clean_exclude_email = exclude_email.strip().lower()
+            users = [
+                u
+                for u in users
+                if u.get("email", "").strip().lower() != clean_exclude_email
+            ]
             if len(users) < initial_count:
-                logger.info(
-                    f"Filtered out user with email ({exclude_email}) from inventory."
-                )
+                logger.info(f"Filtered out emails ({exclude_email}) from inventory.")
+                pass
         return users
 
 
@@ -530,64 +524,48 @@ internal_client = VerkadaInternalAPIClient(
 
 # Login to internal API
 internal_client.login()
-# external_api_key = internal_client.create_external_api_key()
-# external_client = VerkadaExternalAPIClient(external_api_key, org_short_name, region)
+external_api_key = internal_client.create_external_api_key()
+external_client = VerkadaExternalAPIClient(external_api_key, org_short_name, region)
 
 # sensors = internal_client.get_object("sensors")
-
-
 # intercoms = internal_client.get_object("intercoms")
+# desk_stations = internal_client.get_object("desk_stations")
+# mailroom_sites = internal_client.get_object("mailroom_sites")
 # access_controllers = sanitize_list(
 #     intercoms, internal_client.get_object("access_controllers")
 # )
 # cameras = sanitize_list(intercoms, external_client.get_object("cameras"))
-
 # guest_sites = external_client.get_object("guest_sites")
-# mailroom_sites = internal_client.get_object("mailroom_sites")
-
-# desk_stations = internal_client.get_object("desk_stations")
-
-# users = external_client.get_users()
-
+# users = external_client.get_users(exclude_user_id=internal_client.user_id)
 # alarm_sites = internal_client.get_object("alarm_sites")
 # alarm_devices = internal_client.get_object("alarm_devices")
+# unassigned_devices = internal_client.get_object("unassigned_devices")
 
-unassigned_devices = internal_client.get_object("unassigned_devices")
 
 # Print serial numbers of intercoms and cameras
 # for intercom in intercoms:
 #     print(f"Intercom ID: {intercom['id']}, Serial Number: {intercom['serial_number']}")
-
 # for sensor in sensors:
-#    print(f"Sensor ID: {sensor['id']}, Serial Number: {sensor['serial_number']}")
-
+#     print(f"Sensor ID: {sensor['id']}, Serial Number: {sensor['serial_number']}")
 # for access_controller in access_controllers:
 #     print(
 #         f"Access Controller ID: {access_controller['id']}, Serial Number: {access_controller['serial_number']}"
 #     )
-
 # for camera in cameras:
 #     print(f"Camera ID: {camera['id']}, Serial Number: {camera['serial_number']}")
-
 # for guest_site in guest_sites:
 #     print(f"Guest Site ID: {guest_site['id']}, Name: {guest_site['name']}")
-
 # for mailroom_site in mailroom_sites:
 #     print(f"Mailroom Site ID: {mailroom_site['id']}, Name: {mailroom_site['name']}")
-
 # for desk_station in desk_stations:
 #     print(f"Desk Station ID: {desk_station['id']}, Name: {desk_station['name']}")
-
 # for user in users:
 #     print(f"User ID: {user['id']}, Email: {user['email']}")
-
 # for alarm in alarm_sites:
 #     print(
 #         f"Alarms: \n Site ID: {alarm['site_id']}, Alarm Site ID: {alarm['alarm_site_id']}, Name: {alarm['name']}, Alarm System ID: {alarm['alarm_system_id']}"
 #     )
-
 # for device in alarm_devices:
 #     print(f"AlarmDevices: \n Device ID: {device['id']}, Name: {device['name']}")
-
-for device in unassigned_devices:
-    print(f"Unassigned Device ID: {device['id']}, Serial Number: {device['name']}")
+# for device in unassigned_devices:
+#     print(f"Unassigned Device ID: {device['id']}, Serial Number: {device['name']}")
