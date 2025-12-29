@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -111,13 +111,10 @@ class VerkadaInternalAPIClient:
         }
 
         logger.info(f"Logging in as {self.email}...")
-        response = None
+        response = Response()
 
         try:
-            response = Response
             response = self.session.post(login_url, json=payload)
-            # We don't raise_for_status immediately because 400 is used for MFA challenges
-
             data = response.json()
         except JSONDecodeError:
             logger.error(
@@ -134,14 +131,11 @@ class VerkadaInternalAPIClient:
         # 2. MFA Required Scenario
         if response.status_code == 400:
             msg = data.get("message", "") or response.text
-
             if "mfa_required_for_org_admin" in msg or "2FA invalid" in msg:
                 logger.info(f"2FA is required for {self.email}")
-
                 sms_contact = data.get("data", {}).get("smsSent")
                 if sms_contact:
                     logger.info(f"SMS sent to device ending in {sms_contact}")
-
                 # Handle MFA Input
                 self._handle_mfa(login_url, payload)
                 return
@@ -151,26 +145,52 @@ class VerkadaInternalAPIClient:
             f"Login failed with status {response.status_code}: {response.text}"
         )
 
-    def _handle_mfa(self, login_url: str, base_payload: Dict[str, Any]) -> None:
-        """Internal method to handle the interactive MFA flow."""
+    def _handle_mfa(
+        self, login_url: str, base_payload: Dict[str, Any], mfa: Optional[str] = None
+    ) -> None:
+        """
+        Internal method to handle the interactive MFA flow.
+        Includes retry logic for incorrect codes.
+        """
         try:
-            two_fa_code = input("Enter 2FA code: ").strip()
+            # Prompt user
+            if mfa:
+                two_fa_code = mfa
+            else:
+                two_fa_code = input("Enter 2FA code: ").strip()
             if not two_fa_code or len(two_fa_code) < 6:
-                raise ValueError("Invalid 2FA code format.")
+                raise ValueError("Invalid 2FA code format or Empty.")
 
-            # Add OTP to the existing payload
+            # Prepare payload
             mfa_payload = base_payload.copy()
             mfa_payload["otp"] = two_fa_code
 
+            # Send request
             response = self.session.post(login_url, json=mfa_payload)
 
+            # 1. Success Case
             if response.status_code == 200:
                 logger.info("Successfully completed 2FA.")
                 self.auth_data = self._parse_login_response(response.json())
-            else:
-                raise ConnectionError(f"Failed to complete 2FA: {response.text}")
+                return
+
+            # 2. Handle Errors
+            try:
+                error_data = response.json()
+                error_msg = error_data.get("message", "")
+            except JSONDecodeError:
+                error_msg = response.text
+
+            # Check specifically for "2FA invalid" in the server response
+            if "2FA invalid" in error_msg:
+                logger.error("Incorrect 2FA code. Please try again.")
+                raise ConnectionError("Incorrect 2FA code. Please try again.")
+            # If it's some other error (e.g. server down), raise immediately
+            raise ConnectionError(f"MFA Failed with unexpected error: {error_msg}")
 
         except (EOFError, KeyboardInterrupt):
+            # Allow user to Ctrl+C to exit cleanly
+            print()  # Newline for cleaner output
             raise InterruptedError("User canceled 2FA prompt.")
 
     def create_external_api_key(self) -> str:
@@ -243,86 +263,108 @@ class VerkadaInternalAPIClient:
         payload = None
         match categories:
             case "intercoms":
+                object_type = "intercoms"
+                request_type = "GET"
                 subdomain = "api"
                 path = f"vinter/v1/user/organization/{self.org_id}/device"
-                mapping_func = lambda x: {
-                    "id": x["deviceId"],
-                    "name": x["name"],
-                    "serial_number": x["serialNumber"],
-                }
-                request_type = "GET"
-                object_type = "intercoms"
+
+                def mapping_func(x):
+                    return {
+                        "id": x["deviceId"],
+                        "name": x["name"],
+                        "serial_number": x["serialNumber"],
+                    }
+
             case "access_controllers":
-                subdomain = "vcerberus"
-                path = f"access/v2/user/access_controllers"
-                mapping_func = lambda x: {
-                    "id": x["accessControllerId"],
-                    "name": x["name"],
-                    "serial_number": x["serialNumber"],
-                }
-                request_type = "GET"
                 object_type = "accessControllers"
+                request_type = "GET"
+                subdomain = "vcerberus"
+                path = "access/v2/user/access_controllers"
+
+                def mapping_func(x):
+                    return {
+                        "id": x["accessControllerId"],
+                        "name": x["name"],
+                        "serial_number": x["serialNumber"],
+                    }
+
             case "sensors":
-                subdomain = "vsensor"
-                path = f"devices/list"
-                mapping_func = lambda x: {
-                    "id": x["deviceId"],
-                    "name": x["name"],
-                    "serial_number": x["claimedSerialNumber"],
-                }
-                request_type = "POST"
-                payload = {"organizationId": self.org_id}
                 object_type = "sensorDevice"
+                request_type = "POST"
+                subdomain = "vsensor"
+                path = "devices/list"
+                payload = {"organizationId": self.org_id}
+
+                def mapping_func(x):
+                    return {
+                        "id": x["deviceId"],
+                        "name": x["name"],
+                        "serial_number": x["claimedSerialNumber"],
+                    }
+
             case "mailroom_sites":
+                object_type = "package_sites"
+                request_type = "GET"
                 subdomain = "vdoorman"
                 path = f"package_site/org/{self.org_id}"
-                mapping_func = lambda x: {
-                    "id": x["siteId"],
-                    "name": x["siteName"],
-                }
-                request_type = "GET"
-                object_type = "package_sites"
+
+                def mapping_func(x):
+                    return {"id": x["siteId"], "name": x["siteName"]}
+
             case "desk_stations":
+                object_type = "deskApps"
+                request_type = "GET"
                 subdomain = "api"
                 path = f"vinter/v1/user/organization/{self.org_id}/device"
-                mapping_func = lambda x: {
-                    "id": x["deviceId"],
-                    "name": x["name"],
-                }
-                request_type = "GET"
-                object_type = "deskApps"
+
+                def mapping_func(x):
+                    return {
+                        "id": x["deviceId"],
+                        "name": x["name"],
+                        "serial_number": x["serialNumber"],
+                    }
+
             case "alarm_sites":
+                object_type = "responseSites"
+                request_type = "POST"
                 subdomain = "vproresponse"
                 path = "response/site/list"
-                mapping_func = lambda x: {
-                    "site_id": x["siteId"],
-                    "alarm_site_id": x["id"],
-                    "name": x["businessName"],
-                    "alarm_system_id": x.get("alarmSystemId"),
-                }
-                request_type = "POST"
                 payload = {"includeResponseConfigs": True}
-                object_type = "responseSites"
+
+                def mapping_func(x):
+                    return {
+                        "site_id": x["siteId"],
+                        "alarm_site_id": x["id"],
+                        "alarm_system_id": x.get("alarmSystemId"),
+                        "name": x["businessName"],
+                    }
+
             case "alarm_devices":
+                object_type = "devices"
+                request_type = "POST"
                 subdomain = "vproconfig"
                 path = "org/get_devices_and_alarm_systems"
-                mapping_func = lambda x: {
-                    "id": x["id"],
-                    "name": x["name"],
-                    "serial_number": x["verkadaDeviceConfig"]["serialNumber"],
-                }
-                request_type = "POST"
-                object_type = "devices"
+
+                def mapping_func(x):
+                    return {
+                        "id": x["id"],
+                        "name": x["name"],
+                        "serial_number": x["verkadaDeviceConfig"]["serialNumber"],
+                    }
+
             case "unassigned_devices":
+                object_type = "devices"
+                request_type = "GET"
                 subdomain = "vconductor"
                 path = f"org/{self.org_id}/unassigned_devices"
-                mapping_func = lambda x: {
-                    "id": x["deviceId"],
-                    "name": x["name"],
-                    "serial_number": x["serialNumber"],
-                }
-                request_type = "GET"
-                object_type = "devices"
+
+                def mapping_func(x):
+                    return {
+                        "id": x["deviceId"],
+                        "name": x["name"],
+                        "serial_number": x["serialNumber"],
+                    }
+
             case _:
                 raise ValueError(f"Unknown device type: {categories}")
 
@@ -330,8 +372,8 @@ class VerkadaInternalAPIClient:
             f"https://{subdomain}.command.verkada.com/__v/{self.org_short_name}/{path}"
         )
         headers = self._get_headers()
-        logger.debug(f"Fetching data from {url}...")
         logger.info(f"Finding {categories}...")
+
         if request_type == "POST":
             response = self.session.post(url, headers=headers, json=payload)
         else:
@@ -348,6 +390,94 @@ class VerkadaInternalAPIClient:
             return []
         except Exception as e:
             logger.error(f"Unexpected error fetching {categories}: {e}")
+            return []
+
+    def delete_object(self, categories: str, object_id: Union[str, List[str]]):
+        payload = None
+        match categories:
+            case "intercoms":
+                request_type = "DELETE"
+                subdomain = "api"
+                path = f"vinter/v1/user/async/organization/{self.org_id}/device/{object_id}"
+                # payload = {"sharding": True}
+
+            case "access_controllers":
+                request_type = "POST"
+                subdomain = "vcerberus"
+                path = "access_device/decommission"
+                payload = {"deviceId": object_id, "sharding": True}
+
+            case "sensors":
+                request_type = "POST"
+                subdomain = "vsensor"
+                path = "devices/decommission"
+                payload = {"deviceId": object_id, "sharding": True}
+
+            case "mailroom_sites":
+                request_type = "DELETE"
+                subdomain = "vdoorman"
+                path = f"package_site/org/{self.org_id}?siteId={object_id}"
+
+            case "desk_stations":
+                request_type = "DELETE"
+                subdomain = "api"
+                path = f"vinter/v1/user/async/organization/{self.org_id}/device/{object_id}"
+                payload = {"sharding": True}
+
+            case "alarm_systems":
+                request_type = "POST"
+                subdomain = "vproconfig"
+                path = "alarm_system/delete"
+                payload = {"alarmSystemId": object_id}
+
+            case "alarm_devices":
+                request_type = "POST"
+                subdomain = "vproconfig"
+                path = "device/decommission"
+                payload = {"deviceId": object_id}
+
+            case "alarm_sites":
+                request_type = "POST"
+                subdomain = "vproresponse"
+                path = "response/site/delete"
+                payload = {"responseSiteId": object_id[0], "siteId": object_id[1]}
+
+            case "guest_sites":
+                request_type = "DELETE"
+                subdomain = "vdoorman"
+                path = f"site/org/{self.org_id}?siteId={object_id}"
+
+            case "cameras":
+                request_type = "POST"
+                subdomain = "vprovision"
+                path = "camera/decommission"
+                payload = {"cameraId": object_id}
+
+            case _:
+                raise ValueError(f"Unknown device type: {categories}")
+        url = (
+            f"https://{subdomain}.command.verkada.com/__v/{self.org_short_name}/{path}"
+        )
+        headers = self._get_headers()
+        logger.info(f"Removing {categories} - {object_id}")
+
+        if request_type == "POST":
+            response = self.session.post(url, headers=headers, json=payload)
+        else:
+            response = self.session.delete(url, headers=headers)
+
+        try:
+            response.raise_for_status()
+            if response.status_code in [200, 204]:
+                logger.info(f"Successfully removed {categories} - {object_id}")
+                return True
+            else:
+                logger.error(
+                    f"Failed to remove {categories} - {object_id}: {response.status_code}"
+                )
+                return False
+        except Exception as e:
+            logger.error(f"Unexpected error removing {categories}: {e}")
             return []
 
 
@@ -414,63 +544,61 @@ class VerkadaExternalAPIClient:
         error_signature = None
         match categories:
             case "cameras":
-                path = "cameras/v1/devices"
-                mapping_func = lambda x: {
-                    "id": x.get("camera_id"),
-                    "name": x.get("name"),
-                    "serial_number": x.get("serial"),
-                }
-                error_signature = "must include cameras"
                 object_type = "cameras"
+                path = "cameras/v1/devices"
+                error_signature = "must include cameras"
+
+                def mapping_func(x):
+                    return {
+                        "id": x["camera_id"],
+                        "name": x["name"],
+                        "serial_number": x["serial"],
+                    }
+
             case "guest_sites":
-                path = "guest/v1/sites"
-                mapping_func = lambda x: {
-                    "id": x.get("site_id"),
-                    "name": x.get("site_name"),
-                }
                 object_type = "guest_sites"
+                path = "guest/v1/sites"
+
+                def mapping_func(x):
+                    return {"id": x["site_id"], "name": x["site_name"]}
+
             case "users":
-                path = "access/v1/access_users"
-                mapping_func = lambda x: {
-                    "id": x.get("user_id"),
-                    "name": x.get("full_name"),
-                    "email": x.get("email"),
-                }
                 object_type = "access_members"
+                path = "access/v1/access_users"
+
+                def mapping_func(x):
+                    return {
+                        "id": x["user_id"],
+                        "name": x["full_name"],
+                        "email": x["email"],
+                    }
+
             case _:
                 raise ValueError(f"Unknown device type: {categories}")
 
         url = f"https://{self.region}.verkada.com/{path}"
         headers = {"accept": "application/json", "x-verkada-auth": self.api_token}
         params = {"page_size": 200}
-        logger.debug(f"Fetching data from {url}...")
         logger.info(f"Finding {categories}...")
+
         response = self.session.get(url, headers=headers, params=params)
 
         if response.status_code == 400:
             if error_signature and error_signature in response.text:
-                logger.info(f"Found 0 {categories}.")
+                logger.info(f"Retrieved 0 {categories}")
                 return []
 
         try:
             response.raise_for_status()
-            json_data = response.json()
-            if object_type not in json_data or not isinstance(
-                json_data[object_type], list
-            ):
-                logger.warning(
-                    f"Response missing '{categories}' array. Response keys: {list(json_data.keys())}"
-                )
-                return []
-            results = [mapping_func(item) for item in json_data[object_type]]
+            data = response.json()
+            results = [mapping_func(item) for item in data[object_type]]
             logger.info(f"Retrieved {len(results)} {categories}")
             return results
-
-        except HTTPError as e:
-            logger.error(f"HTTP Error fetching devices: {e.response.text}")
+        except (HTTPError, JSONDecodeError) as e:
+            logger.error(f"Failed to fetch {categories}: {e}")
             return []
         except Exception as e:
-            logger.error(f"Unexpected error in generic fetcher: {e}")
+            logger.error(f"Unexpected error fetching {categories}: {e}")
             return []
 
     def get_users(
@@ -527,20 +655,53 @@ internal_client.login()
 external_api_key = internal_client.create_external_api_key()
 external_client = VerkadaExternalAPIClient(external_api_key, org_short_name, region)
 
-# sensors = internal_client.get_object("sensors")
-# intercoms = internal_client.get_object("intercoms")
-# desk_stations = internal_client.get_object("desk_stations")
-# mailroom_sites = internal_client.get_object("mailroom_sites")
-# access_controllers = sanitize_list(
-#     intercoms, internal_client.get_object("access_controllers")
-# )
-# cameras = sanitize_list(intercoms, external_client.get_object("cameras"))
-# guest_sites = external_client.get_object("guest_sites")
-# users = external_client.get_users(exclude_user_id=internal_client.user_id)
-# alarm_sites = internal_client.get_object("alarm_sites")
-# alarm_devices = internal_client.get_object("alarm_devices")
-# unassigned_devices = internal_client.get_object("unassigned_devices")
+sensors = internal_client.get_object("sensors")
+intercoms = internal_client.get_object("intercoms")
+desk_stations = internal_client.get_object("desk_stations")
+mailroom_sites = internal_client.get_object("mailroom_sites")
+access_controllers = sanitize_list(
+    intercoms, internal_client.get_object("access_controllers")
+)
+cameras = sanitize_list(intercoms, external_client.get_object("cameras"))
+guest_sites = external_client.get_object("guest_sites")
+users = external_client.get_users(exclude_user_id=internal_client.user_id)
+alarm_sites = internal_client.get_object("alarm_sites")
+alarm_devices = internal_client.get_object("alarm_devices")
+unassigned_devices = internal_client.get_object("unassigned_devices")
 
+for sensor in sensors:
+    print(internal_client.delete_object("sensors", sensor["id"]))
+for intercom in intercoms:
+    print(internal_client.delete_object("intercoms", intercom["id"]))
+for desk_station in desk_stations:
+    print(internal_client.delete_object("desk_stations", desk_station["id"]))
+for mailroom_site in mailroom_sites:
+    print(internal_client.delete_object("mailroom_sites", mailroom_site["id"]))
+for access_controller in access_controllers:
+    print(internal_client.delete_object("access_controllers", access_controller["id"]))
+for camera in cameras:
+    print(internal_client.delete_object("cameras", camera["id"]))
+for guest_site in guest_sites:
+    print(internal_client.delete_object("guest_sites", guest_site["id"]))
+for alarm_device in alarm_devices:
+    print(internal_client.delete_object("alarm_devices", alarm_device["id"]))
+for alarm_site in alarm_sites:
+    if alarm_site["alarm_system_id"]:
+        print(
+            internal_client.delete_object(
+                "alarm_systems", alarm_site["alarm_system_id"]
+            )
+        )
+    print(
+        internal_client.delete_object(
+            "alarm_sites", [alarm_site["alarm_site_id"], alarm_site["site_id"]]
+        )
+    )
+for unassigned_device in unassigned_devices:
+    print("Please remove the following devices:")
+    print(
+        f"Device ID: {unassigned_device['id']}, Serial Number: {unassigned_device['serial_number']}"
+    )
 
 # Print serial numbers of intercoms and cameras
 # for intercom in intercoms:

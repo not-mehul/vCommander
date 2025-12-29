@@ -586,7 +586,9 @@ class VerkadaExternalAPIClient:
             },
         )
 
-    def get_users(self, exclude_user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_users(
+        self, exclude_user_id: Optional[str] = None, exclude_email: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Fetches a list of users using the generic fetcher pattern.
         Optionally filters out a specific user ID (e.g., the current admin).
@@ -609,6 +611,13 @@ class VerkadaExternalAPIClient:
                     f"Filtered out admin user ({exclude_user_id}) from inventory."
                 )
 
+        if exclude_email:
+            initial_count = len(users)
+            users = [u for u in users if u["email"] != exclude_email]
+            if len(users) < initial_count:
+                logger.info(
+                    f"Filtered out user with email ({exclude_email}) from inventory."
+                )
         return users
 
     def remove_user(self, user_id: str) -> bool:
