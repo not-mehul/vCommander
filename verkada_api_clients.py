@@ -8,8 +8,6 @@ from requests.exceptions import HTTPError, JSONDecodeError
 from requests.models import Response
 from urllib3.util.retry import Retry
 
-from verkada_utilities import get_env_var, sanitize_list
-
 logger = logging.getLogger(__name__)
 
 
@@ -183,8 +181,8 @@ class VerkadaInternalAPIClient:
 
             # Check specifically for "2FA invalid" in the server response
             if "2FA invalid" in error_msg:
-                logger.error("Incorrect 2FA code. Please try again.")
-                raise ConnectionError("Incorrect 2FA code. Please try again.")
+                logger.error("Incorrect 2FA code.")
+                raise SystemExit()
             # If it's some other error (e.g. server down), raise immediately
             raise ConnectionError(f"MFA Failed with unexpected error: {error_msg}")
 
@@ -213,14 +211,29 @@ class VerkadaInternalAPIClient:
         headers = self._get_headers()
         try:
             response = self.session.post(url, json=payload, headers=headers)
-            response.raise_for_status()  # Raise error for 4xx/5xx
+            response.raise_for_status()
+
             data = response.json()
             api_key = data.get("apiKey")
             logger.info(f"Generated API key: {api_key}")
             return api_key
-        except (HTTPError, JSONDecodeError) as e:
+
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 400:
+                try:
+                    err_data = e.response.json()
+                    if err_data.get("message") == "Would exceed 10 api keys limit":
+                        logger.error(
+                            "Failed to generate API key: Exceeded 10 API Keys Limit"
+                        )
+                        raise SystemExit()
+                except JSONDecodeError:
+                    pass
             logger.error(f"Failed to generate API key: {e}")
-            return ""
+            raise SystemExit()
+        except JSONDecodeError as e:
+            logger.error(f"Failed to parse response: {e}")
+            raise SystemExit()
 
     def set_access_system_admin(self) -> None:
         if not self.auth_data:
@@ -333,6 +346,7 @@ class VerkadaInternalAPIClient:
 
                 def mapping_func(x):
                     return {
+                        "id": x["id"],
                         "site_id": x["siteId"],
                         "alarm_site_id": x["id"],
                         "alarm_system_id": x.get("alarmSystemId"),
@@ -632,101 +646,18 @@ class VerkadaExternalAPIClient:
                 pass
         return users
 
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="(%(asctime)s) [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
-admin_email = get_env_var("ADMIN_EMAIL")
-admin_pass = get_env_var("ADMIN_PASSWORD")
-org_short_name = get_env_var("ORG_SHORT_NAME")
-shard = get_env_var("SHARD", default="prod1")
-region = get_env_var("REGION", default="api")
-
-# Initialize Clients
-internal_client = VerkadaInternalAPIClient(
-    admin_email, admin_pass, org_short_name, shard
-)
-
-# Login to internal API
-internal_client.login()
-external_api_key = internal_client.create_external_api_key()
-external_client = VerkadaExternalAPIClient(external_api_key, org_short_name, region)
-
-sensors = internal_client.get_object("sensors")
-intercoms = internal_client.get_object("intercoms")
-desk_stations = internal_client.get_object("desk_stations")
-mailroom_sites = internal_client.get_object("mailroom_sites")
-access_controllers = sanitize_list(
-    intercoms, internal_client.get_object("access_controllers")
-)
-cameras = sanitize_list(intercoms, external_client.get_object("cameras"))
-guest_sites = external_client.get_object("guest_sites")
-users = external_client.get_users(exclude_user_id=internal_client.user_id)
-alarm_sites = internal_client.get_object("alarm_sites")
-alarm_devices = internal_client.get_object("alarm_devices")
-unassigned_devices = internal_client.get_object("unassigned_devices")
-
-for sensor in sensors:
-    print(internal_client.delete_object("sensors", sensor["id"]))
-for intercom in intercoms:
-    print(internal_client.delete_object("intercoms", intercom["id"]))
-for desk_station in desk_stations:
-    print(internal_client.delete_object("desk_stations", desk_station["id"]))
-for mailroom_site in mailroom_sites:
-    print(internal_client.delete_object("mailroom_sites", mailroom_site["id"]))
-for access_controller in access_controllers:
-    print(internal_client.delete_object("access_controllers", access_controller["id"]))
-for camera in cameras:
-    print(internal_client.delete_object("cameras", camera["id"]))
-for guest_site in guest_sites:
-    print(internal_client.delete_object("guest_sites", guest_site["id"]))
-for alarm_device in alarm_devices:
-    print(internal_client.delete_object("alarm_devices", alarm_device["id"]))
-for alarm_site in alarm_sites:
-    if alarm_site["alarm_system_id"]:
-        print(
-            internal_client.delete_object(
-                "alarm_systems", alarm_site["alarm_system_id"]
-            )
-        )
-    print(
-        internal_client.delete_object(
-            "alarm_sites", [alarm_site["alarm_site_id"], alarm_site["site_id"]]
-        )
-    )
-for unassigned_device in unassigned_devices:
-    print("Please remove the following devices:")
-    print(
-        f"Device ID: {unassigned_device['id']}, Serial Number: {unassigned_device['serial_number']}"
-    )
-
-# Print serial numbers of intercoms and cameras
-# for intercom in intercoms:
-#     print(f"Intercom ID: {intercom['id']}, Serial Number: {intercom['serial_number']}")
-# for sensor in sensors:
-#     print(f"Sensor ID: {sensor['id']}, Serial Number: {sensor['serial_number']}")
-# for access_controller in access_controllers:
-#     print(
-#         f"Access Controller ID: {access_controller['id']}, Serial Number: {access_controller['serial_number']}"
-#     )
-# for camera in cameras:
-#     print(f"Camera ID: {camera['id']}, Serial Number: {camera['serial_number']}")
-# for guest_site in guest_sites:
-#     print(f"Guest Site ID: {guest_site['id']}, Name: {guest_site['name']}")
-# for mailroom_site in mailroom_sites:
-#     print(f"Mailroom Site ID: {mailroom_site['id']}, Name: {mailroom_site['name']}")
-# for desk_station in desk_stations:
-#     print(f"Desk Station ID: {desk_station['id']}, Name: {desk_station['name']}")
-# for user in users:
-#     print(f"User ID: {user['id']}, Email: {user['email']}")
-# for alarm in alarm_sites:
-#     print(
-#         f"Alarms: \n Site ID: {alarm['site_id']}, Alarm Site ID: {alarm['alarm_site_id']}, Name: {alarm['name']}, Alarm System ID: {alarm['alarm_system_id']}"
-#     )
-# for device in alarm_devices:
-#     print(f"AlarmDevices: \n Device ID: {device['id']}, Name: {device['name']}")
-# for device in unassigned_devices:
-#     print(f"Unassigned Device ID: {device['id']}, Serial Number: {device['name']}")
+    def delete_user(self, user_id: str) -> bool:
+        url = "https://api.verkada.com/core/v1/user"
+        headers = {"accept": "application/json", "x-verkada-auth": self.api_token}
+        params = {"user_id": user_id}
+        try:
+            response = self.session.delete(url, headers=headers, params=params)
+            response.raise_for_status()
+            logger.info(f"Deleted User: {user_id}")
+            return True
+        except HTTPError as e:
+            logger.error(f"Failed to delete user: {user_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error deleting user: {user_id}: {e}")
+            return False

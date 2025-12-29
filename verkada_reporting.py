@@ -25,7 +25,6 @@ def generate_report(
 
     # 1. Setup File Logging if requested
     if save_to_file:
-        # User confirmed org_name is safe (contains only safe chars like '-'), so we use it directly.
         output_filename = f"{org_name}_report_{timestamp_file}.txt"
         try:
             file_handle = open(output_filename, "w", encoding="utf-8")
@@ -34,18 +33,15 @@ def generate_report(
 
     # 2. Define Helper to write to both locations
     def output(text="", end="\n"):
-        """Internal helper to print to console and optionally write to file."""
         print(text, end=end)
         if file_handle:
             file_handle.write(str(text) + end)
 
-    # 3. Define Helper for separators (using the new output function)
     def output_sep(char="=", length=80):
         output(char * length)
 
     # --- REPORT GENERATION START ---
 
-    # Header
     output("\n")
     output_sep("=")
     output("   Inventory Report".center(80))
@@ -92,17 +88,35 @@ def generate_report(
                 obj_id = ", ".join(map(str, obj_id))
 
             obj_id_str = str(obj_id)
-            name_str = (
+
+            # --- UPDATED NAME LOGIC ---
+            base_name = (
                 item.get("email")
                 or item.get("name")
                 or item.get("businessName")
                 or "(No Name)"
             )
 
+            # Collect extra details to append to the name
+            details = []
+            if item.get("serial_number"):
+                details.append(f"S/N: {item['serial_number']}")
+            if item.get("alarm_system_id"):
+                details.append(f"Sys ID: {item['alarm_system_id']}")
+
+            # If we have extra details, append them in parentheses
+            if details:
+                name_str = f"{base_name} ({', '.join(details)})"
+            else:
+                name_str = base_name
+            # ---------------------------
+
             rows.append((name_str, obj_id_str))
 
             if len(name_str) > max_name_len:
-                max_name_len = min(len(name_str), 60)
+                max_name_len = min(
+                    len(name_str), 80
+                )  # Increased max width for readability
             if len(obj_id_str) > max_id_len:
                 max_id_len = len(obj_id_str)
 
@@ -119,6 +133,7 @@ def generate_report(
         output(divider)
 
         for name, obj_id in rows:
+            # Truncate if still too long (rare now with increased max_width)
             if len(name) > max_name_len:
                 name = name[: max_name_len - 3] + "..."
             output(row_fmt.format(name, obj_id))
@@ -132,19 +147,41 @@ def generate_report(
 
     # --- REPORT GENERATION END ---
 
-    # 4. Cleanup
     if file_handle:
         file_handle.close()
         logger.info(f"Report saved to disk: {output_filename}")
-        print(f" >> File successfully saved: {output_filename}")  # Console feedback
+        print(f" >> File successfully saved: {output_filename}")
 
     logger.info("Report printing complete.")
 
 
-# Example Usage:
-# Note: set save_to_file=True to actually generate the .txt file
-generate_report(
-    "Verkada-Sample-Report",
-    {"cameras": [{"id": "123", "name": "Camera 1"}, {"id": "456", "name": "Camera 2"}]},
-    save_to_file=True,
-)
+def print_inventory_details(inventory):
+    """
+    Helper function to print details based on device/object type.
+    """
+    # Define formatting rules for different categories
+    format_rules = {
+        "Intercoms": lambda x: f"Intercom ID: {x['id']}, Serial Number: {x['serial_number']}",
+        "Sensors": lambda x: f"Sensor ID: {x['id']}, Serial Number: {x['serial_number']}",
+        "Access Controllers": lambda x: f"Access Controller ID: {x['id']}, Serial Number: {x['serial_number']}",
+        "Cameras": lambda x: f"Camera ID: {x['id']}, Serial Number: {x['serial_number']}",
+        "Unassigned Devices": lambda x: f"Unassigned Device ID: {x['id']}, Serial Number: {x.get('name', 'N/A')}",
+        "Guest Sites": lambda x: f"Guest Site ID: {x['id']}, Name: {x['name']}",
+        "Mailroom Sites": lambda x: f"Mailroom Site ID: {x['id']}, Name: {x['name']}",
+        "Desk Stations": lambda x: f"Desk Station ID: {x['id']}, Name: {x['name']}",
+        "Alarm Devices": lambda x: f"Alarm Device ID: {x['id']}, Name: {x['name']}",
+        "Users": lambda x: f"User ID: {x['id']}, Email: {x['email']}",
+        "Alarm Sites": lambda x: (
+            f"Alarm Site:\n\tSite ID: {x['site_id']}\n\t"
+            f"Alarm Site ID: {x['alarm_site_id']}\n\t"
+            f"Name: {x['name']}\n\t"
+            f"Alarm System ID: {x['alarm_system_id']}"
+        ),
+    }
+
+    for category, items in inventory.items():
+        if items:
+            print(f"\n--- {category} ---")
+            formatter = format_rules.get(category, lambda x: str(x))
+            for item in items:
+                print(formatter(item))
