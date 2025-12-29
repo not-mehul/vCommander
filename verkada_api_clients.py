@@ -14,26 +14,40 @@ logger = logging.getLogger(__name__)
 class VerkadaInternalAPIClient:
     """
     A client to interact with the internal Verkada Provisioning and Response APIs.
+
+    This client simulates the behavior of the web interface (Command) by using
+    user credentials (email/password) to obtain a session cookie and CSRF token.
+    It handles 2FA/MFA if required by the organization.
     """
 
     BASE_URL_PROVISION = "https://vprovision.command.verkada.com/__v/"
 
     def __init__(self, email: str, password: str, org_short_name: str, shard: str):
+        """
+        Initializes the internal client with credentials.
+
+        Args:
+            email: Admin email address.
+            password: Admin password.
+            org_short_name: The short identifier for the organization (e.g., "myorg").
+            shard: The specific backend shard to connect to (e.g., "prod1").
+        """
         self.email = email
         self.password = password
         self.org_short_name = org_short_name
         self.shard = shard
 
-        # Initialize session
+        # Initialize a persistent session to maintain cookies across requests
         self.session = requests.Session()
 
-        # Storage for auth tokens
+        # Storage for auth tokens (CSRF, User ID, Org ID, etc.) populated after login
         self.auth_data: Optional[Dict[str, str]] = None
 
     @property
     def user_id(self) -> Optional[str]:
         """
-        Returns the User ID as a string if authenticated.
+        Returns the authenticated User ID as a string.
+        Returns None if login() has not been called successfully yet.
         """
         if self.auth_data:
             return self.auth_data.get("adminUserId")
@@ -42,14 +56,20 @@ class VerkadaInternalAPIClient:
     @property
     def org_id(self) -> Optional[str]:
         """
-        Returns the Organization ID as a string if authenticated.
+        Returns the Organization ID as a string.
+        Returns None if login() has not been called successfully yet.
         """
         if self.auth_data:
             return self.auth_data.get("organizationId")
         return None
 
     def _get_headers(self) -> Dict[str, str]:
-        """Constructs headers required for internal API calls."""
+        """
+        Constructs the specific HTTP headers required for internal API calls.
+
+        These headers mimic a browser session. Crucially, it includes the
+        'Cookie' string and custom 'x-verkada-*' headers derived from auth data.
+        """
         if not self.auth_data:
             return {}
 
@@ -59,12 +79,17 @@ class VerkadaInternalAPIClient:
             "x-verkada-organization-id": self.auth_data.get("organizationId", ""),
             "x-verkada-token": self.auth_data.get("csrfToken", ""),
             "x-verkada-user-id": self.auth_data.get("adminUserId", ""),
+            # Origin and Referer are often checked by backend security policies
             "origin": f"https://{self.org_short_name}.command.verkada.com",
             "referer": f"https://{self.org_short_name}.command.verkada.com/",
         }
 
     def _parse_login_response(self, json_data: Dict[str, Any]) -> Dict[str, str]:
-        """Extracts session data from a successful login response."""
+        """
+        Extracts critical session data from a successful login API response.
+
+        It manually constructs the cookie string expected by subsequent requests.
+        """
         try:
             csrf_token = str(json_data["csrfToken"])
             user_token = str(json_data["userToken"])
@@ -72,6 +97,7 @@ class VerkadaInternalAPIClient:
             admin_user_id = str(json_data["userId"])
 
             # Manually constructing the cookie string required for internal APIs
+            # This combines the user token, org ID, user ID, and CSRF token.
             cookie = (
                 f"auth={user_token}; "
                 f"org={organization_id}; "
@@ -94,8 +120,13 @@ class VerkadaInternalAPIClient:
 
     def login(self) -> None:
         """
-        Login to the Verkada Provisioning API. Handles standard login and MFA.
-        Sets self.auth_data upon success.
+        Authenticates with the Verkada Provisioning API.
+
+        Flow:
+        1. Sends POST request with credentials.
+        2. Checks if 2FA (MFA) is required (HTTP 400 with specific message).
+        3. If 2FA is required, triggers the interactive _handle_mfa() method.
+        4. Parses the successful response to store session data in self.auth_data.
         """
         login_url = f"{self.BASE_URL_PROVISION}{self.org_short_name}/user/login"
 
@@ -127,6 +158,7 @@ class VerkadaInternalAPIClient:
             return
 
         # 2. MFA Required Scenario
+        # The API typically returns 400 if credentials are correct but 2FA is needed
         if response.status_code == 400:
             msg = data.get("message", "") or response.text
             if "mfa_required_for_org_admin" in msg or "2FA invalid" in msg:
@@ -134,7 +166,7 @@ class VerkadaInternalAPIClient:
                 sms_contact = data.get("data", {}).get("smsSent")
                 if sms_contact:
                     logger.info(f"SMS sent to device ending in {sms_contact}")
-                # Handle MFA Input
+                # Handle MFA Input interactively
                 self._handle_mfa(login_url, payload)
                 return
 
@@ -148,18 +180,23 @@ class VerkadaInternalAPIClient:
     ) -> None:
         """
         Internal method to handle the interactive MFA flow.
-        Includes retry logic for incorrect codes.
+
+        Args:
+            login_url: The URL to post the MFA code to.
+            base_payload: The original login payload (email, password, etc.).
+            mfa: Optional pre-supplied MFA code (useful for testing or automation).
         """
         try:
-            # Prompt user
+            # Prompt user for code via console
             if mfa:
                 two_fa_code = mfa
             else:
                 two_fa_code = input("Enter 2FA code: ").strip()
+
             if not two_fa_code or len(two_fa_code) < 6:
                 raise ValueError("Invalid 2FA code format or Empty.")
 
-            # Prepare payload
+            # Prepare payload: original credentials + the OTP code
             mfa_payload = base_payload.copy()
             mfa_payload["otp"] = two_fa_code
 
@@ -187,17 +224,27 @@ class VerkadaInternalAPIClient:
             raise ConnectionError(f"MFA Failed with unexpected error: {error_msg}")
 
         except (EOFError, KeyboardInterrupt):
-            # Allow user to Ctrl+C to exit cleanly
+            # Allow user to Ctrl+C to exit cleanly without a traceback explosion
             print()  # Newline for cleaner output
             raise InterruptedError("User canceled 2FA prompt.")
 
     def create_external_api_key(self) -> str:
+        """
+        Generates a temporary External API Key.
+
+        This key is required to initialize the `VerkadaExternalAPIClient`.
+        It creates a key with specific read/write permissions for Decommissioning.
+        The key is set to expire in 1 hour.
+        """
         if not self.auth_data:
             raise PermissionError("Not authenticated. Please call login() first.")
+
         url = f"https://apiadmin.command.verkada.com/__v/{self.org_short_name}/admin/orgs/{self.org_id}/v2/granular_apikeys"
+
         payload = {
             "api_key_name": "Decommissioning API Key - " + str(datetime.now()),
             "expires_at": int((datetime.now() + timedelta(hours=1)).timestamp()),
+            # Grants full permissions needed for decommissioning assets
             "roles": [
                 "PUBLIC_API_CAMERA_READ_WRITE",
                 "PUBLIC_API_SENSORS_READ_WRITE",
@@ -208,6 +255,7 @@ class VerkadaInternalAPIClient:
                 "PUBLIC_API_INTERCOM_READ_WRITE",
             ],
         }
+
         headers = self._get_headers()
         try:
             response = self.session.post(url, json=payload, headers=headers)
@@ -236,9 +284,17 @@ class VerkadaInternalAPIClient:
             raise SystemExit()
 
     def set_access_system_admin(self) -> None:
+        """
+        Escalates the current user's privileges to Access System Admin.
+
+        Required because standard admin privileges might not be enough to
+        delete certain access control hardware.
+        """
         if not self.auth_data:
             raise PermissionError("Not authenticated. Please call login() first.")
+
         url = f"https://vcerberus.command.verkada.com/__v/{self.org_short_name}/access/v2/user/roles/modify"
+
         payload = {
             "grants": [
                 {
@@ -269,11 +325,21 @@ class VerkadaInternalAPIClient:
         categories: str,
     ) -> List[Dict[str, Any]]:
         """
-        Get a list of objects of a given type.
+        Generic fetch method for various Verkada device types via Internal API.
+
+        Args:
+            categories: The type of object to fetch (e.g., 'intercoms', 'sensors').
+
+        Returns:
+            A list of dictionaries, where each dict represents a device
+            and contains standardized keys: 'id', 'name', 'serial_number'.
         """
         if not self.auth_data:
             raise PermissionError("Not authenticated. Please call login() first.")
+
         payload = None
+
+        # Configure request details based on the category
         match categories:
             case "intercoms":
                 object_type = "intercoms"
@@ -281,6 +347,7 @@ class VerkadaInternalAPIClient:
                 subdomain = "api"
                 path = f"vinter/v1/user/organization/{self.org_id}/device"
 
+                # Standardize output
                 def mapping_func(x):
                     return {
                         "id": x["deviceId"],
@@ -388,6 +455,7 @@ class VerkadaInternalAPIClient:
         headers = self._get_headers()
         logger.info(f"Finding {categories}...")
 
+        # Execute Request
         if request_type == "POST":
             response = self.session.post(url, headers=headers, json=payload)
         else:
@@ -396,6 +464,7 @@ class VerkadaInternalAPIClient:
         try:
             response.raise_for_status()
             data = response.json()
+            # Apply mapping function to normalize data structure
             results = [mapping_func(item) for item in data[object_type]]
             logger.info(f"Retrieved {len(results)} {categories}")
             return results
@@ -407,6 +476,13 @@ class VerkadaInternalAPIClient:
             return []
 
     def delete_object(self, categories: str, object_id: Union[str, List[str]]):
+        """
+        Decommissions or deletes a specific object by ID via Internal API.
+
+        Args:
+            categories: The type of object to delete.
+            object_id: The ID (or list of IDs for some types) of the object to delete.
+        """
         payload = None
         match categories:
             case "intercoms":
@@ -454,6 +530,7 @@ class VerkadaInternalAPIClient:
                 request_type = "POST"
                 subdomain = "vproresponse"
                 path = "response/site/delete"
+                # Alarm sites require both responseSiteId and siteId
                 payload = {"responseSiteId": object_id[0], "siteId": object_id[1]}
 
             case "guest_sites":
@@ -499,9 +576,18 @@ class VerkadaExternalAPIClient:
     """
     A client to interact with the PUBLIC (External) Verkada API endpoints.
     Documentation: https://apidocs.verkada.com/
+
+    This client uses an API Key (created by the Internal Client) to generate
+    a short-lived token for authenticated requests.
     """
 
     def __init__(self, api_key: str, org_short_name: str, region: str = "api"):
+        """
+        Args:
+            api_key: The granular API key string.
+            org_short_name: The organization's short identifier.
+            region: The API region (default "api").
+        """
         self.api_key = api_key
         self.org_short_name = org_short_name
         self.region = region
@@ -509,6 +595,8 @@ class VerkadaExternalAPIClient:
         # Initialize session FIRST so it can be used by _generate_api_token
         self.session = requests.Session()
 
+        # Configure automatic retries for robust network handling
+        # Retries on 429 (Too Many Requests) and 5xx (Server Errors)
         retries = Retry(
             total=4,
             backoff_factor=0.5,
@@ -525,6 +613,7 @@ class VerkadaExternalAPIClient:
     def _generate_api_token(self) -> str:
         """
         Exchanges the long-lived API Key for a short-lived API Token.
+        This token is required for the 'x-verkada-auth' header in public API calls.
         """
         url = f"https://{self.region}.verkada.com/token"
         headers = {"accept": "application/json", "x-api-key": self.api_key}
@@ -555,6 +644,12 @@ class VerkadaExternalAPIClient:
         self,
         categories: str,
     ) -> List[Dict[str, Any]]:
+        """
+        Fetches objects via the External API.
+
+        Args:
+            categories: Type of object (cameras, guest_sites, users).
+        """
         error_signature = None
         match categories:
             case "cameras":
@@ -597,6 +692,7 @@ class VerkadaExternalAPIClient:
 
         response = self.session.get(url, headers=headers, params=params)
 
+        # Handle edge case where API returns 400 if no objects exist (e.g. no cameras)
         if response.status_code == 400:
             if error_signature and error_signature in response.text:
                 logger.info(f"Retrieved 0 {categories}")
@@ -619,10 +715,15 @@ class VerkadaExternalAPIClient:
         self, exclude_user_id: Optional[str] = None, exclude_email: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Fetches a list of users using the generic fetcher pattern.
-        Optionally filters out a specific user ID or emails (e.g., the current admin).
+        Fetches a list of users, with optional filtering to prevent deleting self.
+
+        Args:
+            exclude_user_id: The ID of a user to filter out (usually the admin running the script).
+            exclude_email: An email address to filter out.
         """
         users = self.get_object("users")
+
+        # Filter by ID
         if exclude_user_id is not None:
             initial_count = len(users)
             clean_exclude_id = str(exclude_user_id).strip()
@@ -633,6 +734,7 @@ class VerkadaExternalAPIClient:
                 logger.info(f"Filtered out user ({exclude_user_id}) from inventory.")
                 pass
 
+        # Filter by Email
         if exclude_email:
             initial_count = len(users)
             clean_exclude_email = exclude_email.strip().lower()
@@ -647,6 +749,9 @@ class VerkadaExternalAPIClient:
         return users
 
     def delete_user(self, user_id: str) -> bool:
+        """
+        Deletes a user from the organization via Public API.
+        """
         url = "https://api.verkada.com/core/v1/user"
         headers = {"accept": "application/json", "x-verkada-auth": self.api_token}
         params = {"user_id": user_id}

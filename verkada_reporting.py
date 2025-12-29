@@ -13,10 +13,19 @@ def generate_report(
     save_to_file: bool = False,
 ):
     """
-    Generates a detailed inventory report.
-    Always prints to console.
-    If save_to_file is True, also saves to '{org_name}_report_{timestamp}.txt'.
+    Generates a detailed, formatted inventory report.
+
+    Output:
+    - Always prints the report to the console (stdout).
+    - If save_to_file is True, also saves the output to a text file
+      named '{org_name}_report_{timestamp}.txt' in the current directory.
+
+    Args:
+        org_name: Name of the organization (used for header and filename).
+        inventory: The dictionary containing lists of assets/users.
+        save_to_file: Boolean flag to enable file logging.
     """
+    # Create timestamps for display (readable) and filename (safe characters)
     timestamp_display = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp_file = datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
@@ -32,12 +41,14 @@ def generate_report(
             logger.error(f"Could not open file for writing: {e}")
 
     # 2. Define Helper to write to both locations
+    # This closure allows us to treat console and file output identically
     def output(text="", end="\n"):
         print(text, end=end)
         if file_handle:
             file_handle.write(str(text) + end)
 
     def output_sep(char="=", length=80):
+        """Helper to print separator lines."""
         output(char * length)
 
     # --- REPORT GENERATION START ---
@@ -51,6 +62,7 @@ def generate_report(
     output("\n")
 
     # Dashboard Summary
+    # Prints a high-level breakdown of counts per category
     output("  Breakdown")
     output_sep("-", 40)
 
@@ -58,6 +70,7 @@ def generate_report(
     for category, items in inventory.items():
         count = len(items)
         total_devices += count
+        # Format: Category Name (left aligned) : Count (right aligned)
         output(f"  • {category.replace('_', ' '):<25} : {count:>5}")
 
     output_sep("-", 40)
@@ -65,6 +78,7 @@ def generate_report(
     output("\n")
 
     # Detailed Listings
+    # Iterates through every category to print a table of assets
     for category, items in inventory.items():
         title = category.replace("_", " ").title()
 
@@ -77,19 +91,22 @@ def generate_report(
             output("\n")
             continue
 
-        # Determine column widths dynamically
+        # Determine column widths dynamically based on content
+        # This ensures the table looks good whether names are short or long
         max_name_len = 20
         max_id_len = 15
 
         rows = []
         for item in items:
             obj_id = item.get("id")
+            # Handle cases where ID might be a list (e.g., Alarm Sites)
             if isinstance(obj_id, list):
                 obj_id = ", ".join(map(str, obj_id))
 
             obj_id_str = str(obj_id)
 
-            # --- UPDATED NAME LOGIC ---
+            # --- NAME LOGIC ---
+            # Try to find a human-readable name from various common keys
             base_name = (
                 item.get("email")
                 or item.get("name")
@@ -97,7 +114,7 @@ def generate_report(
                 or "(No Name)"
             )
 
-            # Collect extra details to append to the name
+            # Collect extra details to append to the name (Serial, System ID)
             details = []
             if item.get("serial_number"):
                 details.append(f"S/N: {item['serial_number']}")
@@ -113,14 +130,15 @@ def generate_report(
 
             rows.append((name_str, obj_id_str))
 
+            # Update max widths to fit this row
             if len(name_str) > max_name_len:
                 max_name_len = min(
                     len(name_str), 80
-                )  # Increased max width for readability
+                )  # Cap width at 80 to prevent wrapping mess
             if len(obj_id_str) > max_id_len:
                 max_id_len = len(obj_id_str)
 
-        # Create format string
+        # Create dynamic format string based on calculated widths
         col_name_w = max_name_len + 2
         col_id_w = max_id_len + 2
 
@@ -128,10 +146,11 @@ def generate_report(
         row_fmt = f"  {{:<{col_name_w}}} | {{:<{col_id_w}}}"
         divider = f"  {'-' * col_name_w}-+-{'-' * col_id_w}"
 
-        # Print Table
+        # Print Table Headers
         output(header_fmt.format("Name / Description", "ID"))
         output(divider)
 
+        # Print Rows
         for name, obj_id in rows:
             # Truncate if still too long (rare now with increased max_width)
             if len(name) > max_name_len:
@@ -157,9 +176,11 @@ def generate_report(
 
 def print_inventory_details(inventory):
     """
-    Helper function to print details based on device/object type.
+    Helper function to print raw details based on device/object type.
+    This is used for debugging or detailed verification before deletion.
     """
-    # Define formatting rules for different categories
+    # Define formatting rules (lambdas) for different categories
+    # Each lambda takes an item dict and returns a formatted string
     format_rules = {
         "Intercoms": lambda x: f"Intercom ID: {x['id']}, Serial Number: {x['serial_number']}",
         "Sensors": lambda x: f"Sensor ID: {x['id']}, Serial Number: {x['serial_number']}",
@@ -182,6 +203,7 @@ def print_inventory_details(inventory):
     for category, items in inventory.items():
         if items:
             print(f"\n--- {category} ---")
+            # Get the specific formatter for this category, or default to str()
             formatter = format_rules.get(category, lambda x: str(x))
             for item in items:
                 print(formatter(item))
