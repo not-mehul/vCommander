@@ -452,6 +452,14 @@ class DecommissionApp(ctk.CTk):
         if total_assets == 0:
             self.btn_nuke.configure(state="disabled", fg_color="#444444")
 
+        # Check if we should immediately show success view (e.g. org is empty)
+        # But allow user to see dashboard first if they want,
+        # unless it is strictly requested to show success immediately if empty?
+        # Prompt says: "once there are no devices... The view should tell them that"
+        # I'll stick to dashboard showing "No Assets Found" initially,
+        # but trigger success view if they hit delete on empty?
+        # Actually, let's keep the logic in check_completion for dynamic updates.
+
         # Auto-select first non-empty category
         if first_valid_category:
             self.select_category(first_valid_category)
@@ -515,6 +523,81 @@ class DecommissionApp(ctk.CTk):
             fill="x", pady=(2, 2)
         )
 
+    def remove_asset_from_ui(self, category, item_id):
+        """
+        Called by background thread via self.after.
+        Removes asset from memory and updates UI in real-time.
+        """
+        if category in self.inventory:
+            # 1. Update Data
+            original_count = len(self.inventory[category])
+            self.inventory[category] = [
+                i for i in self.inventory[category] if str(i.get("id")) != str(item_id)
+            ]
+            new_count = len(self.inventory[category])
+
+            # 2. Update Dashboard Button
+            if category in self.active_category_buttons:
+                btn = self.active_category_buttons[category]
+                if new_count == 0:
+                    # Remove category button if empty
+                    btn.destroy()
+                    del self.active_category_buttons[category]
+                else:
+                    btn.configure(text=f"{category}\n{new_count}")
+
+            # 3. Refresh Details if currently viewing this category
+            current_header = self.lbl_detail_header.cget("text")
+            if current_header.startswith(category.upper()):
+                self.select_category(category)
+
+        # 4. Check if we are done
+        self.check_completion()
+
+    def check_completion(self):
+        """Checks if all decommissioning is complete (ignoring Unassigned)."""
+        relevant_total = 0
+        for cat, items in self.inventory.items():
+            if cat == "Unassigned Devices":
+                continue
+            relevant_total += len(items)
+
+        if relevant_total == 0:
+            self.show_success_view()
+
+    def show_success_view(self):
+        """Replaces the dashboard with the celebration screen."""
+        self.clear_view()
+        self.lbl_status.configure(text="Complete", text_color=COLOR_SUCCESS)
+
+        container = ctk.CTkFrame(self.view_container, fg_color="transparent")
+        container.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(
+            container,
+            text="You've done it! 👏",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=COLOR_SUCCESS,
+        ).pack(pady=20)
+
+        ctk.CTkLabel(
+            container,
+            text="Organization Decommissioned Successfully",
+            font=ctk.CTkFont(size=16),
+            text_color=COLOR_TEXT_DIM,
+        ).pack(pady=10)
+
+        # Large Exit Button
+        ctk.CTkButton(
+            container,
+            text="Exit Application",
+            width=200,
+            height=50,
+            fg_color=COLOR_CARD,
+            hover_color="#333333",
+            command=self.quit_app,
+        ).pack(pady=30)
+
     # --- ACTION LOGIC ---
 
     def start_login_thread(self):
@@ -558,7 +641,7 @@ class DecommissionApp(ctk.CTk):
             logger.info("Scanning organization assets...")
             self._fetch_inventory()
 
-            logger.info(f"Scan complete. Found assets.")
+            logger.info("Scan complete. Found assets.")
             self.after(0, self.show_dashboard_view)
 
         except Exception as e:
@@ -609,19 +692,12 @@ class DecommissionApp(ctk.CTk):
 
     def confirm_deletion(self):
         count = sum(len(v) for v in self.inventory.values())
-        msg = f"WARNING: You are about to PERMANENTLY DELETE {count} assets.\n\nType 'DELETE' to confirm."
-
         if messagebox.askyesno(
             "CONFIRM DECOMMISSION",
-            f"Are you sure you want to delete {count} assets? This cannot be undone.",
+            f"Are you sure you want to delete {count} assets? This cannot be undone. This will wipe the organization data. Proceed?",
             icon="warning",
         ):
-            if messagebox.askyesno(
-                "FINAL SAFETY CHECK",
-                "This will wipe the organization data. Proceed?",
-                icon="warning",
-            ):
-                self.start_deletion_thread()
+            self.start_deletion_thread()
 
     def start_deletion_thread(self):
         self.btn_nuke.configure(state="disabled", text="Decommissioning in Progress...")
@@ -654,31 +730,44 @@ class DecommissionApp(ctk.CTk):
             items = inv.get(cat, [])
             if items:
                 logger.info(f"Deleting {len(items)} {cat}...")
-                for item in items:
+                # Use a copy of the list so we can modify the inventory safely
+                for item in list(items):
                     try:
-                        func(item["id"])
+                        result = func(item["id"])
+                        # Some functions return booleans, others None (void) on success but raise on fail
+                        if result is not False:
+                            self.after(
+                                0,
+                                lambda c=cat, i=item["id"]: self.remove_asset_from_ui(
+                                    c, i
+                                ),
+                            )
                     except Exception as e:
                         logger.error(f"Failed to delete {item['id']}: {e}")
 
         alarm_sites = inv.get("Alarm Sites", [])
         if alarm_sites:
             logger.info(f"Deleting {len(alarm_sites)} Alarm Sites...")
-            for site in alarm_sites:
+            for site in list(alarm_sites):
                 try:
                     if site.get("alarm_system_id"):
                         ic.delete_object("alarm_systems", site["alarm_system_id"])
                     ic.delete_object(
                         "alarm_sites", [site["alarm_site_id"], site["site_id"]]
                     )
+
+                    self.after(
+                        0,
+                        lambda i=site["id"]: self.remove_asset_from_ui(
+                            "Alarm Sites", i
+                        ),
+                    )
                 except Exception as e:
                     logger.error(f"Failed alarm site: {e}")
 
-        logger.info("Decommissioning Complete.")
-
-        self.after(
-            0, lambda: messagebox.showinfo("Done", "Organization Assets Deleted.")
-        )
-        self.after(0, self.show_dashboard_view)
+        logger.info("Decommissioning Run Complete.")
+        # We don't need to force show_dashboard_view here because remove_asset_from_ui
+        # will trigger the success view automatically when done.
 
 
 if __name__ == "__main__":
