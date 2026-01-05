@@ -4,6 +4,12 @@ Project Decommission is a specialized automation tool designed to inventory and 
 > [!CAUTION]  
 > **This tool is destructive**. It is designed to **delete** users, devices, sites, and configurations. Once the deletion process begins, it cannot be undone. Always review the generated inventory report carefully before confirming the deletion prompt. **Do not run this tool in a production environment** unless you intend to wipe the organization completely.
 
+## Preview
+
+![Image 1: Login page for the ProjectDecommission Tool](assets/img_1.png)
+
+![Image 2: Scanned organization details](assets/img_2.png)
+
 ## Key Features
 
 - **Hybrid API Architecture:** Combines an **Internal Client** (mimicking browser behavior) with an **External Client** (Standard Public API) to perform actions not currently possible via public endpoints alone.
