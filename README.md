@@ -6,9 +6,9 @@ Project Decommission is a specialized automation tool designed to inventory and 
 
 ## Preview
 
-![Image 1: Login page for the ProjectDecommission Tool](assets/img_1.png)
+![Image 1: Login page for the ProjectDecommission Tool](assets/Img_1.png)
 
-![Image 2: Scanned organization details](assets/img_2.png)
+![Image 2: Scanned organization details](assets/Img_2.png)
 
 ## Key Features
 
