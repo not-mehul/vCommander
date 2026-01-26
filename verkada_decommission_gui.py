@@ -668,6 +668,9 @@ class DecommissionApp(ctk.CTk):
         ic = self.internal_client
         ec = self.external_client
 
+        ic.set_access_system_admin()
+        ic.enable_global_site_admin()
+
         intercoms = ic.get_object("intercoms")
         acs = sanitize_list(intercoms, ic.get_object("access_controllers"))
         cams = sanitize_list(intercoms, ec.get_object("cameras"))
