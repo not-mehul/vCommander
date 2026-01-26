@@ -58,7 +58,8 @@ def main():
         admin_email, admin_pass, org_short_name, shard
     )
     internal_client.login()  # This might trigger an interactive 2FA prompt.
-
+    internal_client.set_access_system_admin()
+    internal_client.enable_global_site_admin()
     # -------------------------------------------------------------------------
     # 3. External Client Initialization
     # -------------------------------------------------------------------------

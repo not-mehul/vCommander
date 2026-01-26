@@ -315,10 +315,30 @@ class VerkadaInternalAPIClient:
         try:
             response = self.session.post(url, json=payload, headers=headers)
             response.raise_for_status()  # Raise error for 4xx/5xx
-            data = response.json()
-            logger.info(f"Escalated user to Access System Admin {data}")
+            # data = response.json()
+            logger.info("Escalated user to Access System Admin")
         except (HTTPError, JSONDecodeError) as e:
             logger.error(f"Failed to escalate to Access System Admin: {e}")
+
+    def enable_global_site_admin(self):
+        """
+        Updates the organization's Global Site Admin toggle to True.
+
+        Ensures that the org admins are site admins for all sites in the organization
+        """
+        if not self.auth_data:
+            raise PermissionError("Not authenticated. Please call login() first.")
+
+        url = f"https://vprovision.command.verkada.com/__v/{self.org_short_name}/org/settings/update"
+        payload = {"organizationId": self.org_id, "settings": {"globalSiteAdmin": True}}
+        headers = self._get_headers()
+        try:
+            response = self.session.post(url, json=payload, headers=headers)
+            response.raise_for_status()  # Raise error for 4xx/5xx
+            # data = response.json()
+            logger.info("Enabled Global Site Admin")
+        except (HTTPError, JSONDecodeError) as e:
+            logger.error(f"Failed to enable Global Site Admin: {e}")
 
     def get_object(
         self,
