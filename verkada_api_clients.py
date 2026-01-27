@@ -340,6 +340,35 @@ class VerkadaInternalAPIClient:
         except (HTTPError, JSONDecodeError) as e:
             logger.error(f"Failed to enable Global Site Admin: {e}")
 
+    def invite_user(
+        self, first_name: str, last_name: str, email: str, org_admin: bool
+    ) -> bool:
+        if not self.auth_data:
+            raise PermissionError("Not authenticated. Please call login() first.")
+        url = f"https://vprovision.command.verkada.com/__v/{self.org_short_name}/org/invite"
+        payload = {
+            "organizationId": self.org_id,
+            "email": email,
+            "orgAdmin": org_admin,
+            "commandUserAdmin": False,
+            "firstName": first_name,
+            "lastName": last_name,
+            "inviteFf": True,
+        }
+        headers = self._get_headers()
+        try:
+            response = self.session.post(url, json=payload, headers=headers)
+            response.raise_for_status()  # Raise error for 4xx/5xx
+            logger.info(
+                f"Invited user {first_name} {last_name} ({email}) to organization"
+            )
+            return True
+        except (HTTPError, JSONDecodeError) as e:
+            logger.error(
+                f"Failed to invite user {first_name} {last_name} ({email}): {e}"
+            )
+            return False
+
     def get_object(
         self,
         categories: str,
@@ -729,6 +758,61 @@ class VerkadaExternalAPIClient:
             return []
         except Exception as e:
             logger.error(f"Unexpected error fetching {categories}: {e}")
+            return []
+
+    def get_guest_visits(
+        self, site_id: str, start_time: int, end_time: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetches a list of guest visits for a given site within a time range.
+
+        Args:
+            site_id: The ID of the site to fetch guest visits for.
+            start_time: The start time of the time range in UNIX format.
+            end_time: The end time of the time range in UNIX format.
+        """
+        url = f"https://api.verkada.com/guest/v1/visits?site_id={site_id}&start_time={start_time}&end_time={end_time}&page_size=100"
+        headers = {"accept": "application/json", "x-verkada-auth": self.api_token}
+
+        def mapping_func(x):
+            guest_data = x.get("guest", {})
+            full_name = guest_data.get("full_name", "")
+            email = guest_data.get("email")
+
+            # Initialize defaults
+            first_name = full_name
+            last_name = full_name
+
+            if full_name:
+                # Check if there is at least one space to split by
+                if " " in full_name:
+                    # rsplit(' ', 1) splits the string starting from the right, max 1 split
+                    # "Alpha Beta Gamma" -> ["Alpha Beta", "Gamma"]
+                    first_name, last_name = full_name.rsplit(" ", 1)
+                else:
+                    # No spaces found: First and Last name are the same
+                    first_name = full_name
+                    last_name = full_name
+
+            return {
+                "first_name": first_name,
+                "last_name": last_name,
+                "email": email,
+            }
+
+        try:
+            response = self.session.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            results = [mapping_func(item) for item in data.get("visits", [])]
+            return results
+        except HTTPError as e:
+            logger.error(f"Failed to retrieve Guest visits for: {site_id}: {e}")
+            return []
+        except Exception as e:
+            logger.error(
+                f"Unexpected error retrieving Guest visits for: {site_id}: {e}"
+            )
             return []
 
     def get_users(

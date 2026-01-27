@@ -2,7 +2,10 @@
 # This module provides utility functions for ProjectDecommission.
 import logging
 import os
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+
+import dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +24,20 @@ def get_env_var(key: str, default: Optional[str] = None) -> str:
     Raises:
         EnvironmentError: If the variable is missing and no default is provided.
     """
+    dotenv.load_dotenv()
     value = os.environ.get(key, default)
     if not value:
         raise EnvironmentError(f"Missing required environment variable: {key}")
     return value
+
+
+def get_datetime(date_input):
+    # Parse the string into a datetime object
+    dt_start = datetime.strptime(date_input, "%m/%d/%Y")
+    dt_end = dt_start + timedelta(days=1)
+    start_unix = int(dt_start.timestamp())
+    end_unix = int(dt_end.timestamp())
+    return start_unix, end_unix
 
 
 def sanitize_list(
