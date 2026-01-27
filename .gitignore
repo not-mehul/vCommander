@@ -2,7 +2,6 @@
 /__pycache__
 .DS_Store
 Notes.md
-requirements.txt
 .env
 cleaner.icns
 /dist
