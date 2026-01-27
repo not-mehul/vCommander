@@ -340,9 +340,7 @@ class VerkadaInternalAPIClient:
         except (HTTPError, JSONDecodeError) as e:
             logger.error(f"Failed to enable Global Site Admin: {e}")
 
-    def invite_user(
-        self, first_name: str, last_name: str, email: str, org_admin: bool
-    ) -> bool:
+    def invite_user(self, first_name: str, last_name: str, email: str, org_admin: bool):
         if not self.auth_data:
             raise PermissionError("Not authenticated. Please call login() first.")
         url = f"https://vprovision.command.verkada.com/__v/{self.org_short_name}/org/invite"
@@ -362,12 +360,10 @@ class VerkadaInternalAPIClient:
             logger.info(
                 f"Invited user {first_name} {last_name} ({email}) to organization"
             )
-            return True
         except (HTTPError, JSONDecodeError) as e:
             logger.error(
                 f"Failed to invite user {first_name} {last_name} ({email}): {e}"
             )
-            return False
 
     def get_object(
         self,

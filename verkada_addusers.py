@@ -1,5 +1,4 @@
 import logging
-from enum import EnumType
 
 from verkada_api_clients import VerkadaExternalAPIClient, VerkadaInternalAPIClient
 from verkada_utilities import get_datetime, get_env_var
