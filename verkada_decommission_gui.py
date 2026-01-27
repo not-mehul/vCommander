@@ -1,9 +1,7 @@
 import logging
 import queue
-import sys
 import threading
 from tkinter import messagebox
-from typing import Any, Dict, List
 
 import customtkinter as ctk
 
