@@ -16,8 +16,13 @@ Usage:
 """
 
 import logging
+import sys
 
-from verkada_api_clients import VerkadaExternalAPIClient, VerkadaInternalAPIClient
+from verkada_api_clients import (
+    MFARequiredError,
+    VerkadaExternalAPIClient,
+    VerkadaInternalAPIClient,
+)
 from verkada_reporting import generate_report, print_inventory_details
 from verkada_utilities import get_env_var, perform_bulk_deletion, sanitize_list
 
@@ -57,7 +62,29 @@ def main():
     internal_client = VerkadaInternalAPIClient(
         admin_email, admin_pass, org_short_name, shard
     )
-    internal_client.login()  # This might trigger an interactive 2FA prompt.
+    try:
+        # Attempt to log in
+        internal_client.login()
+        logger.info("Login successful (No MFA required).")
+
+    except MFARequiredError as e:
+        # If MFA is triggered, we catch it here and handle CLI input
+        logger.info(f"MFA Required. SMS sent to: {e.sms_contact}")
+
+        # Interactive prompt for CLI users
+        code = input("Enter 2FA Code: ").strip()
+
+        try:
+            internal_client.verify_mfa(code)
+            logger.info("2FA Verification successful.")
+        except Exception as mfa_err:
+            logger.error(f"2FA Failed: {mfa_err}")
+            sys.exit(1)  # Stop execution if auth fails
+
+    except Exception as e:
+        logger.error(f"Critical Login Error: {e}")
+        sys.exit(1)
+    # internal_client.login()  # This might trigger an interactive 2FA prompt.
     internal_client.set_access_system_admin()
     internal_client.enable_global_site_admin()
     # -------------------------------------------------------------------------

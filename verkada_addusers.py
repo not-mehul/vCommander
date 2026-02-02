@@ -20,7 +20,6 @@ def main():
     shard = get_env_var("SHARD", default="prod1")
     region = get_env_var("REGION", default="api")
 
-    logger.info("Initializing Internal Client...")
     internal_client = VerkadaInternalAPIClient(
         admin_email, admin_pass, org_short_name, shard
     )
