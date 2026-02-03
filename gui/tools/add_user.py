@@ -1,459 +1,624 @@
-import os
+import logging
 import threading
 from datetime import datetime, timedelta
 
 import customtkinter as ctk
-
-# Import your backend client
 from tools.verkada_api_clients import VerkadaExternalAPIClient
 from tools.verkada_utilities import get_env_var
 
+logger = logging.getLogger(__name__)
+
+FLOW_CONFIGURE = "configure"
+FLOW_SELECT = "select"
+FLOW_PREVIEW = "preview"
+FLOW_CONFIRM = "confirm"
+FLOW_PROCESSING = "processing"
+FLOW_COMPLETE = "complete"
+
+# Styling constants
+CONTROL_WIDTH = 320
+CARD_BG_COLOR = "#333333"
+CARD_BG = ("gray95", "gray17")
+HEADER_FONT = ("Verdana", 22, "bold")
+TITLE_FONT = ("Verdana", 18, "bold")
+LABEL_FONT = ("Verdana", 12)
+
 
 class AddUserTool(ctk.CTkFrame):
-    FLOW_SELECT_SITE = "select_site"
-    FLOW_PREVIEW_USERS = "preview_users"
-    FLOW_PROCESSING = "processing"
-    FLOW_COMPLETE = "complete"
-
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
 
-        # --- STATE ---
-        self.legal_client = None
+        self.import_client = None
         self.selected_site_id = None
         self.selected_site_name = None
         self.selected_date_str = datetime.now().strftime("%m/%d/%Y")
-        self.pending_visits = []  # Store visits to be imported
+        self.pending_visits = []
+        self.sites_cache = getattr(controller, "shared_sites_cache", None)
+        self.successful_imports = 0
 
-        # Cache for sites
-        self.sites_cache = getattr(self.controller, "shared_sites_cache", None)
+        self._setup_layout()
 
-        # Layout Configuration
+    def _setup_layout(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        # 1. Header & Credentials
-        self.setup_header()
+        container = ctk.CTkFrame(self, fg_color="transparent")
+        container.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        container.grid_columnconfigure(0, weight=3)
+        container.grid_columnconfigure(1, weight=1)
+        container.grid_rowconfigure(0, weight=1)
 
-        # 2. Main Content
-        self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.content_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=10)
-        self.content_frame.grid_columnconfigure(0, weight=1)
-        self.content_frame.grid_rowconfigure(0, weight=1)
+        self.content = ctk.CTkFrame(container, corner_radius=15)
+        self.content.grid(row=0, column=0, sticky="nsew", padx=(0, 15))
+        self.content.grid_columnconfigure(0, weight=1)
+        self.content.grid_rowconfigure(1, weight=1)
 
-        # 3. Dynamic Control Frame (Right side)
-        self.control_frame = ctk.CTkFrame(self.content_frame, width=300)
-        self.control_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
-        self.control_frame.grid_rowconfigure(0, weight=1)
-        self.control_frame.grid_propagate(False)
+        self.controls = ctk.CTkFrame(
+            container, corner_radius=15, width=CONTROL_WIDTH, fg_color=CARD_BG
+        )
+        self.controls.grid(row=0, column=1, sticky="nsew")
+        self.controls.grid_propagate(False)
+        self.controls.grid_columnconfigure(0, weight=1)
 
-        # Left side container (changes based on flow)
-        self.left_container = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        self.left_container.grid(row=0, column=0, sticky="nsew")
+        self.current_flow = FLOW_SELECT if self.sites_cache else FLOW_CONFIGURE
+        self._refresh_ui()
 
-        # Current flow state
-        self.current_flow = self.FLOW_SELECT_SITE
+    def _set_flow(self, flow):
+        self.current_flow = flow
+        self._refresh_ui()
 
-        # Initialize UI
-        self.show_site_selection_ui()
+    def _refresh_ui(self):
+        for w in self.content.winfo_children():
+            w.destroy()
+        for w in self.controls.winfo_children():
+            w.destroy()
 
-        # Auto-load if cache exists
-        if self.sites_cache:
-            self.populate_site_list(self.sites_cache)
+        if self.current_flow == FLOW_CONFIGURE:
+            self.content.grid_remove()
+            self.controls.grid(
+                row=0, column=0, columnspan=2, sticky="nsew", padx=20, pady=20
+            )
+            self._build_configure_controls()
+            return
+
+        if self.current_flow == FLOW_SELECT:
+            self.content.grid(row=0, column=0, sticky="nsew", padx=(0, 15))
+            self.content.master.grid_columnconfigure(0, weight=1)
+            self.content.master.grid_columnconfigure(1, weight=2)
         else:
-            api_key = get_env_var("LEGAL_API_KEY")
-            org_name = get_env_var("LEGAL_ORG_SHORT_NAME")
-            if api_key and org_name:
-                self.entry_api_key.insert(0, api_key)
-                self.entry_org_name.insert(0, org_name)
-                self.load_sites()
+            self.content.grid(row=0, column=0, sticky="nsew", padx=(0, 15))
+            self.content.master.grid_columnconfigure(0, weight=3)
+            self.content.master.grid_columnconfigure(1, weight=1)
+        self.controls.grid(row=0, column=1, sticky="nsew")
 
-    def setup_header(self):
-        header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
+        builders = {
+            FLOW_SELECT: (self._build_select_content, self._build_select_controls),
+            FLOW_PREVIEW: (self._build_preview_content, self._build_preview_controls),
+            FLOW_PROCESSING: (
+                self._build_processing_contents,
+                self._build_processing_controls,
+            ),
+            FLOW_COMPLETE: (
+                self._build_complete_contents,
+                self._build_complete_controls,
+            ),
+        }
 
-        title = ctk.CTkLabel(
-            header_frame, text="User Invitation Tool", font=("Arial", 20, "bold")
+        content_builder, controls_builder = builders.get(
+            self.current_flow, (None, None)
         )
-        title.pack(side="left")
+        if content_builder:
+            content_builder()
+        if controls_builder:
+            controls_builder()
 
-        self.config_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
-        self.config_frame.pack(side="right")
+    # Configure Flow
 
-        self.entry_org_name = ctk.CTkEntry(
-            self.config_frame, placeholder_text="Legal Org Short Name", width=150
+    def _build_configure_controls(self):
+        center = ctk.CTkFrame(self.controls, fg_color="transparent")
+        center.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.5)
+        center.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(center, text="Configuration", font=HEADER_FONT).grid(
+            row=0, column=0, pady=(0, 10)
         )
-        self.entry_org_name.pack(side="left", padx=5)
+        ctk.CTkLabel(
+            center,
+            text="Enter Import Organization credentials:",
+            font=LABEL_FONT,
+            text_color="gray",
+        ).grid(row=1, column=0, pady=(0, 30))
 
-        self.entry_api_key = ctk.CTkEntry(
-            self.config_frame, placeholder_text="Legal API Key", width=200, show="*"
+        card = ctk.CTkFrame(
+            center, corner_radius=15, border_width=2, border_color=CARD_BG_COLOR
         )
-        self.entry_api_key.pack(side="left", padx=5)
+        card.grid(row=2, column=0, sticky="ew", pady=20)
+        card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(card, text="Org. Short Name", font=("Verdana", 13, "bold")).grid(
+            row=0, column=0, sticky="w", padx=30, pady=(30, 5)
+        )
+        self.entry_org = ctk.CTkEntry(card, height=45, font=LABEL_FONT)
+        self.entry_org.grid(row=1, column=0, sticky="ew", padx=30, pady=(0, 15))
+
+        ctk.CTkLabel(card, text="API Key", font=("Verdana", 13, "bold")).grid(
+            row=2, column=0, sticky="w", padx=30, pady=(10, 5)
+        )
+
+        key_frame = ctk.CTkFrame(card, fg_color="transparent")
+        key_frame.grid(row=3, column=0, sticky="ew", padx=30, pady=(0, 30))
+        key_frame.grid_columnconfigure(0, weight=1)
+        key_frame.grid_columnconfigure(1, weight=0)
+
+        self.entry_key = ctk.CTkEntry(
+            key_frame,
+            placeholder_text="Enter API key",
+            height=45,
+            font=LABEL_FONT,
+            show="•",
+        )
+        self.entry_key.grid(row=0, column=0, sticky="ew")
+
+        self.btn_show_key = ctk.CTkButton(
+            key_frame,
+            text="Show",
+            width=60,
+            height=45,
+            font=("Verdana", 12),
+            fg_color="transparent",
+            text_color="#888888",
+            hover_color="#333333",
+            command=self._toggle_key_visibility,
+        )
+        self.btn_show_key.grid(row=0, column=1, padx=(4, 0))
 
         self.btn_connect = ctk.CTkButton(
-            self.config_frame, text="Load Sites", width=100, command=self.load_sites
+            center,
+            text="Connect",
+            font=("Verdana", 14, "bold"),
+            height=50,
+            command=self._load_sites,
         )
-        self.btn_connect.pack(side="left", padx=5)
+        self.btn_connect.grid(row=3, column=0, sticky="ew", pady=(20, 0))
 
-    def clear_left_container(self):
-        """Clear the left side container for view switching"""
-        for widget in self.left_container.winfo_children():
-            widget.destroy()
+        # Auto-fill from env
+        if key := get_env_var("LEGAL_API_KEY"):
+            self.entry_key.insert(0, key)
+        if org := get_env_var("LEGAL_ORG_SHORT_NAME"):
+            self.entry_org.insert(0, org)
 
-    def update_control_frame(self):
-        """Update the right control frame based on current flow"""
-        # Clear existing controls
-        for widget in self.control_frame.winfo_children():
-            widget.destroy()
+    # Select Flow
 
-        if self.current_flow == self.FLOW_SELECT_SITE:
-            self._build_site_controls()
-        elif self.current_flow == self.FLOW_PREVIEW_USERS:
-            self._build_preview_controls()
-        elif self.current_flow == self.FLOW_PROCESSING:
-            self._build_processing_controls()
-        elif self.current_flow == self.FLOW_COMPLETE:
-            self._build_complete_controls()
+    def _build_select_content(self):
+        self.content.grid_rowconfigure(2, weight=1)
+        header = ctk.CTkFrame(self.content, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=15, pady=(10, 5))
+        ctk.CTkLabel(header, text="Select Site:", font=HEADER_FONT).pack(side="left")
 
-    def _build_site_controls(self):
-        """Build controls for site selection phase"""
-        lbl_date = ctk.CTkLabel(
-            self.control_frame, text="Select Date", font=("Arial", 14, "bold")
-        )
-        lbl_date.pack(pady=(20, 10))
-
-        self.date_display = ctk.CTkEntry(
-            self.control_frame, justify="center", font=("Arial", 16)
-        )
-        self.date_display.insert(0, self.selected_date_str)
-        self.date_display.pack(pady=5, padx=20, fill="x")
-
-        # Week view buttons
-        week_frame = ctk.CTkFrame(self.control_frame, fg_color="transparent")
-        week_frame.pack(pady=10, padx=10, fill="x")
-
-        today = datetime.now()
-        for i in range(6, -1, -1):
-            day = today - timedelta(days=i)
-            day_str = day.strftime("%m/%d/%Y")
-            day_lbl = day.strftime("%a\n%d")
-
-            fg = "transparent"
-            border = 1
-            if i == 0:
-                fg = "#1F6AA5"
-                border = 0
-
-            btn = ctk.CTkButton(
-                week_frame,
-                text=day_lbl,
-                width=35,
-                height=40,
-                font=("Arial", 10),
-                fg_color=fg,
-                border_width=border,
-                border_color="gray",
-                command=lambda d=day_str: self.set_date(d),
-            )
-            btn.pack(side="left", padx=2, expand=True)
-
-        # Status
-        ctk.CTkFrame(self.control_frame, height=2, fg_color="gray").pack(
-            fill="x", pady=20, padx=20
-        )
-
-        self.status_lbl = ctk.CTkLabel(
-            self.control_frame, text="Select a site and date", text_color="gray"
-        )
-        self.status_lbl.pack(pady=10)
-
-        # Preview button (disabled until site selected)
-        self.btn_preview = ctk.CTkButton(
-            self.control_frame,
-            text="Preview Users",
-            font=("Arial", 14, "bold"),
-            height=40,
-            fg_color="#1F6AA5",
-            hover_color="#144870",
-            command=self.load_preview,
-            state="disabled",
-        )
-        self.btn_preview.pack(side="bottom", pady=20, padx=20, fill="x")
-
-    def _build_preview_controls(self):
-        """Build controls for preview/confirmation phase"""
-        # Summary info
-        info_frame = ctk.CTkFrame(self.control_frame, fg_color="transparent")
-        info_frame.pack(pady=(20, 10), padx=20, fill="x")
-
-        ctk.CTkLabel(
-            info_frame, text="Ready to Import", font=("Arial", 16, "bold")
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            info_frame, text=f"Site: {self.selected_site_name}", font=("Arial", 12)
-        ).pack(anchor="w", pady=(10, 0))
-
-        ctk.CTkLabel(
-            info_frame, text=f"Date: {self.selected_date_str}", font=("Arial", 12)
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            info_frame,
-            text=f"Users: {len(self.pending_visits)}",
-            font=("Arial", 12),
-            text_color="#2CC985",
-        ).pack(anchor="w")
-
-        # Warning
-        ctk.CTkFrame(self.control_frame, height=2, fg_color="gray").pack(
-            fill="x", pady=20, padx=20
-        )
-
-        warning_lbl = ctk.CTkLabel(
-            self.control_frame,
-            text="⚠️ This will send email invitations\nto all listed users as Org Admins",
-            font=("Arial", 11),
-            text_color="orange",
-            justify="center",
-        )
-        warning_lbl.pack(pady=10)
-
-        # Buttons
-        btn_frame = ctk.CTkFrame(self.control_frame, fg_color="transparent")
-        btn_frame.pack(side="bottom", fill="x", padx=20, pady=20)
-
-        ctk.CTkButton(
-            btn_frame,
-            text="← Back",
-            font=("Arial", 12),
-            width=80,
-            fg_color="transparent",
-            border_width=1,
-            border_color="gray",
-            command=self.go_back_to_selection,
-        ).pack(side="left")
-
-        self.btn_confirm = ctk.CTkButton(
-            btn_frame,
-            text="CONFIRM IMPORT",
-            font=("Arial", 14, "bold"),
-            fg_color="#2CC985",
-            hover_color="#229965",
-            command=self.run_import_thread,
-        )
-        self.btn_confirm.pack(side="right")
-
-    def _build_processing_controls(self):
-        """Build controls for processing phase"""
-        spinner_frame = ctk.CTkFrame(self.control_frame, fg_color="transparent")
-        spinner_frame.pack(expand=True)
-
-        # Animated dots label
-        self.processing_lbl = ctk.CTkLabel(
-            spinner_frame, text="Processing...", font=("Arial", 16, "bold")
-        )
-        self.processing_lbl.pack(pady=20)
-
-        self.progress_lbl = ctk.CTkLabel(
-            spinner_frame,
-            text="0 / 0 users invited",
-            font=("Arial", 12),
-            text_color="gray",
-        )
-        self.progress_lbl.pack()
-
-        # Animate dots
-        self.animate_processing()
-
-    def _build_complete_controls(self):
-        """Build controls for completion phase"""
-        complete_frame = ctk.CTkFrame(self.control_frame, fg_color="transparent")
-        complete_frame.pack(expand=True)
-
-        ctk.CTkLabel(
-            complete_frame,
-            text="✓ Complete!",
-            font=("Arial", 20, "bold"),
-            text_color="#2CC985",
-        ).pack(pady=20)
-
-        self.result_lbl = ctk.CTkLabel(
-            complete_frame,
-            text=f"Successfully invited {getattr(self, 'success_count', 0)} users",
-            font=("Arial", 12),
-        )
-        self.result_lbl.pack()
-
-        ctk.CTkButton(
-            self.control_frame,
-            text="Start New Import",
-            font=("Arial", 14),
-            command=self.reset_flow,
-        ).pack(side="bottom", pady=20, padx=20, fill="x")
-
-    def animate_processing(self, dot_count=0):
-        """Animate the processing dots"""
-        if self.current_flow != self.FLOW_PROCESSING:
-            return
-        dots = "." * (dot_count % 4)
-        self.processing_lbl.configure(text=f"Processing{dots}")
-        self.after(500, lambda: self.animate_processing(dot_count + 1))
-
-    def show_site_selection_ui(self):
-        """Show the site selection view"""
-        self.clear_left_container()
-        self.current_flow = self.FLOW_SELECT_SITE
-
-        # Site list frame
-        site_frame = ctk.CTkFrame(self.left_container, corner_radius=10)
-        site_frame.pack(fill="both", expand=True)
-
-        # Search Bar
         self.search_bar = ctk.CTkEntry(
-            site_frame, placeholder_text="Search Sites...", height=35
+            self.content, placeholder_text="Search", height=38, font=LABEL_FONT
         )
-        self.search_bar.pack(fill="x", padx=10, pady=10)
-        self.search_bar.bind("<KeyRelease>", self.filter_sites)
+        self.search_bar.grid(row=1, column=0, sticky="ew", padx=15, pady=(5, 10))
+        self.search_bar.bind("<KeyRelease>", self._filter_sites)
 
-        # Scrollable List
         self.scroll_frame = ctk.CTkScrollableFrame(
-            site_frame, label_text="Select Guest Site"
+            self.content,
+            label_text="Sites:",
+            label_font=("Verdana", 12, "bold"),
+            corner_radius=10,
         )
-        self.scroll_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.scroll_frame.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 15))
 
         self.site_var = ctk.StringVar(value="")
-        self.site_var.trace_add("write", self.on_site_selected)
+        self.site_var.trace_add("write", self._on_site_change)
         self.site_widgets = []
 
-        self.update_control_frame()
-
         if self.sites_cache:
-            self.populate_site_list(self.sites_cache)
+            self._populate_sites(self.sites_cache)
 
-    def show_preview_ui(self):
-        """Show the user preview view"""
-        self.clear_left_container()
-        self.current_flow = self.FLOW_PREVIEW_USERS
+    def _build_select_controls(self):
+        ctk.CTkLabel(self.controls, text="Date:", font=("Verdana", 14, "bold")).grid(
+            row=0, column=0, pady=(25, 10), padx=20, sticky="w"
+        )
 
-        # Preview frame
-        preview_frame = ctk.CTkFrame(self.left_container, corner_radius=10)
-        preview_frame.pack(fill="both", expand=True)
+        self.date_display = ctk.CTkEntry(
+            self.controls, justify="center", font=("Verdana", 16, "bold"), height=40
+        )
+        self.date_display.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
+        self.date_display.insert(0, self.selected_date_str)
+        self.date_display.bind("<FocusOut>", self._on_date_manual_entry)
+        self.date_display.bind("<Return>", self._on_date_manual_entry)
 
-        # Header
-        header = ctk.CTkFrame(preview_frame, fg_color="transparent")
-        header.pack(fill="x", padx=15, pady=15)
+        week_frame = ctk.CTkFrame(self.controls, fg_color="transparent")
+        week_frame.grid(row=2, column=0, sticky="ew", padx=15, pady=5)
+        for i in range(7):
+            week_frame.grid_columnconfigure(i, weight=1)
 
+        today = datetime.now()
+        for i in range(7):
+            day = today - timedelta(days=6 - i)
+            day_str = day.strftime("%m/%d/%Y")
+            is_selected = day_str == self.selected_date_str
+            btn = ctk.CTkButton(
+                week_frame,
+                text=f"{day.strftime('%a')}\n{day.strftime('%d')}",
+                width=38,
+                height=50,
+                font=("Verdana", 10),
+                fg_color="#1F6AA5" if is_selected else "transparent",
+                border_width=0 if is_selected else 1,
+                hover_color="#144870" if is_selected else ("gray85", "gray25"),
+                command=lambda d=day_str: self._set_date(d),
+            )
+            btn.grid(row=0, column=i, padx=2, sticky="ew")
+
+        ctk.CTkFrame(self.controls, height=2, fg_color=("gray80", "gray30")).grid(
+            row=3, column=0, sticky="ew", padx=20, pady=20
+        )
         ctk.CTkLabel(
-            header,
-            text=f"Users to Invite ({len(self.pending_visits)})",
-            font=("Arial", 16, "bold"),
-        ).pack(side="left")
+            self.controls, text="Selected Site:", font=LABEL_FONT, text_color="gray"
+        ).grid(row=4, column=0, padx=20, sticky="w")
+        self.site_lbl = ctk.CTkLabel(
+            self.controls, text="None", font=("Verdana", 14, "bold"), wraplength=270
+        )
+        self.site_lbl.grid(row=5, column=0, padx=20, sticky="w")
 
+        btn_frame = ctk.CTkFrame(self.controls, fg_color="transparent")
+        btn_frame.grid(row=6, column=0, sticky="ew", padx=20, pady=(20, 20))
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Back",
+            font=LABEL_FONT,
+            height=40,
+            fg_color="transparent",
+            border_width=1,
+            command=lambda: self._set_flow(FLOW_CONFIGURE),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.btn_preview = ctk.CTkButton(
+            btn_frame,
+            text="Load",
+            font=("Verdana", 12, "bold"),
+            height=40,
+            state="disabled",
+            command=self._load_preview,
+        )
+        self.btn_preview.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+
+    # Preview Flow
+
+    def _build_preview_content(self):
+        header = ctk.CTkFrame(self.content, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=25, pady=(25, 10))
+        ctk.CTkLabel(
+            header, text=f"Visitors ({len(self.pending_visits)}):", font=HEADER_FONT
+        ).pack(side="left")
         ctk.CTkLabel(
             header,
             text=f"{self.selected_site_name} • {self.selected_date_str}",
-            font=("Arial", 12),
+            font=LABEL_FONT,
             text_color="gray",
         ).pack(side="right")
 
-        # Users list
-        users_scroll = ctk.CTkScrollableFrame(
-            preview_frame, label_text="Review before confirming"
+        list_frame = ctk.CTkFrame(self.content, fg_color="transparent")
+        list_frame.grid(row=1, column=0, sticky="nsew", padx=25, pady=(10, 20))
+        list_frame.grid_columnconfigure(0, weight=1)
+        list_frame.grid_rowconfigure(0, weight=1)
+
+        if not self.pending_visits:
+            empty = ctk.CTkFrame(list_frame, fg_color="transparent")
+            empty.place(relx=0.5, rely=0.5, anchor="center")
+            ctk.CTkLabel(
+                empty,
+                text="No Visitors Found",
+                font=("Verdana", 18, "bold"),
+                text_color="gray",
+            ).pack()
+            ctk.CTkLabel(
+                empty,
+                text="No guest visitors found for selected site and date.",
+                font=LABEL_FONT,
+                text_color="gray",
+            ).pack()
+            return
+
+        scroll = ctk.CTkScrollableFrame(
+            list_frame,
+            label_text="Review visitors:",
+            label_font=("Verdana", 12, "bold"),
+            corner_radius=10,
         )
-        users_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        scroll.grid(row=0, column=0, sticky="nsew")
 
-        # Add each user to preview
         for i, visit in enumerate(self.pending_visits, 1):
-            user_card = ctk.CTkFrame(users_scroll, fg_color=("gray90", "gray20"))
-            user_card.pack(fill="x", padx=5, pady=3)
+            card = ctk.CTkFrame(scroll, fg_color=("gray90", "gray20"), corner_radius=8)
+            card.pack(fill="x", padx=5, pady=4)
 
-            # Number badge
-            num_lbl = ctk.CTkLabel(
-                user_card, text=str(i), font=("Arial", 12, "bold"), width=30
+            badge = ctk.CTkFrame(
+                card, fg_color="#1F6AA5", width=35, height=35, corner_radius=17
             )
-            num_lbl.pack(side="left", padx=10)
-
-            # User info
-            info_frame = ctk.CTkFrame(user_card, fg_color="transparent")
-            info_frame.pack(side="left", fill="both", expand=True, pady=10)
-
-            name = f"{visit.get('first_name', '')} {visit.get('last_name', '')}".strip()
+            badge.pack(side="left", padx=12, pady=12)
+            badge.pack_propagate(False)
             ctk.CTkLabel(
-                info_frame, text=name or "Unknown", font=("Arial", 13, "bold")
+                badge, text=str(i), font=("Verdana", 12, "bold"), text_color="white"
+            ).place(relx=0.5, rely=0.5, anchor="center")
+
+            info = ctk.CTkFrame(card, fg_color="transparent")
+            info.pack(side="left", fill="both", expand=True, pady=12)
+            name = (
+                f"{visit.get('first_name', '')} {visit.get('last_name', '')}".strip()
+                or "Unknown"
+            )
+            ctk.CTkLabel(info, text=name, font=("Verdana", 14, "bold")).pack(anchor="w")
+            ctk.CTkLabel(
+                info,
+                text=visit.get("email", "No email"),
+                font=("Verdana", 11),
+                text_color="gray",
             ).pack(anchor="w")
 
-            email = visit.get("email", "No email")
-            ctk.CTkLabel(
-                info_frame, text=email, font=("Arial", 11), text_color="gray"
-            ).pack(anchor="w")
+    def _build_preview_controls(self):
+        summary = ctk.CTkFrame(
+            self.controls, fg_color=("gray90", "gray20"), corner_radius=10
+        )
+        summary.grid(row=0, column=0, sticky="ew", padx=20, pady=(25, 10))
+        ctk.CTkLabel(summary, text="Summary", font=("Verdana", 14, "bold")).pack(
+            anchor="w", padx=15, pady=(15, 10)
+        )
 
-            # Role badge
-            role_lbl = ctk.CTkLabel(
-                user_card,
-                text="ORG ADMIN",
-                font=("Arial", 9, "bold"),
+        for label, value in [
+            (
+                "Site:",
+                (self.selected_site_name or "None")[:25] + "..."
+                if len(self.selected_site_name or "") > 25
+                else self.selected_site_name or "None",
+            ),
+            ("Date:", self.selected_date_str),
+            ("Visitors:", str(len(self.pending_visits))),
+        ][:2]:
+            row = ctk.CTkFrame(summary, fg_color="transparent")
+            row.pack(fill="x", padx=15, pady=2)
+            ctk.CTkLabel(row, text=label, font=LABEL_FONT, text_color="gray").pack(
+                side="left"
+            )
+            ctk.CTkLabel(row, text=value, font=("Verdana", 12, "bold")).pack(
+                side="right"
+            )
+
+        row = ctk.CTkFrame(summary, fg_color="transparent")
+        row.pack(fill="x", padx=15, pady=(2, 15))
+        ctk.CTkLabel(row, text="Visitors:", font=LABEL_FONT, text_color="gray").pack(
+            side="left"
+        )
+        ctk.CTkLabel(
+            row,
+            text=str(len(self.pending_visits)),
+            font=("Verdana", 12, "bold"),
+            text_color="#2CC985" if self.pending_visits else "gray",
+        ).pack(side="right")
+
+        btn_frame = ctk.CTkFrame(self.controls, fg_color="transparent")
+        btn_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(20, 20))
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Back",
+            font=LABEL_FONT,
+            height=45,
+            fg_color="transparent",
+            border_width=1,
+            command=lambda: self._set_flow(FLOW_SELECT),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+
+        if self.pending_visits:
+            ctk.CTkButton(
+                btn_frame,
+                text="Add Users",
+                font=("Verdana", 12, "bold"),
+                height=45,
                 fg_color="#2CC985",
-                text_color="white",
-                corner_radius=4,
-                width=80,
-            )
-            role_lbl.pack(side="right", padx=10)
+                hover_color="#229965",
+                command=self._start_import,
+            ).grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        else:
+            ctk.CTkButton(
+                btn_frame,
+                text="No Visitors",
+                font=("Verdana", 12, "bold"),
+                height=45,
+                state="disabled",
+                fg_color="gray",
+            ).grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
-        self.update_control_frame()
+    # Processing Flow
 
-    def on_site_selected(self, *args):
-        """Enable preview button when site selected"""
-        if hasattr(self, "btn_preview"):
-            if self.site_var.get():
-                self.btn_preview.configure(state="normal")
-            else:
-                self.btn_preview.configure(state="disabled")
+    def _build_processing_contents(self):
+        center = ctk.CTkFrame(self.content, fg_color="transparent")
+        center.place(relx=0.5, rely=0.5, anchor="center")
 
-    def set_date(self, date_str):
+        self.spinner = ctk.CTkLabel(center, text="⏳", font=("Verdana", 64))
+        self.spinner.pack(pady=(0, 20))
+        ctk.CTkLabel(
+            center, text="Adding Users to Organization...", font=("Verdana", 20, "bold")
+        ).pack()
+        ctk.CTkLabel(
+            center, text="Please wait...", font=LABEL_FONT, text_color="gray"
+        ).pack(pady=(10, 0))
+
+        self._animate_spinner()
+
+    def _build_processing_controls(self):
+        ctk.CTkLabel(self.controls, text="Processing", font=TITLE_FONT).place(
+            relx=0.5, y=40, anchor="center"
+        )
+
+        progress = ctk.CTkFrame(self.controls, fg_color="transparent")
+        progress.place(relx=0.5, rely=0.4, anchor="center")
+
+        self.progress_count = ctk.CTkLabel(
+            progress, text="0", font=("Verdana", 48, "bold"), text_color="#1F6AA5"
+        )
+        self.progress_count.pack()
+        ctk.CTkLabel(
+            progress,
+            text=f"/ {len(self.pending_visits)} users",
+            font=LABEL_FONT,
+            text_color="gray",
+        ).pack()
+
+        self.progress_bar = ctk.CTkProgressBar(self.controls, height=8, corner_radius=4)
+        self.progress_bar.grid(row=1, column=0, sticky="ew", padx=30, pady=(200, 0))
+        self.progress_bar.set(0)
+
+        self.current_user = ctk.CTkLabel(
+            self.controls,
+            text="Starting...",
+            font=("Verdana", 11),
+            text_color="gray",
+            wraplength=280,
+        )
+        self.current_user.grid(row=2, column=0, pady=(15, 0), padx=20)
+
+    def _animate_spinner(self, frame=0):
+        """Animate processing spinner."""
+        if self.current_flow != FLOW_PROCESSING:
+            return
+        spinners = ["⏳", "⌛", "⏳", "⌛"]
+        if hasattr(self, "spinner") and self.spinner.winfo_exists():
+            self.spinner.configure(text=spinners[frame % 4])
+            self.after(500, lambda: self._animate_spinner(frame + 1))
+
+    # Complete Flow
+
+    def _build_complete_contents(self):
+        center = ctk.CTkFrame(self.content, fg_color="transparent")
+        center.place(relx=0.5, rely=0.5, anchor="center")
+
+        success = self.successful_imports
+        total = len(self.pending_visits)
+
+        if success == total:
+            icon, color, msg = "✓", "#2CC985", f"All {total} invitations sent!"
+        elif success > 0:
+            icon, color, msg = "⚠", "orange", f"{success} of {total} invitations sent"
+        else:
+            icon, color, msg = "✗", "#FF5555", "No invitations could be sent"
+
+        ctk.CTkLabel(center, text=icon, font=("Arial", 80), text_color=color).pack(
+            pady=(0, 20)
+        )
+        ctk.CTkLabel(center, text="Complete!", font=("Arial", 24, "bold")).pack()
+        ctk.CTkLabel(center, text=msg, font=("Arial", 14), text_color=color).pack(
+            pady=(15, 0)
+        )
+
+    def _build_complete_controls(self):
+        ctk.CTkLabel(self.controls, text="Done!", font=TITLE_FONT).place(
+            relx=0.5, y=40, anchor="center"
+        )
+
+        results = ctk.CTkFrame(
+            self.controls, fg_color=("gray90", "gray20"), corner_radius=10
+        )
+        results.place(relx=0.5, rely=0.4, anchor="center", relwidth=0.85)
+
+        ctk.CTkLabel(results, text="Results", font=("Verdana", 14, "bold")).pack(
+            anchor="w", padx=15, pady=(15, 10)
+        )
+
+        for label, value, col in [
+            ("Successful:", str(self.successful_imports), "#2CC985"),
+            ("Total:", str(len(self.pending_visits)), "white"),
+        ]:
+            row = ctk.CTkFrame(results, fg_color="transparent")
+            row.pack(fill="x", padx=15, pady=2)
+            ctk.CTkLabel(row, text=label, font=LABEL_FONT).pack(side="left")
+            ctk.CTkLabel(
+                row, text=value, font=("Verdana", 12, "bold"), text_color=col
+            ).pack(side="right")
+
+        ctk.CTkButton(
+            self.controls,
+            text="Start New Import",
+            font=("Arial", 14, "bold"),
+            height=50,
+            command=self._reset,
+        ).grid(row=10, column=0, sticky="ew", padx=20, pady=(0, 20))
+
+    # Helpers
+
+    def _control_header(self, title, subtitle):
+        """Add standard control panel header."""
+        ctk.CTkLabel(self.controls, text=title, font=TITLE_FONT).grid(
+            row=0, column=0, pady=(25, 10), padx=20, sticky="w"
+        )
+        ctk.CTkLabel(
+            self.controls,
+            text=subtitle,
+            font=LABEL_FONT,
+            text_color="gray",
+            wraplength=280,
+            justify="left",
+        ).grid(row=1, column=0, pady=(0, 20), padx=20, sticky="w")
+        ctk.CTkFrame(self.controls, height=2, fg_color=("gray80", "gray30")).grid(
+            row=2, column=0, sticky="ew", padx=20, pady=10
+        )
+
+    def _set_date(self, date_str):
         self.selected_date_str = date_str
         if hasattr(self, "date_display"):
             self.date_display.delete(0, "end")
             self.date_display.insert(0, date_str)
+        if self.current_flow == FLOW_SELECT:
+            self._refresh_ui()
 
-    def load_sites(self):
-        api_key = self.entry_api_key.get().strip()
-        org_name = self.entry_org_name.get().strip()
+    def _on_date_manual_entry(self, event=None):
+        """Handle manual date entry with validation."""
+        date_str = self.date_display.get().strip()
+        try:
+            datetime.strptime(date_str, "%m/%d/%Y")
+            self.selected_date_str = date_str
+            self._refresh_ui()
+        except ValueError:
+            self.date_display.delete(0, "end")
+            self.date_display.insert(0, self.selected_date_str)
 
-        if not api_key or not org_name:
-            print("Error: Missing Legal API Key or Org Name.")
-            return
+    def _on_site_change(self, *args):
+        site_id = self.site_var.get()
+        if site_id:
+            self.selected_site_id = site_id
+            for rb, name in self.site_widgets:
+                if rb.cget("value") == site_id:
+                    self.selected_site_name = name
+                    break
+            display = (
+                (self.selected_site_name or "None")[:30] + "..."
+                if len(self.selected_site_name or "") > 30
+                else self.selected_site_name
+            )
+            if hasattr(self, "site_lbl"):
+                self.site_lbl.configure(text=display)
+            if hasattr(self, "btn_preview"):
+                self.btn_preview.configure(state="normal")
 
-        self.btn_connect.configure(state="disabled", text="Loading...")
-
-        def _fetch():
-            try:
-                print("Connecting to Legal Org...")
-                self.legal_client = VerkadaExternalAPIClient(api_key, org_name)
-                sites = self.legal_client.get_object("guest_sites")
-
-                self.sites_cache = sites
-                self.controller.shared_sites_cache = sites
-
-                self.after(0, lambda: self.populate_site_list(sites))
-                print(f"Successfully loaded {len(sites)} sites.")
-            except Exception as e:
-                print(f"Error loading sites: {e}")
-            finally:
-                self.after(
-                    0,
-                    lambda: self.btn_connect.configure(
-                        state="normal", text="Reload Sites"
-                    ),
-                )
-
-        threading.Thread(target=_fetch, daemon=True).start()
-
-    def populate_site_list(self, sites):
+    def _populate_sites(self, sites):
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
         self.site_widgets.clear()
+
+        if not sites:
+            ctk.CTkLabel(
+                self.scroll_frame,
+                text="No sites found",
+                font=LABEL_FONT,
+                text_color="gray",
+            ).pack(pady=20)
+            return
 
         for site in sites:
             rb = ctk.CTkRadioButton(
@@ -461,88 +626,113 @@ class AddUserTool(ctk.CTkFrame):
                 text=site["name"],
                 variable=self.site_var,
                 value=site["id"],
-                font=("Arial", 14),
+                font=LABEL_FONT,
+                radiobutton_width=20,
+                radiobutton_height=20,
             )
-            rb.pack(anchor="w", pady=5, padx=10)
-            rb.site_name = site["name"]  # Store name for later
+            rb.pack(anchor="w", pady=6, padx=10, fill="x")
             self.site_widgets.append((rb, site["name"]))
 
-    def filter_sites(self, event):
-        query = event.widget.get().lower()
+    def _filter_sites(self, event):
+        query = self.search_bar.get().lower()
         for rb, name in self.site_widgets:
-            if query in name.lower():
-                rb.pack(anchor="w", pady=5, padx=10)
-            else:
-                rb.pack_forget()
+            rb.pack(
+                anchor="w", pady=6, padx=10, fill="x"
+            ) if query in name.lower() else rb.pack_forget()
 
-    def load_preview(self):
-        """Fetch visits and show preview"""
+    def _toggle_key_visibility(self):
+        if self.entry_key.cget("show") == "•":
+            self.entry_key.configure(show="")
+            self.btn_show_key.configure(text="Hide")
+        else:
+            self.entry_key.configure(show="•")
+            self.btn_show_key.configure(text="Show")
+
+    def _load_sites(self):
+        """Load sites from API."""
+        api_key = self.entry_key.get().strip()
+        org_name = self.entry_org.get().strip()
+
+        if not api_key or not org_name:
+            logger.error("Missing API Key or Organization Short Name")
+            return
+
+        self.btn_connect.configure(state="disabled", text="Connecting...")
+
+        def fetch():
+            try:
+                self.import_client = VerkadaExternalAPIClient(api_key, org_name)
+                sites = self.import_client.get_object("guest_sites")
+                self.sites_cache = sites
+                self.controller.shared_sites_cache = sites
+                self.after(0, lambda: self._set_flow(FLOW_SELECT))
+                logger.info(f"Loaded {len(sites)} sites")
+            except Exception as e:
+                logger.error(f"Error loading sites: {e}")
+                self.after(
+                    0,
+                    lambda: self.btn_connect.configure(
+                        state="normal", text="Connect & Load Sites"
+                    ),
+                )
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _load_preview(self):
         site_id = self.site_var.get()
         if not site_id:
             return
 
-        # Get site name
-        for rb, name in self.site_widgets:
-            if rb.cget("value") == site_id:
-                self.selected_site_name = name
-                break
-
-        date_str = self.selected_date_str
-
-        # Show loading in control frame
-        for widget in self.control_frame.winfo_children():
-            widget.destroy()
-
-        ctk.CTkLabel(
-            self.control_frame, text="Loading visits...", font=("Arial", 14)
-        ).pack(expand=True)
-
-        def _fetch_visits():
-            try:
-                start_dt = datetime.strptime(date_str, "%m/%d/%Y")
-                end_dt = start_dt + timedelta(days=1) - timedelta(seconds=1)
-
-                start_ts = int(start_dt.timestamp())
-                end_ts = int(end_dt.timestamp())
-
-                print(f"Fetching visits for {date_str}...")
-                visits = self.legal_client.get_guest_visits(site_id, start_ts, end_ts)
-
-                self.pending_visits = visits or []
-
-                self.after(0, self.show_preview_ui)
-
-            except Exception as e:
-                print(f"Error loading preview: {e}")
-                self.after(0, self.show_site_selection_ui)
-
-        threading.Thread(target=_fetch_visits, daemon=True).start()
-
-    def go_back_to_selection(self):
-        """Return to site selection"""
-        self.pending_visits = []
-        self.show_site_selection_ui()
-
-    def run_import_thread(self):
-        """Start the import process"""
-        if not self.pending_visits:
+        if not self.import_client:
+            logger.error("Import client not initialized")
             return
 
-        self.current_flow = self.FLOW_PROCESSING
-        self.update_control_frame()
+        self.btn_preview.configure(state="disabled", text="Loading...")
 
-        threading.Thread(target=self.execute_import, daemon=True).start()
+        def fetch():
+            try:
+                start_dt = datetime.strptime(self.selected_date_str, "%m/%d/%Y")
+                start_ts = int(start_dt.timestamp())
+                end_ts = int(
+                    (start_dt + timedelta(days=1) - timedelta(seconds=1)).timestamp()
+                )
 
-    def execute_import(self):
-        """Execute the actual import"""
-        try:
-            count = 0
-            total = len(self.pending_visits)
+                if self.import_client is not None:
+                    visits = self.import_client.get_guest_visits(
+                        site_id, start_ts, end_ts
+                    )
+                    self.pending_visits = visits or []
+                    self.after(0, lambda: self._set_flow(FLOW_PREVIEW))
+                    logger.info(f"Found {len(self.pending_visits)} visitors")
+            except Exception as e:
+                logger.error(f"Error loading visitors: {e}")
+                self.after(
+                    0,
+                    lambda: self.btn_preview.configure(
+                        state="normal", text="Load Visitors →"
+                    ),
+                )
 
-            for i, visit in enumerate(self.pending_visits, 1):
-                if not self.controller.client:
-                    print("Error: Internal Client session lost.")
-                    break
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _start_import(self):
+        self._set_flow(FLOW_PROCESSING)
+        threading.Thread(target=self._execute_import, daemon=True).start()
+
+    def _execute_import(self):
+        self.successful_imports = 0
+        total = len(self.pending_visits)
+
+        for i, visit in enumerate(self.pending_visits, 1):
+            if not self.controller.client:
+                logger.error("Client session lost")
+                break
+
+            try:
+                name = f"{visit.get('first_name', '')} {visit.get('last_name', '')}".strip()
+                self.after(
+                    0, lambda n=name: self.current_user.configure(text=f"Inviting: {n}")
+                )
 
                 self.controller.client.invite_user(
                     visit["first_name"],
@@ -550,32 +740,25 @@ class AddUserTool(ctk.CTkFrame):
                     visit["email"],
                     org_admin=True,
                 )
-                count += 1
+                self.successful_imports += 1
+                logger.info(f"Invited: {name}")
+            except Exception as e:
+                logger.error(f"Failed to invite: {e}")
 
-                # Update progress
-                self.after(
-                    0,
-                    lambda c=count, t=total: self.progress_lbl.configure(
-                        text=f"{c} / {t} users invited"
-                    ),
-                )
+            progress = i / total
+            self.after(0, lambda p=progress, c=i: self._update_progress(p, c))
 
-            self.success_count = count
-            print(f"Completed! Invited {count} users.")
+        self.after(0, lambda: self._set_flow(FLOW_COMPLETE))
 
-        except Exception as e:
-            print(f"Error during import: {e}")
-        finally:
-            self.after(0, self.show_complete)
+    def _update_progress(self, progress, count):
+        if hasattr(self, "progress_bar"):
+            self.progress_bar.set(progress)
+        if hasattr(self, "progress_count"):
+            self.progress_count.configure(text=str(count))
 
-    def show_complete(self):
-        """Show completion state"""
-        self.current_flow = self.FLOW_COMPLETE
-        self.update_control_frame()
-
-    def reset_flow(self):
-        """Reset to start"""
+    def _reset(self):
         self.pending_visits = []
         self.selected_site_id = None
         self.site_var.set("")
-        self.show_site_selection_ui()
+        self.successful_imports = 0
+        self._set_flow(FLOW_SELECT)

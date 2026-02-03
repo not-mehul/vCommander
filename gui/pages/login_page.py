@@ -54,23 +54,27 @@ class LoginPage(ctk.CTkFrame):
 
         self.entry_email = self._create_entry(self.content_frame, "Email")
 
+        pass_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        pass_frame.pack(fill="x", pady=5)
+        pass_frame.grid_columnconfigure(0, weight=1)
+
         self.entry_password = self._create_entry(
-            self.content_frame, "Password", is_password=True
+            pass_frame, "Password", is_password=True, pack=False
         )
+        self.entry_password.grid(row=0, column=0, sticky="ew")
         self.btn_show_pass = ctk.CTkButton(
-            self.content_frame,
+            pass_frame,
             text="Show",
-            width=40,
-            height=20,
-            font=("Verdana", 8),
+            width=50,
+            height=40,
+            font=("Verdana", 12),
             fg_color="transparent",
             text_color=PLACEHOLDER_COLOR,
             hover_color=CARD_BORDER_COLOR,
             command=self._toggle_password_visibility,
         )
-        self.btn_show_pass.place(
-            in_=self.entry_password, relx=1.0, rely=0.5, anchor="e", x=-10
-        )
+        self.btn_show_pass.grid(row=0, column=1, padx=(4, 0))
+
         self.row_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
         self.row_frame.pack(fill="x", pady=5)
 

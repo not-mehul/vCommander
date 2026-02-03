@@ -10,7 +10,7 @@ ctk.set_default_color_theme("dark-blue")
 class vCommanderApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("vConduit")
+        self.title("vCommander")
         self.geometry("1400x800")
 
         self.client = None
