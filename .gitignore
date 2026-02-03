@@ -1,5 +1,7 @@
 /.venv
-*/__pycache__
+__pycache__
+gui/pages/__pycache__
+tools/pages/__pycache__
 *.DS_Store
 Notes.md
 .env

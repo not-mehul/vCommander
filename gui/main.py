@@ -7,15 +7,15 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("dark-blue")
 
 
-class vConduitApp(ctk.CTk):
+class vCommanderApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("vConduit")
         self.geometry("1400x800")
 
         self.client = None
-        self.show_login_screen()
-        # self.setup_main_interface()
+        # self.show_login_screen()
+        self.setup_main_interface()
 
     def clear_screen(self):
         for widget in self.winfo_children():
@@ -35,5 +35,5 @@ class vConduitApp(ctk.CTk):
 
 
 if __name__ == "__main__":
-    app = vConduitApp()
+    app = vCommanderApp()
     app.mainloop()

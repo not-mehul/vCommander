@@ -161,7 +161,7 @@ class LoginPage(ctk.CTkFrame):
             logger.info(f"Login successful for user: {email}")
             self.controller.setup_main_interface()
 
-        except MFARequiredError as e:
+        except MFARequiredError:
             logger.info(f"MFA required for user: {email}")
             self.controller.show_2fa_screen()
 
