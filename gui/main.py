@@ -14,8 +14,8 @@ class vCommanderApp(ctk.CTk):
         self.geometry("1400x800")
 
         self.client = None
-        # self.show_login_screen()
-        self.setup_main_interface()
+        self.show_login_screen()
+        # self.setup_main_interface()
 
     def clear_screen(self):
         for widget in self.winfo_children():

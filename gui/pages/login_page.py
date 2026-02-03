@@ -3,6 +3,7 @@ import re
 
 import customtkinter as ctk
 from tools.verkada_api_clients import MFARequiredError, VerkadaInternalAPIClient
+from tools.verkada_utilities import get_env_var
 
 # Constants
 CARD_BG_COLOR = "#1c1c1c"
@@ -70,8 +71,6 @@ class LoginPage(ctk.CTkFrame):
         self.btn_show_pass.place(
             in_=self.entry_password, relx=1.0, rely=0.5, anchor="e", x=-10
         )
-
-        # Org and Shard row
         self.row_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
         self.row_frame.pack(fill="x", pady=5)
 
@@ -81,7 +80,22 @@ class LoginPage(ctk.CTkFrame):
         self.entry_shard = self._create_entry(self.row_frame, "shard", pack=False)
         self.entry_shard.configure(width=100)
         self.entry_shard.pack(side="right")
-        self.entry_shard.insert(0, "prod1")
+
+        email = get_env_var("ADMIN_EMAIL")
+        password = get_env_var("ADMIN_PASSWORD")
+        org_name = get_env_var("ORG_SHORT_NAME")
+        shard = get_env_var("SHARD")
+
+        if email:
+            self.entry_email.insert(0, email)
+        if password:
+            self.entry_password.insert(0, password)
+        if org_name:
+            self.entry_org.insert(0, org_name)
+        if shard:
+            self.entry_shard.insert(0, shard)
+        else:
+            self.entry_shard.insert(0, "prod1")
 
         self.error_label = ctk.CTkLabel(
             self.content_frame, text="", text_color=ERROR_COLOR, font=("Verdana", 12)
