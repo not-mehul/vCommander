@@ -44,7 +44,7 @@ class TwoFAPage(ctk.CTkFrame):
     def _create_widget(self):
         self.title_label = ctk.CTkLabel(
             self.content_frame,
-            text="Two-Factor Authentication",
+            text="Verification Code",
             font=("Verdana", 28, "bold"),
             text_color=TITLE_COLOR,
         )
