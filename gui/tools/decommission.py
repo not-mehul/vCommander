@@ -185,9 +185,7 @@ class DecommissionTool(ctk.CTkFrame):
 
         self.scan_spinner = ctk.CTkLabel(center, text="⏳", font=("Verdana", 64))
         self.scan_spinner.pack(pady=(0, 20))
-        ctk.CTkLabel(
-            center, text="Scanning Organization...", font=("Verdana", 20, "bold")
-        ).pack()
+        ctk.CTkLabel(center, text="Scanning...", font=("Verdana", 20, "bold")).pack()
         self.scan_status = ctk.CTkLabel(
             center, text="Initializing...", font=LABEL_FONT, text_color="gray"
         )
@@ -606,7 +604,7 @@ class DecommissionTool(ctk.CTkFrame):
         warning.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 20))
         ctk.CTkLabel(
             warning,
-            text="Warning: This will delete the asset from the organization\nThis action cannot be undone!",
+            text="Warning: This will delete everything.\nThis action cannot be undone!",
             font=("Verdana", 11),
             text_color="#FF5555",
             wraplength=280,
@@ -693,7 +691,10 @@ class DecommissionTool(ctk.CTkFrame):
         progress.place(relx=0.5, rely=0.4, anchor="center")
 
         self.progress_count = ctk.CTkLabel(
-            progress, text="0", font=("Verdana", 48, "bold"), text_color="#FF5555"
+            progress,
+            text="0",
+            font=("Verdana", 48, "bold"),
+            text_color="#FF5555",
         )
         self.progress_count.pack()
         ctk.CTkLabel(
@@ -736,16 +737,13 @@ class DecommissionTool(ctk.CTkFrame):
         self.deleted_items = []
         self.failed_items = []
 
-        # Create a lookup for assets by ID
         asset_lookup = {a["id"]: a for a in self.flattened_assets}
 
-        # Get selected assets
         selected_list = [
             asset_lookup[a_id] for a_id in self.selected_assets if a_id in asset_lookup
         ]
         total = len(selected_list)
 
-        # Group by category for ordered deletion
         for category, api_type in DELETION_ORDER:
             items_in_category = [a for a in selected_list if a["category"] == category]
 

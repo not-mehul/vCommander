@@ -35,7 +35,7 @@ class MainInterfacePage(ctk.CTkFrame):
         handler.setFormatter(formatter)
         root_logger.addHandler(handler)
 
-        self.show_commission()
+        self.show_decommission()
 
     def _setup_layout(self):
         self.place(relx=0.5, rely=0.5, anchor="center", relwidth=1.0, relheight=1.0)
