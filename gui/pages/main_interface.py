@@ -2,6 +2,7 @@ import logging
 
 import customtkinter as ctk
 from tools.add_user import AddUserTool
+from tools.decommission import DecommissionTool
 
 # Constants
 SIDEBAR_WIDTH = 250
@@ -25,10 +26,12 @@ class MainInterfacePage(ctk.CTkFrame):
         # Configure logging to show INFO level and above in the console textbox
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
-        
+
         handler = TextboxLogHandler(self.console_box)
         handler.setLevel(logging.INFO)
-        formatter = logging.Formatter("%(asctime)s - %(name)s - %(message)s", datefmt="%H:%M:%S")
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(message)s", datefmt="%H:%M:%S"
+        )
         handler.setFormatter(formatter)
         root_logger.addHandler(handler)
 
@@ -112,14 +115,14 @@ class MainInterfacePage(ctk.CTkFrame):
             tool.pack(fill="both", expand=True)
         else:
             label = ctk.CTkLabel(
-                self.main_area, text=f"{tool_name} Placeholder", font=("Arial", 24)
+                self.main_area, text=f"{tool_name} Placeholder", font=("Verdana", 24)
             )
             label.place(relx=0.5, rely=0.5, anchor="center")
         logger.info(f"Switched to {tool_name}")
 
     def show_commission(self):
         """Show the commission tool (placeholder)."""
-        self._switch_tool("Commission Tool")
+        self._switch_tool("Coming Soon! Stay Tuned!")
 
     def show_users(self):
         """Show the user management tool (AddUserTool)."""
@@ -130,7 +133,10 @@ class MainInterfacePage(ctk.CTkFrame):
 
     def show_decommission(self):
         """Show the decommission tool."""
-        self._switch_tool("Decommission Tool")
+        self._switch_tool(
+            "Decommission Tool",
+            lambda: DecommissionTool(parent=self.main_area, controller=self.controller),
+        )
 
 
 class TextboxLogHandler(logging.Handler):

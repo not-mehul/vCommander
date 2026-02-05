@@ -11,19 +11,22 @@ def generate_report(
     org_name: str,
     inventory: Dict[str, List[Dict[str, Any]]],
     save_to_file: bool = False,
+    file_path: str = "",
 ):
     """
     Generates a detailed, formatted inventory report.
 
     Output:
     - Always prints the report to the console (stdout).
-    - If save_to_file is True, also saves the output to a text file
+    - If save_to_file is True and file_path is None, saves the output to a text file
       named '{org_name}_report_{timestamp}.txt' in the current directory.
+    - If file_path is provided, saves to that specific path.
 
     Args:
         org_name: Name of the organization (used for header and filename).
         inventory: The dictionary containing lists of assets/users.
         save_to_file: Boolean flag to enable file logging.
+        file_path: Optional specific file path to save the report to.
     """
     # Create timestamps for display (readable) and filename (safe characters)
     timestamp_display = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -33,8 +36,10 @@ def generate_report(
     output_filename = ""
 
     # 1. Setup File Logging if requested
-    if save_to_file:
-        output_filename = f"{org_name}_report_{timestamp_file}.txt"
+    if save_to_file or file_path:
+        output_filename = (
+            file_path if file_path else f"{org_name}_report_{timestamp_file}.txt"
+        )
         try:
             file_handle = open(output_filename, "w", encoding="utf-8")
         except IOError as e:
@@ -182,11 +187,21 @@ def print_inventory_details(inventory):
     # Define formatting rules (lambdas) for different categories
     # Each lambda takes an item dict and returns a formatted string
     format_rules = {
-        "Intercoms": lambda x: f"Intercom ID: {x['id']}, Serial Number: {x['serial_number']}",
-        "Sensors": lambda x: f"Sensor ID: {x['id']}, Serial Number: {x['serial_number']}",
-        "Access Controllers": lambda x: f"Access Controller ID: {x['id']}, Serial Number: {x['serial_number']}",
-        "Cameras": lambda x: f"Camera ID: {x['id']}, Serial Number: {x['serial_number']}",
-        "Unassigned Devices": lambda x: f"Unassigned Device ID: {x['id']}, Serial Number: {x.get('name', 'N/A')}",
+        "Intercoms": lambda x: (
+            f"Intercom ID: {x['id']}, Serial Number: {x['serial_number']}"
+        ),
+        "Sensors": lambda x: (
+            f"Sensor ID: {x['id']}, Serial Number: {x['serial_number']}"
+        ),
+        "Access Controllers": lambda x: (
+            f"Access Controller ID: {x['id']}, Serial Number: {x['serial_number']}"
+        ),
+        "Cameras": lambda x: (
+            f"Camera ID: {x['id']}, Serial Number: {x['serial_number']}"
+        ),
+        "Unassigned Devices": lambda x: (
+            f"Unassigned Device ID: {x['id']}, Serial Number: {x.get('name', 'N/A')}"
+        ),
         "Guest Sites": lambda x: f"Guest Site ID: {x['id']}, Name: {x['name']}",
         "Mailroom Sites": lambda x: f"Mailroom Site ID: {x['id']}, Name: {x['name']}",
         "Desk Stations": lambda x: f"Desk Station ID: {x['id']}, Name: {x['name']}",
