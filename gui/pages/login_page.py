@@ -216,6 +216,9 @@ class LoginPage(ctk.CTkFrame):
         )
         # Allow pressing Enter to submit the form
         entry.bind("<Return>", self._handle_login)
+        
+        # Ensure entry properly grabs focus on click (macOS fix)
+        entry.bind("<Button-1>", lambda e: entry.focus_set())
 
         if pack:
             entry.pack(pady=5, fill="x")

@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional
 
 import dotenv
 
+# Import our app_path helper to locate .env file relative to executable
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app_path import get_env_file_path
+
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,9 @@ def get_env_var(key: str, default: Optional[str] = None) -> str:
     then attempts to retrieve the specified key. If the key is not found
     and no default is provided, it raises an EnvironmentError.
 
+    The .env file is loaded from the application's directory (where the 
+    executable or script is located), not the current working directory.
+
     Args:
         key: The name of the environment variable to retrieve.
         default: An optional default value to return if the key is missing.
@@ -31,8 +39,17 @@ def get_env_var(key: str, default: Optional[str] = None) -> str:
     Raises:
         EnvironmentError: If the variable is missing and no default is provided.
     """
+    # Get the path to the .env file in the application directory
+    env_path = get_env_file_path()
+    
     # Load environment variables from .env file (if it exists)
-    dotenv.load_dotenv()
+    # We use dotenv.load_dotenv with the specific path to ensure the .env
+    # file is loaded from the application directory, not the current working dir
+    if os.path.exists(env_path):
+        dotenv.load_dotenv(env_path)
+        logger.debug(f"Loaded .env file from: {env_path}")
+    else:
+        logger.debug(f"No .env file found at: {env_path}")
 
     # Attempt to get the value from environment
     value = os.environ.get(key, default)

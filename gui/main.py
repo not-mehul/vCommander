@@ -6,6 +6,7 @@ Verkada organization assets. It sets up the main application window and
 handles navigation between different screens (login, 2FA, main interface).
 """
 
+import sys
 import customtkinter as ctk
 from pages.login_page import LoginPage
 from pages.main_interface import MainInterfacePage
@@ -37,6 +38,10 @@ class vCommanderApp(ctk.CTk):
         super().__init__()
         self.title("vCommander")
         self.geometry("1400x800")
+        
+        # macOS focus fix: Ensure window is properly activated
+        # This helps with "click-to-focus" issues on macOS 14+
+        self.after(100, self._ensure_focus)
 
         # Storage for the API client - shared across all screens
         # This is set after successful login and used by all tools
@@ -44,6 +49,24 @@ class vCommanderApp(ctk.CTk):
 
         # Start with the login screen
         self.show_login_screen()
+    
+    def _ensure_focus(self):
+        """
+        Ensure the window has proper focus on macOS.
+        
+        This helps mitigate the macOS 14+ "click-to-focus" issue where
+        the first click only activates the window without triggering widgets.
+        """
+        try:
+            # Lift window to front and force focus
+            self.lift()
+            self.focus_force()
+            # On macOS, also ensure we're the frontmost application
+            if sys.platform == 'darwin':
+                import os
+                os.system('''/usr/bin/osascript -e 'tell app "Finder" to set frontmost of process "Python" to true' 2>/dev/null || true''')
+        except Exception:
+            pass  # Ignore any errors from focus management
 
     def clear_screen(self):
         """

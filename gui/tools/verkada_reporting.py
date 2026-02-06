@@ -1,8 +1,14 @@
 # Verkada Reporting
 # This module handles the console output and file saving for the inventory report for ProjectDecommission.
 import logging
+import os
+import sys
 from datetime import datetime
 from typing import Any, Dict, List
+
+# Import our app_path helper to locate save directory relative to executable
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app_path import get_default_save_dir
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -47,10 +53,16 @@ def generate_report(
     # 1. Setup File Logging if requested
     # If save_to_file is True OR a file_path is provided, open a file for writing
     if save_to_file or file_path:
-        # Use provided path, or generate a default filename with timestamp
-        output_filename = (
-            file_path if file_path else f"{org_name}_report_{timestamp_file}.txt"
-        )
+        # Use provided path, or generate a default filename in the app directory
+        if file_path:
+            output_filename = file_path
+        else:
+            # Save to the application directory (where the executable is located)
+            save_dir = get_default_save_dir()
+            # Sanitize org_name for filename (remove/replace invalid chars)
+            safe_org_name = "".join(c for c in org_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            output_filename = os.path.join(save_dir, f"{safe_org_name}_report_{timestamp_file}.txt")
+        
         try:
             # Open file in write mode with UTF-8 encoding to support special characters
             file_handle = open(output_filename, "w", encoding="utf-8")

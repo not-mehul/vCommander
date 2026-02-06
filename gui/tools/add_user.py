@@ -233,6 +233,7 @@ class AddUserTool(ctk.CTkFrame):
         )
         self.entry_org = ctk.CTkEntry(card, height=45, font=LABEL_FONT)
         self.entry_org.grid(row=1, column=0, sticky="ew", padx=30, pady=(0, 15))
+        self.entry_org.bind("<Button-1>", lambda e: self.entry_org.focus_set())
 
         # API Key input with show/hide toggle
         ctk.CTkLabel(card, text="API Key", font=("Verdana", 13, "bold")).grid(
@@ -254,6 +255,7 @@ class AddUserTool(ctk.CTkFrame):
             show="•",
         )
         self.entry_key.grid(row=0, column=0, sticky="ew")
+        self.entry_key.bind("<Button-1>", lambda e: self.entry_key.focus_set())
 
         # Show/Hide button for API key
         self.btn_show_key = ctk.CTkButton(
@@ -310,7 +312,10 @@ class AddUserTool(ctk.CTkFrame):
         )
         self.search_bar.grid(row=1, column=0, sticky="ew", padx=15, pady=(5, 10))
         # Bind key release to filter function for real-time filtering
-        self.search_bar.bind("<KeyRelease>", self._filter_sites)
+        # Use after() to debounce rapid keystrokes and prevent UI lag
+        self._filter_after_id = None
+        self.search_bar.bind("<KeyRelease>", self._on_search_keyrelease)
+        self.search_bar.bind("<Button-1>", lambda e: self.search_bar.focus_set())
 
         # Scrollable frame to hold the site list
         self.scroll_frame = ctk.CTkScrollableFrame(
@@ -351,6 +356,7 @@ class AddUserTool(ctk.CTkFrame):
         # Bind focus loss and Enter key to validate date entry
         self.date_display.bind("<FocusOut>", self._on_date_manual_entry)
         self.date_display.bind("<Return>", self._on_date_manual_entry)
+        self.date_display.bind("<Button-1>", lambda e: self.date_display.focus_set())
 
         # Week view calendar - shows 7 days with day of week and date
         week_frame = ctk.CTkFrame(self.controls, fg_color="transparent")

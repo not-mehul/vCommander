@@ -133,6 +133,8 @@ class TwoFAPage(ctk.CTkFrame):
         self.entry_code.pack(fill="x", pady=10)
         # Allow pressing Enter to submit
         self.entry_code.bind("<Return>", self._handle_verify)
+        # Ensure entry grabs focus on click (macOS fix)
+        self.entry_code.bind("<Button-1>", lambda e: self.entry_code.focus_set())
 
         # Error message label (initially empty)
         self.error_label = ctk.CTkLabel(
