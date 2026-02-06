@@ -621,10 +621,10 @@ class DecommissionTool(ctk.CTkFrame):
         btn_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(20, 10))
         btn_frame.grid_columnconfigure(0, weight=1)
 
-        # Save CSV Report button
+        # Save TXT Report button
         ctk.CTkButton(
             btn_frame,
-            text="Save CSV Report",
+            text="Save TXT Report",
             font=LABEL_FONT,
             height=45,
             command=self._save_report,

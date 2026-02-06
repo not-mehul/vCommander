@@ -1,30 +1,47 @@
-# Project Decommission 
-Project Decommission is a specialized automation tool designed to inventory and decommission assets within a Verkada organization. It utilizes a hybrid approach, leveraging both Verkada's public API and internal private endpoints to ensure comprehensive coverage of all device types and configurations.
+# vCommander
+
+vCommander is a comprehensive GUI application for managing Verkada organizations. It provides an intuitive interface for decommissioning assets, importing users from guest visits, and managing organization resources through both Verkada's public API and internal endpoints.
 
 > [!CAUTION]  
-> **This tool is destructive**. It is designed to **delete** users, devices, sites, and configurations. Once the deletion process begins, it cannot be undone. Always review the generated inventory report carefully before confirming the deletion prompt. **Do not run this tool in a production environment** unless you intend to wipe the organization completely.
+> **The Decommission tool is destructive**. It is designed to **delete** users, devices, sites, and configurations. Once the deletion process begins, it cannot be undone. Always review the inventory carefully before confirming deletion. **Do not run this tool in a production environment** unless you intend to wipe the organization completely.
 
 ## Preview
 
-![Image 1: Login page for the ProjectDecommission Tool](assets/Img_1.png)
+![Image 1: Login page for vCommander](assets/Img_1.png)
 
 ![Image 2: Scanned organization details](assets/Img_2.png)
 
 ## Key Features
 
-- **Hybrid API Architecture:** Combines an **Internal Client** (mimicking browser behavior) with an **External Client** (Standard Public API) to perform actions not currently possible via public endpoints alone.
-- **Dynamic Authentication:** 
-  - Handles standard Email/Password login.
-  - Supports interactive **Multi-Factor Authentication (MFA/2FA)**.
-  - Automatically generates temporary, short-lived Public API keys to ensure secure access without manual dashboard configuration.
-- **Smart Inventory Management:**
-  - **Deduplication:** Automatically identifies and filters embedded devices (e.g., cameras inside Intercoms) to prevent double-counting or error-prone double-deletion attempts.
-  - **Detailed Reporting:** Generates a human-readable ASCII table report to the console and saves a timestamped `.txt` file for audit records.
-- **Ordered Decommissioning:** Executes deletion in a strict dependency order (e.g., removing Alarm Systems before Alarm Sites) to prevent API errors.
+### Multi-Tool Dashboard
+- **Decommission Tool**: Complete asset inventory and deletion workflow
+- **Add User Tool**: Import guest visitors from any Verkada organization as users in your organization
+- **Commission Tool**: *(Coming Soon)* Add and configure new devices
 
-## Supported Assets
+### Authentication & Security
+- **Secure Login**: Email/password authentication with optional MFA/2FA support
+- **Session Management**: Maintains authenticated session across all tools
+- **Environment Variable Support**: Auto-fill credentials from `.env` file for development
 
-The tool currently supports the inventory and decommissioning of:
+### Decommission Tool
+- **Hybrid API Architecture**: Combines Internal Client (browser emulation) with External Client (Public API) for comprehensive coverage
+- **Smart Inventory**: Automatically deduplicates embedded devices (e.g., cameras in Intercoms)
+- **Detailed Reporting**: Generates formatted reports with export to text files
+- **Dependency-Aware Deletion**: Deletes assets in strict order to prevent API errors
+- **Selective Deletion**: Choose specific assets to delete rather than all-or-nothing
+
+### Add User Tool
+- **Cross-Organization Import**: Connect to any Verkada organization using API credentials
+- **Guest Visit Import**: Import visitors from Guest sites as organization users
+- **Date Range Selection**: Select specific dates to import visitors from
+- **Bulk Invitation**: Send org admin invitations to multiple users at once
+
+### Real-Time Console
+- **Live Logging**: View application logs in real-time within the GUI
+- **Progress Tracking**: Visual progress indicators for long-running operations
+- **Status Updates**: Current operation displayed during scans and deletions
+
+## Supported Assets (Decommission)
 
 - Cameras
 - Access Controllers
@@ -33,173 +50,204 @@ The tool currently supports the inventory and decommissioning of:
 - Desk Stations
 - Mailroom Sites
 - Guest Sites
-- Alarm Sites
+- Alarm Sites & Alarm Systems
 - Alarm Devices
 - Users (Admins/Members)
-- Unassigned Devices
 
 ## Prerequisites
 
 - **Python 3.10+**
-- **Network Access:** The machine running this script must have access to `*.command.verkada.com` and `api.verkada.com`.
+- **Network Access:** The machine must have access to `*.command.verkada.com` and `api.verkada.com`
+- **Display:** GUI requires a display (Windows, macOS, or Linux with X11/Wayland)
 
-**Dependencies**
+## Dependencies
 
-The project relies primarily on the `requests` library.
-
-``` pip install requests```
+```
+requests>=2.28.0
+urllib3>=1.26.0
+customtkinter>=5.0.0
+python-dotenv>=0.19.0
+```
 
 ## Installation
 
-1. Clone the repository:
+1. **Clone the repository:**
 
-```
-git clone https://github.com/not-mehul/ProjectDecommission
-cd ProjectDecommission
-```
-
-2. Set up a Virtual Environment (Recommended):
-
-```
-python -m venv venv
-source venv/bin/activate  # On Windows use: venv\Scripts\activate
+```bash
+git clone https://github.com/not-mehul/vCommander
+cd vCommander
 ```
 
-3. Install Dependencies
+2. **Set up a Virtual Environment (Recommended):**
 
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
 ```
-pip install requests
+
+3. **Install Dependencies:**
+
+```bash
+pip install -r requirements.txt
 ```
 
 ## Configuration
 
-The application is configured entirely via Environment Variables to ensure security. You must set the following variables before running the script:
+### Environment Variables (Optional)
 
-| Variable         | Required | Description                                                  | Default |
-| ---------------- | -------- | ------------------------------------------------------------ | ------- |
-| `ADMIN_EMAIL`    | ✅        | The email address of the Organization Admin.                 | -       |
-| `ADMIN_PASSWORD` | ✅        | The password for the Admin account.                          | -       |
-| `ORG_SHORT_NAME` | ✅        | The short name/subdomain of your organization (e.g., if URL is `myorg.command.verkada.com`, use `myorg`). | -       |
-| `SHARD`          | ❌        | The backend shard for your org (check network traffic or support if unknown). | `prod1` |
-| `REGION`         | ❌        | The API region.                                              | `api`   |
+Create a `.env` file in the project root to auto-fill login credentials:
+
+```bash
+# Required for login auto-fill
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=your_password
+ORG_SHORT_NAME=your-org
+SHARD=prod1
+
+# Optional - for Add User tool cross-org import
+LEGAL_API_KEY=your_api_key
+LEGAL_ORG_SHORT_NAME=source-org
+```
+
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `ADMIN_EMAIL` | ❌ | Organization admin email (for auto-fill) | - |
+| `ADMIN_PASSWORD` | ❌ | Admin password (for auto-fill) | - |
+| `ORG_SHORT_NAME` | ❌ | Organization short name/subdomain | - |
+| `SHARD` | ❌ | Backend shard | `prod1` |
+| `LEGAL_API_KEY` | ❌ | API key for Add User tool source org | - |
+| `LEGAL_ORG_SHORT_NAME` | ❌ | Source org short name for Add User tool | - |
+
+> **Note:** Environment variables are optional. All credentials can be entered manually in the GUI.
 
 ## Usage
 
-1. **Set Environment Variables** :
+### Starting the Application
 
-```
-# For Linux/Mac
-export ADMIN_EMAIL="admin@example.com"
-export ADMIN_PASSWORD="SuperSecretPassword"
-export ORG_SHORT_NAME="my-org-name"
-
-# For Windows(Powershell)
-$env:ADMIN_EMAIL="admin@example.com"
-$env:ADMIN_PASSWORD="SuperSecretPassword"
-$env:ORG_SHORT_NAME="my-org-name"
+```bash
+cd gui
+python main.py
 ```
 
-2. **Run the Script:**
+### Login
 
-```
-python verkada_decommission.py
-```
+1. Enter your Verkada credentials:
+   - **Email**: Your admin email address
+   - **Password**: Your password
+   - **Short Name**: Organization subdomain (e.g., `myorg` from `myorg.command.verkada.com`)
+   - **Shard**: Backend shard (usually `prod1`)
 
-3. **Authentication:**
+2. Click **Login**
 
-- The script will attempt to log in.
+3. If MFA is enabled, enter the 6-digit code from your authenticator app
 
-- If 2FA is enabled, you will be prompted in the console to enter your SMS/Authenticator code:
+### Decommission Tool
 
-```
-Enter 2FA code: 123456
-```
+1. **Scan**: Click "Start Scan" to inventory all assets
+2. **Review**: Review the discovered assets and category counts
+3. **Select**: Click "Select Assets" to choose which items to delete
+   - Use checkboxes to select individual assets
+   - Use "Select All" to select everything
+4. **Decommission**: Click "Decommission" and confirm
+5. **Monitor**: Watch progress as assets are deleted
+6. **Results**: View summary of successful and failed deletions
 
-4. **Review Report:**
+**Saving Reports**: Click "Save TXT Report" at any time after scanning to export an inventory report.
 
-- The script will fetch all assets and display a summary table.
+### Add User Tool
 
-- A file named  `{org_name}_report_{timestamp}.txt` will be created.
-
-5. **Confirm Decommissioning:**
-
-- You will be presented with a final warning:
-
-```
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-WARNING: This action cannot be undone.
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-Delete ALL assets? (y/n):
-```
-
-- Type `y`  to proceed with permanent deletion or `n` to stop the script.
+1. **Configure**: Enter API credentials for the source organization (where guest visits exist)
+2. **Select Site**: Choose a site from the list and select a date
+3. **Load**: Click "Load" to fetch visitors for that date
+4. **Review**: Review the visitor list
+5. **Add Users**: Click "Add Users" to invite all visitors as org admins
 
 ## Architecture Overview
 
-The solution is split into four modular files:
-
 ```
-project-decommission/
-├── verkada_decommission.py    # Entry Point: Orchestrates flow & UI
-├── verkada_api_clients.py     # Core Logic: Internal & External API Classes
-├── verkada_reporting.py       # Output: ASCII tables & File generation
-└── verkada_utilities.py       # Helpers: Deduplication & Deletion logic
+vCommander/
+├── gui/
+│   ├── main.py                    # Application entry point
+│   ├── pages/
+│   │   ├── login_page.py          # Login screen
+│   │   ├── two_fa_page.py         # MFA verification screen
+│   │   └── main_interface.py      # Main dashboard with sidebar
+│   └── tools/
+│       ├── verkada_api_clients.py # API client classes
+│       ├── verkada_reporting.py   # Report generation
+│       ├── verkada_utilities.py   # Helper functions
+│       ├── decommission.py        # Decommission tool UI
+│       ├── add_user.py            # Add User tool UI
+│       └── commission.py          # Commission tool (placeholder)
+├── requirements.txt
+└── README.md
 ```
 
-1. `verkada_decommission.py` **(Entry Point)**
+### API Clients
 
-Orchestrates the entire flow. It initializes clients, triggers the inventory scan, generates the report, and calls the bulk deletion utility.
+**VerkadaInternalAPIClient**
+- Mimics browser behavior using session cookies and CSRF tokens
+- Accesses internal/private APIs for comprehensive device management
+- Handles login, MFA verification, and privilege escalation
+- Dynamically generates temporary API keys
 
-2. `verkada_api_clients.py` **(Core Logic)**
+**VerkadaExternalAPIClient**
+- Uses standard public API endpoints
+- Automatic token generation and retry logic
+- Used for user management and guest site operations
 
-Contains two distinct classes:
+### Deletion Order
 
-- `VerkadaInternalAPIClient:` Uses `requests.Session` to maintain cookies and CSRF tokens. It handles the "undocumented" internal API calls used by the Command dashboard.
+To prevent dependency errors, the Decommission tool deletes assets in this order:
 
-- `VerkadaExternalAPIClient:` Uses a standard API Key (generated dynamically by the Internal Client) to communicate with the public `api.verkada.com` endpoints. Includes automatic retry logic for network stability.
-
-3. `verkada_reporting.py` **(Output)**
-
-Handles the formatting of data. It includes logic to dynamic resize ASCII columns based on the length of device names, ensuring reports are always readable regardless of data size.
-
-4. `verkada_utilities.py` **(Helpers)**
-
-Contains:
-
-- `sanitize_list:` Filters lists to remove dependencies (e.g., removing an Access Controller from the deletion list if it was already identified as part of an Intercom).
-
-- `perform_bulk_deletion:` The execution engine that iterates through asset categories in a specific order to ensure clean removal.
-
-## Decommissioning Order
-
-To avoid dependency errors (e.g., "Cannot delete site because devices are still assigned"), the tool deletes assets in the following specific order:
-
-1. **Users** (Prevents interference during the process)
-
+1. **Users** (Prevents interference)
 2. **Sensors**
-
 3. **Intercoms**
-
 4. **Desk Stations**
-
 5. **Mailroom Sites**
-
-6. **Access Controllers**
-
-7. **Cameras**
-
-8. **Guest Sites**
-
+6. **Guest Sites**
+7. **Access Controllers**
+8. **Cameras**
 9. **Alarm Devices**
+10. **Alarm Sites** (includes Alarm Systems)
 
-10. **Alarm Systems & Sites**
+## Troubleshooting
+
+### Login Issues
+- Verify your organization short name is correct (just the subdomain, not the full URL)
+- Check that you're using the correct shard (usually `prod1`)
+- If MFA fails, ensure you're entering the code quickly (codes expire)
+
+### Scan Failures
+- Ensure you have Organization Admin privileges
+- Check network connectivity to `*.command.verkada.com`
+- Review the console for specific error messages
+
+### API Key Limit
+If you see "Exceeded 10 API Keys Limit":
+- Delete old API keys from your Verkada dashboard
+- API keys generated by this tool expire after 1 hour automatically
+
+## Security Considerations
+
+- Credentials are not stored persistently (unless using `.env` file)
+- API keys are temporary (1-hour expiration)
+- MFA is supported and recommended
+- The tool requires Organization Admin privileges
+- All deletions are permanent and cannot be undone
 
 ## Credits
 
-Special thanks to the following contributors for their work on identifying internal APIs and building initial versions of these tools:
+Special thanks to the following contributors for their work on identifying internal APIs and building initial iterations of these tools:
 
 - **Ian Young** - [Delete Device API Scripts](https://github.com/ian-young/API_Scripts/blob/main/VCE/delete_device.py)
 - **Matt Delaney** - [Org Reset Tool](https://github.com/matt-verkada/org_reset_tool)
 
+## Disclaimer
+
 > [!IMPORTANT]  
-> This software is an unofficial tool and is not supported by Verkada. It uses internal APIs which may change without notice. Use at your own risk. Always test in a non-production environment first.
+> This software is an unofficial tool and is **not supported by Verkada**. It uses internal APIs which may change without notice. Use at your own risk. Always test in a non-production environment first. The authors are not responsible for any data loss or damage caused by using this tool.
+
+## License
+
+[MIT License](LICENSE)
