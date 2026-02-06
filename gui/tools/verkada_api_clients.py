@@ -842,7 +842,7 @@ class VerkadaExternalAPIClient:
                     return {
                         "id": x["camera_id"],
                         "name": x["name"],
-                        "serial": x["serial"],
+                        "serial_number": x["serial"],
                     }
 
             case "guest_sites":
