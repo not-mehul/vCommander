@@ -7,9 +7,55 @@ vCommander is a comprehensive GUI application for managing Verkada organizations
 
 ## Preview
 
-![Image 1: Login page for vCommander](assets/Img_1.png)
+### Login Page
 
-![Image 2: Scanned organization details](assets/Img_2.png)
+![Image 01: Login page for vCommander](assets/1_login.png)
+
+![Image 02: Two Factor Authentication](assets/2_2fa.png)
+
+### Decommission Tool Flow
+
+#### Starting Inventory Scan
+
+![Image 03: Decommission Inventory Scan](assets/3_decom_1.png)
+
+#### Scanning Cameras
+
+![Image 04: Scanning Cameras](assets/4_decom_2.png)
+
+#### Review Assets and Export List
+
+![Image 05: Deleting Assets](assets/5_decom_3.png)
+
+#### Deleting Assets
+
+![Image 06: Selecting Assets for Deletion](assets/6_decom_4.png)
+
+#### Deletion Completion
+
+![Image 07: Deletion Completion](assets/7_decom_5.png)
+
+### User Add Tool Flow
+
+#### Accessing Import Organization using API
+
+![Image 08: User Add Inventory Scan](assets/8_useradd_1.png)
+
+#### Selecting Site to Import
+
+![Image 09: Selecting Site to Import](assets/9_useradd_2.png)
+
+#### Reviewing Users
+
+![Image 10: Importing Users](assets/10_useradd_3.png)
+
+#### Adding Users to Organization
+
+![Image 11: Adding Users to Organization](assets/11_useradd_4.png)
+
+#### User Add Completion
+
+![Image 12: User Add Completion](assets/12_useradd_5.png)
 
 ## Key Features
 
