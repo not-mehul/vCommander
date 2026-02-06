@@ -281,11 +281,20 @@ class AddUserTool(ctk.CTkFrame):
         )
         self.btn_connect.grid(row=3, column=0, sticky="ew", pady=(20, 0))
 
-        # Auto-fill from environment variables if available
-        if key := get_env_var("LEGAL_API_KEY"):
-            self.entry_key.insert(0, key)
-        if org := get_env_var("LEGAL_ORG_SHORT_NAME"):
-            self.entry_org.insert(0, org)
+        try:
+            key = get_env_var("LEGAL_API_KEY")
+            org = get_env_var("LEGAL_ORG_SHORT_NAME")
+        except EnvironmentError:
+            # If env vars are not set, use empty defaults
+            key = org = ""
+        self.entry_key.insert(0, key)
+        self.entry_org.insert(0, org)
+
+        # # Auto-fill from environment variables if available
+        # if key := get_env_var("LEGAL_API_KEY"):
+        #     self.entry_key.insert(0, key)
+        # if org := get_env_var("LEGAL_ORG_SHORT_NAME"):
+        #     self.entry_org.insert(0, org)
 
     # =========================================================================
     # SELECT FLOW - Site and Date Selection
@@ -313,8 +322,7 @@ class AddUserTool(ctk.CTkFrame):
         self.search_bar.grid(row=1, column=0, sticky="ew", padx=15, pady=(5, 10))
         # Bind key release to filter function for real-time filtering
         # Use after() to debounce rapid keystrokes and prevent UI lag
-        self._filter_after_id = None
-        self.search_bar.bind("<KeyRelease>", self._on_search_keyrelease)
+        self.search_bar.bind("<KeyRelease>", self._filter_sites)
         self.search_bar.bind("<Button-1>", lambda e: self.search_bar.focus_set())
 
         # Scrollable frame to hold the site list
