@@ -282,13 +282,6 @@ If you see "Exceeded 10 API Keys Limit":
 - The tool requires Organization Admin privileges
 - All deletions are permanent and cannot be undone
 
-## Credits
-
-Special thanks to the following contributors for their work on identifying internal APIs and building initial iterations of these tools:
-
-- **Ian Young** - [Delete Device API Scripts](https://github.com/ian-young/API_Scripts/blob/main/VCE/delete_device.py)
-- **Matt Delaney** - [Org Reset Tool](https://github.com/matt-verkada/org_reset_tool)
-
 ## Disclaimer
 
 > [!IMPORTANT]  
