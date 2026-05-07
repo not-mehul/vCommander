@@ -6,9 +6,12 @@ and mounts the LoginView. Each view receives `push_route` and
 `pop_route` callbacks so it can navigate without importing the others.
 """
 
+import asyncio
+import webbrowser
+
 import flet as ft
 
-from constants import APP_VERSION, BG, MIN_HEIGHT, MIN_WIDTH
+from constants import APP_VERSION, BG, MIN_HEIGHT, MIN_WIDTH, WARNING
 from pages.commission_view import CommissionView
 from pages.decommission_view import DecommissionView
 from pages.home_view import HomeView
@@ -16,6 +19,7 @@ from pages.login_view import LoginView
 from pages.two_factor_view import TwoFactorView
 from pages.users_view import UsersView
 from utils.logger import get_log_path, log_api_call
+from utils.version_check import check_for_update
 
 # Maps a route string to the View class that renders it. Adding a new
 # screen is a matter of writing a `View` subclass and adding one entry.
@@ -66,6 +70,41 @@ async def main(page: ft.Page):
             page.update()
 
     push_route("/login")
+
+    def show_update_banner(latest: str, url: str):
+        def dismiss(_):
+            page.pop_dialog()
+
+        def open_release(_):
+            webbrowser.open(url)
+            page.pop_dialog()
+
+        dialog = ft.AlertDialog(
+            bgcolor=BG,
+            title=ft.Text("Update available", color=WARNING),
+            content=ft.Text(
+                f"A newer version of vCommander (v{latest}) is available. "
+                f"You're running v{APP_VERSION}. "
+                f"If running an older version, you may experience bugs or missing features. "
+                f"Please update to the latest version via GitHub or Slack.",
+                color=WARNING,
+            ),
+            actions=[
+                ft.TextButton("View release", on_click=open_release),
+                ft.TextButton("Dismiss", on_click=dismiss),
+            ],
+        )
+
+        page.show_dialog(dialog)
+
+    async def run_version_check():
+        result = await asyncio.to_thread(check_for_update)
+        if result is None:
+            return
+        latest, url = result
+        show_update_banner(latest, url)
+
+    asyncio.create_task(run_version_check())
 
 
 ft.app(target=main)

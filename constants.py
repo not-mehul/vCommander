@@ -2,6 +2,7 @@ import flet as ft
 
 # App Info
 APP_VERSION = "3.0"
+GITHUB_REPO = "not-mehul/vCommander"
 
 # Development flag — set True to skip real authentication and go straight to Home.
 # Flip back to False before any real testing or deployment.
