@@ -7,6 +7,10 @@ import flet as ft
 
 from apis.external_api import VerkadaExternalAPIClient
 from constants import (
+    _EXTERNAL_DELETERS,
+    _EXTERNAL_GETTERS,
+    _INTERNAL_DELETE_SLUGS,
+    _INTERNAL_FETCH_SLUGS,
     ASSET_CATEGORIES,
     BG,
     BORDER,
@@ -26,58 +30,6 @@ from constants import (
 from utils.executor import _executor
 from utils.session import get_external_client, get_internal_client, set_external_client
 from utils.ui_utils import set_button_loading, show_alert
-
-# ---------------------------------------------------------------------------
-# Category routing tables
-# ---------------------------------------------------------------------------
-# Every fetched asset is normalised to a dict with at least 'id' and 'name'
-# keys, so we don't need to look up which keys a category uses — they're
-# always 'id' and 'name'. The two maps below only describe the variable
-# bit (which API method or slug to use).
-#
-# Categories not in either map are external-API categories that use the
-# default get_<slug> getter (currently just "Guest Sites").
-
-# Categories fetched via the internal API's get_object(slug)
-_INTERNAL_FETCH_SLUGS = {
-    "Sensors": "sensors",
-    "Intercoms": "intercoms",
-    "Desk Stations": "desk_stations",
-    "Mailroom Sites": "mailroom_sites",
-    "Command Connectors": "connectors",
-    "Access Controllers": "access_controllers",
-    "Alarm Devices": "alarm_devices",
-    "Alarm Sites": "alarm_sites",
-    "Unassigned Devices": "unassigned_devices",
-}
-
-# Categories fetched via a named getter on the external API client.
-# (Categories not listed here AND not in _INTERNAL_FETCH_SLUGS use the
-# special-case branches in _on_scan: "Command Users" excludes the admin,
-# "Cameras" applies the intercom-serial filter.)
-_EXTERNAL_GETTERS = {
-    "Cameras": "get_cameras",
-    "Guest Sites": "get_guest_sites",
-}
-
-# Categories deleted via the internal API's delete_object(slug, id)
-_INTERNAL_DELETE_SLUGS = {
-    "Cameras": "cameras",
-    "Sensors": "sensors",
-    "Desk Stations": "desk_stations",
-    "Mailroom Sites": "mailroom_sites",
-    "Command Connectors": "connectors",
-    "Access Controllers": "access_controllers",
-    "Guest Sites": "guest_sites",
-    "Alarm Devices": "alarm_devices",
-    "Alarm Sites": "alarm_sites",
-    "Intercoms": "intercoms",
-}
-
-# Categories deleted via a named method on the external API client
-_EXTERNAL_DELETERS = {
-    "Command Users": "delete_access_user",
-}
 
 # State machine
 SCAN = "scan"
@@ -289,17 +241,6 @@ class DecommissionView(ft.View):
                 client.set_access_system_admin,
             )
 
-            
-            # Fetch all categories — internal API for hardware device types,
-            # external API for everything else.
-            #
-            # ASSET_CATEGORIES is ordered so Intercoms are scanned first; their
-            # serial numbers are then used to exclude duplicate entries from
-            # the Cameras and Access Controllers results (intercoms appear in
-            # both endpoints' results, but should only be deleted once).
-            #
-            # Any fetch failure raises immediately; deletion is only reachable
-            # after a fully successful scan.
             intercom_serials: set[str] = set()
             for category in ASSET_CATEGORIES:
                 items = await self._scan_category(
@@ -367,8 +308,6 @@ class DecommissionView(ft.View):
             if category in _INTERNAL_FETCH_SLUGS:
                 slug = _INTERNAL_FETCH_SLUGS[category]
                 items = await loop.run_in_executor(_executor, client.get_object, slug)
-                # Access Controllers come back from the internal endpoint
-                # with intercom devices mixed in; strip those by serial.
                 if category == "Access Controllers" and intercom_serials:
                     items = [
                         item
@@ -378,20 +317,12 @@ class DecommissionView(ft.View):
                 return items
 
             if category == "Command Users":
-                # Exclude the logged-in admin from the user list so the
-                # decommission flow can't accidentally delete the running session.
                 return await loop.run_in_executor(
                     _executor, ext_client.get_users, client.user_id, None
                 )
 
             method_name = _EXTERNAL_GETTERS.get(category)
             if not method_name:
-                # Defensive: a category in ASSET_CATEGORIES that isn't in
-                # either lookup. Today this branch is unreachable, but
-                # returning [] (instead of KeyError-ing) means a future
-                # category added to ASSET_CATEGORIES without a routing
-                # entry shows up as empty in REVIEW rather than crashing
-                # the scan.
                 return []
             getter = getattr(ext_client, method_name)
             items = await loop.run_in_executor(_executor, getter)
@@ -468,8 +399,6 @@ class DecommissionView(ft.View):
             self._selected_categories.setdefault(category, True)
 
             def on_change(_e, cat=category, checkbox=cb):
-                # cb.value is bool | None on flet's stubs; coalesce to bool
-                # so _selected_categories stays cleanly typed.
                 self._selected_categories[cat] = bool(checkbox.value)
 
             cb.on_change = on_change
@@ -594,9 +523,6 @@ class DecommissionView(ft.View):
         loop = asyncio.get_running_loop()
         self._results = {}
 
-        # Iterate in the dependency-aware DELETION_ORDER so dependent objects
-        # (e.g. cameras attached to access controllers) are removed before
-        # their parents.
         for category in DELETION_ORDER:
             if category not in selected_categories:
                 continue
@@ -636,9 +562,6 @@ class DecommissionView(ft.View):
 
         Returns True on success.
         """
-        # `or "unknown"` catches both missing keys and empty-string values;
-        # the resulting label is harmless and the API call below would fail
-        # anyway if the ID is genuinely empty.
         item_id = item.get("id") or "unknown"
         item_name = item.get("name") or item_id
 
@@ -654,8 +577,6 @@ class DecommissionView(ft.View):
         try:
             if category in _INTERNAL_DELETE_SLUGS:
                 slug = _INTERNAL_DELETE_SLUGS[category]
-                # alarm_sites needs both the response_site_id and the
-                # parent site_id; everything else is a single string ID.
                 if slug == "alarm_sites":
                     delete_id = [item.get("id"), item.get("site_id")]
                 else:

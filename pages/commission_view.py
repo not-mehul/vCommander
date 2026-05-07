@@ -19,6 +19,7 @@ from constants import (
     AS_SITE_NAME,
     BG,
     BORDER,
+    BUILDING_PROVISION_SECONDS,
     CARD_PADDING,
     CARD_SHADOW,
     ERROR,
@@ -34,6 +35,7 @@ from constants import (
     HQ_TIMEZONE,
     PAGE_PADDING,
     PRIMARY,
+    ROLE_PROPAGATION_SECONDS,
     SECONDARY,
     SURFACE,
     TEMPLATE_DISPLAY_NAMES,
@@ -65,10 +67,6 @@ _ASSETS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets"
 )
 
-ROLE_OPTIONS = ["Org Admin", "Site Admin", "Viewer", "Live Viewer"]
-ROLE_PROPAGATION_SECONDS = 3
-BUILDING_PROVISION_SECONDS = 3
-
 
 class CommissionView(ft.View):
     def __init__(self, push_route, pop_route, **kwargs):
@@ -79,6 +77,7 @@ class CommissionView(ft.View):
         self.pop_route = pop_route
         self._kits: dict[str, dict[str, str]] = {}
         self._device_fields: dict[str, ft.TextField] = {}
+        self._load_kits()
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -87,6 +86,7 @@ class CommissionView(ft.View):
 
     def _load_kits(self):
         with open(os.path.join(_ASSETS_DIR, "kits.csv"), newline="") as f:
+            print(f"[commission] loaded kits: {list(self._kits.keys())}")
             reader = csv.DictReader(f)
             for r in reader:
                 kit_name = r["Kit Name"]
@@ -100,7 +100,8 @@ class CommissionView(ft.View):
 
     def _build_ui(self):
         template_options = [
-            ft.dropdown.Option(key=code, text=TEMPLATE_DISPLAY_NAMES[code]) for code in TEMPLATE_FIELDS
+            ft.dropdown.Option(key=code, text=TEMPLATE_DISPLAY_NAMES[code])
+            for code in TEMPLATE_FIELDS
         ]
         self.template_dropdown = ft.Dropdown(
             label="Template",

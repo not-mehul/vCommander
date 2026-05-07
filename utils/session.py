@@ -11,35 +11,23 @@ _session_start: float | None = None
 
 def set_internal_client(client: VerkadaInternalAPIClient) -> None:
     global _internal_client
-    if not isinstance(client, VerkadaInternalAPIClient):
-        raise TypeError(
-            f"Expected VerkadaInternalAPIClient, got {type(client).__name__}"
-        )
     _internal_client = client
 
 
 def get_internal_client() -> VerkadaInternalAPIClient:
     if not isinstance(_internal_client, VerkadaInternalAPIClient):
-        raise RuntimeError(
-            "Internal client is not available. Please log in again."
-        )
+        raise RuntimeError("Internal client is not available. Please log in again.")
     return _internal_client
 
 
 def set_external_client(client: VerkadaExternalAPIClient) -> None:
     global _external_client
-    if not isinstance(client, VerkadaExternalAPIClient):
-        raise TypeError(
-            f"Expected VerkadaExternalAPIClient, got {type(client).__name__}"
-        )
     _external_client = client
 
 
 def get_external_client() -> VerkadaExternalAPIClient:
     if not isinstance(_external_client, VerkadaExternalAPIClient):
-        raise RuntimeError(
-            "External client is not available. Please connect first."
-        )
+        raise RuntimeError("External client is not available. Please connect first.")
     return _external_client
 
 

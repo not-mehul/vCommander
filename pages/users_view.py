@@ -24,17 +24,12 @@ from utils.executor import _executor
 from utils.session import get_external_client, get_internal_client, set_external_client
 from utils.ui_utils import set_button_loading, show_alert
 
-# Step labels in display order. Used by both the indicator builder and
-# (implicitly) by _go_to_step which uses indices into this list.
 _STEP_LABELS = ["API Key", "Site & Date", "Review", "Invite"]
 
 
 # ---------------------------------------------------------------------------
 # Small UI factories
 # ---------------------------------------------------------------------------
-# These exist to cut down on the dozens of repeated keyword arguments that
-# show up every time we create a styled text field or primary button. The
-# defaults match the original styling exactly; pass overrides as kwargs.
 
 
 def _make_text_field(
@@ -100,10 +95,6 @@ class UsersView(ft.View):
         self._sites: list[dict] = []
         self._participants: list[dict] = []
         self._selected_date = datetime.now()
-
-        # Populated by _build_step_indicators(); a parallel list to _STEP_LABELS
-        # holding the circle Containers so we can re-color them by index without
-        # walking the row's controls.
         self._step_circles: list[ft.Container] = []
 
         self._build_ui()
@@ -394,8 +385,6 @@ class UsersView(ft.View):
 
     def _build_step_3(self) -> ft.Column:
         self._participants_column = ft.Column(spacing=8)
-        # Live count rendered next to the heading. Updated whenever the
-        # participants list changes (load, add, remove).
         self._participant_count_text = ft.Text(
             "0 participants", size=13, color=TEXT_SECONDARY
         )
@@ -455,8 +444,6 @@ class UsersView(ft.View):
     def _create_participant_row(
         self, first: str = "", last: str = "", email: str = ""
     ) -> ft.Row:
-        # Compact inline-style fields (no labels, smaller padding) — different
-        # enough from _make_text_field's default look that we keep this inline.
         compact_padding = ft.padding.symmetric(horizontal=10, vertical=8)
 
         def _participant_field(value: str, expand: int) -> ft.TextField:
@@ -549,9 +536,6 @@ class UsersView(ft.View):
         loop = asyncio.get_running_loop()
         success_count = 0
         total = 0
-        # Reset any prior run's records (defensive — _build_step_4 also inits
-        # this, but the user could conceivably rerun a flow without rebuilding
-        # the step).
         self._invited_records = []
 
         for control in self._participants_column.controls:
@@ -573,9 +557,6 @@ class UsersView(ft.View):
                 success_count += 1
                 self._invited_records.append((first, last, email_val))
 
-        # Final summary line — green if everything succeeded, red otherwise.
-        # If `total` ended up at zero (no rows had a non-empty email), report
-        # that explicitly rather than showing "0/0 invited".
         if total == 0:
             summary = "No participants with an email were invited."
             color = WARNING
@@ -589,7 +570,6 @@ class UsersView(ft.View):
                 padding=ft.padding.only(top=10),
             )
         )
-        # Only show the copy button if there's something to copy.
         self._copy_btn.visible = bool(self._invited_records)
         self._done_btn.visible = True
         page.update()
@@ -647,17 +627,11 @@ class UsersView(ft.View):
         emails = "\t".join(email for _, _, email in self._invited_records)
         text = f"{names}\n{emails}"
 
-        # Flet's new clipboard service is async; schedule it from this sync
-        # handler with page.run_task. (page.set_clipboard was removed around
-        # Flet 0.28 in favor of ft.Clipboard().set.)
         async def _copy() -> None:
             await ft.Clipboard().set(text)
 
         e.page.run_task(_copy)
 
-        # Lightweight visual feedback: swap the button label. Doesn't auto-revert
-        # because there's no clean way without scheduling a task; users can tell
-        # by the clipboard contents.
         if isinstance(self._copy_btn.content, ft.Text):
             self._copy_btn.content.value = "Copied!"
             e.page.update()

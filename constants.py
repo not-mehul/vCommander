@@ -1,7 +1,7 @@
 import flet as ft
 
 # App Info
-APP_VERSION = "2.0.1"
+APP_VERSION = "3.0"
 
 # Development flag — set True to skip real authentication and go straight to Home.
 # Flip back to False before any real testing or deployment.
@@ -211,3 +211,40 @@ DELETION_ORDER = [
     "Command Connectors",
     "Access Controllers",
 ]
+
+ROLE_PROPAGATION_SECONDS = 3
+BUILDING_PROVISION_SECONDS = 3
+
+_INTERNAL_FETCH_SLUGS = {
+    "Sensors": "sensors",
+    "Intercoms": "intercoms",
+    "Desk Stations": "desk_stations",
+    "Mailroom Sites": "mailroom_sites",
+    "Command Connectors": "connectors",
+    "Access Controllers": "access_controllers",
+    "Alarm Devices": "alarm_devices",
+    "Alarm Sites": "alarm_sites",
+    "Unassigned Devices": "unassigned_devices",
+}
+
+_INTERNAL_DELETE_SLUGS = {
+    "Cameras": "cameras",
+    "Sensors": "sensors",
+    "Desk Stations": "desk_stations",
+    "Mailroom Sites": "mailroom_sites",
+    "Command Connectors": "connectors",
+    "Access Controllers": "access_controllers",
+    "Guest Sites": "guest_sites",
+    "Alarm Devices": "alarm_devices",
+    "Alarm Sites": "alarm_sites",
+    "Intercoms": "intercoms",
+}
+
+_EXTERNAL_GETTERS = {
+    "Cameras": "get_cameras",
+    "Guest Sites": "get_guest_sites",
+}
+
+_EXTERNAL_DELETERS = {
+    "Command Users": "delete_access_user",
+}

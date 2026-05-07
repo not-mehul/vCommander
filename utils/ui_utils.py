@@ -43,9 +43,6 @@ def show_alert(page: ft.Page, title: str, message: str):
     """
 
     def close_dialog(_e=None):
-        # Accept the click event arg positionally — Flet's on_click dispatch
-        # passes the ControlEvent, so a bare `def close_dialog():` would
-        # TypeError on click.
         page.pop_dialog()
 
     dialog = ft.AlertDialog(
