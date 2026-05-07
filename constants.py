@@ -166,6 +166,15 @@ TEMPLATE_FIELDS = {
     },
 }
 
+
+TEMPLATE_DISPLAY_NAMES = {
+    "ESS": "Essentials",
+    "ACS": "Access Control Specialist",
+    "VSSL": "Video Security Specialist - Lab",
+    "VSSE": "Video Security Specialist - Exam",
+    "AS": "Alarms Specialist",
+}
+
 # Decommission asset categories (display order)
 # Intercoms must come before Cameras and Access Controllers so that
 # intercom serial numbers can be used to filter duplicates from those lists.
