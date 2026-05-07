@@ -7,6 +7,8 @@ from urllib3.util.retry import Retry
 
 from utils.logger import log_api_call
 
+_VALID_REGIONS = frozenset({"api", "api.eu", "api.au"})
+
 
 class VerkadaExternalAPIClient:
     """
@@ -19,7 +21,11 @@ class VerkadaExternalAPIClient:
     def __init__(self, api_key: str, org_short_name: str, region: str = "api"):
         self.api_key = api_key
         self.org_short_name = org_short_name
-        self.region = region
+        self.region = region or "api"
+        if region not in _VALID_REGIONS:
+            raise ValueError(
+                f"Invalid region: {region!r}; expected one of {sorted(_VALID_REGIONS)}"
+            )
 
         self.session = requests.Session()
 
