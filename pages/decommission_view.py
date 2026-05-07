@@ -289,8 +289,7 @@ class DecommissionView(ft.View):
                 client.set_access_system_admin,
             )
 
-            # client.session.close()
-
+            
             # Fetch all categories — internal API for hardware device types,
             # external API for everything else.
             #
