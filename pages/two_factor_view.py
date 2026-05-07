@@ -42,6 +42,7 @@ class TwoFactorView(ft.View):
             max_length=6,
             input_filter=ft.NumbersOnlyInputFilter(),
             on_submit=self._on_verify,
+            autofocus=True,
         )
 
         self.verify_btn = ft.ElevatedButton(
