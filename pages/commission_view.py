@@ -94,7 +94,10 @@ class CommissionView(ft.View):
     # ------------------------------------------------------------------
 
     def _load_kits(self):
-        with open(os.path.join(_ASSETS_DIR, "kits.csv"), newline="") as f:
+        internal = os.path.join(_ASSETS_DIR, "kits.internal.csv")
+        public = os.path.join(_ASSETS_DIR, "kits.csv")
+        path = internal if os.path.exists(internal) else public
+        with open(os.path.join(_ASSETS_DIR, path), newline="") as f:
             print(f"[commission] loaded kits: {list(self._kits.keys())}")
             reader = csv.DictReader(f)
             for r in reader:

@@ -28,6 +28,7 @@ from constants import (
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     WARNING,
+    load_internal_invite_defaults,
 )
 from utils.db import load_import_settings, save_import_settings
 from utils.executor import _executor
@@ -228,15 +229,24 @@ class UsersView(ft.View):
 
     def _build_step_1(self) -> ft.Column:
         settings = load_import_settings()
+        defaults = load_internal_invite_defaults() or {}
+
+        api_key_default = (settings["api_key"] if settings else "") or defaults.get(
+            "api_key", ""
+        )
+        org_default = (settings["org_short_name"] if settings else "") or defaults.get(
+            "org_short_name", ""
+        )
+
         self._api_key_field = _make_text_field(
             label="API Key",
             password=True,
             can_reveal_password=True,
-            value=settings["api_key"] if settings else "",
+            value=api_key_default,
         )
         self._import_org_field = _make_text_field(
             label="Org Short Name (External)",
-            value=settings["org_short_name"] if settings else "",
+            value=org_default,
         )
         self._connect_btn = _make_button("Connect", self._on_connect)
 

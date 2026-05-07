@@ -11,7 +11,14 @@ import webbrowser
 
 import flet as ft
 
-from constants import APP_VERSION, BG, MIN_HEIGHT, MIN_WIDTH, WARNING
+from constants import (
+    APP_VERSION,
+    BG,
+    BUILD_VARIANT_LABEL,
+    MIN_HEIGHT,
+    MIN_WIDTH,
+    WARNING,
+)
 from pages.commission_view import CommissionView
 from pages.decommission_view import DecommissionView
 from pages.home_view import HomeView
@@ -38,7 +45,7 @@ async def main(page: ft.Page):
     log_api_call("APP", "startup", "{}", "200", f"vCommander v{APP_VERSION}")
     print(f"Logs → {get_log_path()}")
 
-    page.title = f"vCommander v{APP_VERSION}"
+    page.title = f"vCommander {BUILD_VARIANT_LABEL}v{APP_VERSION}"
     page.bgcolor = BG
     page.theme_mode = ft.ThemeMode.DARK
     page.window.min_width = MIN_WIDTH

@@ -3,3 +3,5 @@ __pycache__
 .venv
 build
 .DS_Store
+assets/kits.internal.csv
+assets/users_invite.internal.json

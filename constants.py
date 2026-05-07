@@ -1,8 +1,28 @@
+import json
+from pathlib import Path
+
 import flet as ft
 
 # App Info
 APP_VERSION = "3.0"
 GITHUB_REPO = "not-mehul/vCommander"
+
+_INTERNAL_MARKER = Path(__file__).parent / "assets" / "kits.internal.csv"
+IS_INTERNAL_BUILD = _INTERNAL_MARKER.exists()
+BUILD_VARIANT_LABEL = "(Internal) " if IS_INTERNAL_BUILD else ""
+_INVITE_DEFAULTS_FILE = Path(__file__).parent / "assets" / "users_invite.internal.json"
+
+
+def load_internal_invite_defaults() -> dict | None:
+    """Return baked-in API key + org short name for the internal build, or None."""
+    if not _INVITE_DEFAULTS_FILE.exists():
+        return None
+    try:
+        with _INVITE_DEFAULTS_FILE.open() as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
 
 # Development flag — set True to skip real authentication and go straight to Home.
 # Flip back to False before any real testing or deployment.

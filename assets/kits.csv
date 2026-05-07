@@ -1,9 +1,9 @@
 Kit Name,Device Type,Serial Number
-Kit X,Dome,AAAA
-Kit X,Fisheye,BBBB
-Kit X,Bullet,CCCC
-Kit X,Access Controller,DDDD
-Kit X,Alarm Panel,EEEE
-Kit X,Keypad,FFFF
-Kit X,Command Connector,GGGG
-Kit X,PTZ,HHHH
+Kit X,Dome,DOME_SN
+Kit X,Fisheye,FISHEYE_SN
+Kit X,Bullet,BULLET_SN
+Kit X,Access Controller,CONTROLLER_SN
+Kit X,Alarm Panel,PANEL_SN
+Kit X,Keypad,KEYPAD_SN
+Kit X,Command Connector,CONNECTOR_SN
+Kit X,PTZ,PTZ_SN
