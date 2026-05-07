@@ -1,3 +1,9 @@
+"""Two-factor verification screen.
+
+Shown after the login screen raises MFARequiredError. The user enters
+the SMS/authenticator code and we re-call `login_with_mfa`; on success
+we set the internal client in session state and route to /home."""
+
 import asyncio
 
 import flet as ft

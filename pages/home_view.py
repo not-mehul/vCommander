@@ -1,3 +1,9 @@
+"""Home / tool-picker screen.
+
+Three tool cards (Commission, Users, Decommission) and a session
+countdown timer in the header. The timer pops a warning dialog at
+SESSION_WARNING_MINUTES and force-logs-out at zero."""
+
 import asyncio
 
 import flet as ft
@@ -42,7 +48,10 @@ class HomeView(ft.View):
         header = ft.Row(
             [
                 ft.Text(
-                    f"vCommander v{APP_VERSION}", size=24, color=PRIMARY, weight=ft.FontWeight.BOLD
+                    f"vCommander v{APP_VERSION}",
+                    size=24,
+                    color=PRIMARY,
+                    weight=ft.FontWeight.BOLD,
                 ),
                 ft.Row(
                     [

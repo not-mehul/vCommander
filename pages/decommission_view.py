@@ -1,3 +1,12 @@
+"""Decommission screen.
+
+Lists every asset in the org grouped by ASSET_CATEGORIES, lets the
+user select what to remove, and then deletes them in DELETION_ORDER
+(both defined in constants.py). The order matters — e.g. intercoms
+must be deleted before the cameras/access controllers they're paired
+with, alarm devices before alarm sites, users before the hardware
+they're tied to."""
+
 import asyncio
 import csv
 import datetime

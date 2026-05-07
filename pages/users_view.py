@@ -1,3 +1,13 @@
+"""Users screen — guest invitation workflow.
+
+Four-step wizard:
+  1. Connect to an external Verkada org (org short name + API key).
+  2. Pick a date range and pull guest participants from that org.
+  3. Review/edit the list, optionally trim rows.
+  4. Send invites against the currently logged-in (internal) org and
+     show a copy-able summary of who was invited.
+"""
+
 import asyncio
 from datetime import datetime, timedelta
 

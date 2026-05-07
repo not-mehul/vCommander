@@ -1,14 +1,24 @@
+"""vCommander entry point.
+
+Configures the Flet `Page`, defines a tiny `push/pop` route stack
+(Flet's built-in router was overkill for the half-dozen screens here),
+and mounts the LoginView. Each view receives `push_route` and
+`pop_route` callbacks so it can navigate without importing the others.
+"""
+
 import flet as ft
-from constants import APP_VERSION, BG, MIN_WIDTH, MIN_HEIGHT
-from utils.logger import get_log_path, log_api_call
+
+from constants import APP_VERSION, BG, MIN_HEIGHT, MIN_WIDTH
+from pages.commission_view import CommissionView
+from pages.decommission_view import DecommissionView
+from pages.home_view import HomeView
 from pages.login_view import LoginView
 from pages.two_factor_view import TwoFactorView
-from pages.home_view import HomeView
-from pages.commission_view import CommissionView
 from pages.users_view import UsersView
-from pages.decommission_view import DecommissionView
+from utils.logger import get_log_path, log_api_call
 
-
+# Maps a route string to the View class that renders it. Adding a new
+# screen is a matter of writing a `View` subclass and adding one entry.
 ROUTE_MAP = {
     "/login": LoginView,
     "/2fa": TwoFactorView,
@@ -20,6 +30,7 @@ ROUTE_MAP = {
 
 
 async def main(page: ft.Page):
+    """Flet app entry point. Sets window chrome and pushes the login screen."""
     log_api_call("APP", "startup", "{}", "200", f"vCommander v{APP_VERSION}")
     print(f"Logs → {get_log_path()}")
 
@@ -35,6 +46,7 @@ async def main(page: ft.Page):
     history: list[str] = []
 
     def push_route(route: str):
+        """Navigate forward by replacing the current view with `route`."""
         history.append(route)
         page.views.clear()
         view_class = ROUTE_MAP[route]
@@ -43,6 +55,7 @@ async def main(page: ft.Page):
         page.update()
 
     def pop_route():
+        """Navigate back to the previous view; no-op at the bottom of the stack."""
         if len(history) > 1:
             history.pop()
             route = history[-1]

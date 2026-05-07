@@ -1,3 +1,12 @@
+"""Commission screen.
+
+Drives one of the predefined org-setup flows (ESS / VSSL / VSSE / AS /
+ACS — see TEMPLATE_FIELDS in constants.py). The user picks a template
+and a kit (assets/kits.csv), confirms the auto-filled device serials
+and supporting users, then `_run_step` walks through site/building/
+device creation against the internal API. Each step's success/failure
+is rendered in the live progress panel on the right."""
+
 import asyncio
 import csv
 import os

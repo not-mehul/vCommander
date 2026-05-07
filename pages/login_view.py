@@ -1,3 +1,11 @@
+"""Login screen.
+
+Collects email, password, org short name, region, and (optional) shard,
+then constructs a VerkadaInternalAPIClient and authenticates. On
+success it stashes the client in `utils.session` and routes to /home;
+on MFARequiredError it routes to /2fa. Saved credentials are loaded
+from the local SQLite store on mount."""
+
 import asyncio
 
 import flet as ft
