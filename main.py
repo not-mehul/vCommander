@@ -23,7 +23,7 @@ async def main(page: ft.Page):
     log_api_call("APP", "startup", "{}", "200", f"vCommander v{APP_VERSION}")
     print(f"Logs → {get_log_path()}")
 
-    page.title = "vCommander"
+    page.title = f"vCommander v{APP_VERSION}"
     page.bgcolor = BG
     page.theme_mode = ft.ThemeMode.DARK
     page.window.min_width = MIN_WIDTH
