@@ -7,15 +7,18 @@ are swallowed — the check is best-effort and must never block startup.
 
 from __future__ import annotations
 
+import re
+
 import requests
-from packaging.version import InvalidVersion, Version
 
 from constants import APP_VERSION, GITHUB_REPO
 
 
-def _normalize(tag: str) -> str:
-    """Strip a leading 'v' so 'v3.1' and '3.1' compare equal."""
-    return tag[1:] if tag.startswith(("v", "V")) else tag
+def _parse(version: str) -> tuple[int, ...]:
+    """Turn '3.1.2' or 'v3.1' into (3, 1, 2) / (3, 1). Non-numeric parts are dropped."""
+    cleaned = version[1:] if version.startswith(("v", "V")) else version
+    parts = re.findall(r"\d+", cleaned)
+    return tuple(int(p) for p in parts)
 
 
 def check_for_update(timeout: float = 3.0) -> tuple[str, str] | None:
@@ -33,11 +36,10 @@ def check_for_update(timeout: float = 3.0) -> tuple[str, str] | None:
         html_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases")
         if not tag:
             return None
-        latest = Version(_normalize(tag))
-        current = Version(_normalize(APP_VERSION))
-        print(f"Comparing: latest={latest}, current={current}")
-        if latest > current:
-            return (str(latest), html_url)
-    except (requests.RequestException, ValueError, InvalidVersion):
+        latest = _parse(tag)
+        current = _parse(APP_VERSION)
+        if latest and current and latest > current:
+            return (tag.lstrip("vV"), html_url)
+    except (requests.RequestException, ValueError):
         return None
     return None
