@@ -36,6 +36,7 @@ from constants import (
     PRIMARY,
     SECONDARY,
     SURFACE,
+    TEMPLATE_DISPLAY_NAMES,
     TEMPLATE_FIELDS,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
@@ -76,23 +77,15 @@ class CommissionView(ft.View):
         )
         self.push_route = push_route
         self.pop_route = pop_route
-        self._templates = []
         self._kits: dict[str, dict[str, str]] = {}
         self._device_fields: dict[str, ft.TextField] = {}
-        self._load_csv_data()
         self._build_ui()
 
     # ------------------------------------------------------------------
     # CSV / data loading
     # ------------------------------------------------------------------
 
-    def _load_csv_data(self):
-        with open(os.path.join(_ASSETS_DIR, "templates.csv"), newline="") as f:
-            reader = csv.DictReader(f)
-            self._templates = [
-                {"name": r["Template Name"], "code": r["Template Code"]} for r in reader
-            ]
-
+    def _load_kits(self):
         with open(os.path.join(_ASSETS_DIR, "kits.csv"), newline="") as f:
             reader = csv.DictReader(f)
             for r in reader:
@@ -107,7 +100,7 @@ class CommissionView(ft.View):
 
     def _build_ui(self):
         template_options = [
-            ft.dropdown.Option(key=t["code"], text=t["name"]) for t in self._templates
+            ft.dropdown.Option(key=code, text=TEMPLATE_DISPLAY_NAMES[code]) for code in TEMPLATE_FIELDS
         ]
         self.template_dropdown = ft.Dropdown(
             label="Template",
