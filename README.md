@@ -1,6 +1,10 @@
-vCommander
+# vCommander
 
 vCommander is a desktop GUI application that helps create, populate and tear down Verkada Command organizations with a few clicks instead of hours of point-and-click management and cleanup. This tool is built on [Flet](https://flet.dev/), and ships three tools behind a single Verkada Command login.
+
+<p align="center">
+  <img src="docs/screenshots/Home-Page.png" alt="vCommander home screen" width="85%" />
+</p>
 
 ---
 
@@ -16,6 +20,7 @@ vCommander is a desktop GUI application that helps create, populate and tear dow
   - [Commission Tool](#commission-tool)
   - [Users Invite Tool](#users-invite-tool)
   - [Decommission Tool](#decommission-tool)
+- [Per-Template Walkthroughs](#per-template-walkthroughs)
 - [Supported Assets (Decommission)](#supported-assets-decommission)
 - [Where Data Lives](#where-data-lives)
 - [Configuration](#configuration)
@@ -138,6 +143,12 @@ The login screen captures four fields plus an optional 2FA step:
 | Password | Your Verkada Command password | — |
 | Org Short Name | The subdomain of your Command URL | `acme-training` |
 | Region | The API region your org lives in | `api`, `api.eu`, or `api.au` |
+
+<p align="center">
+  <img src="docs/screenshots/Login-Page.png" alt="Login screen" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/2FA-Page.png" alt="Two-Factor Authentication screen" width="48%" />
+</p>
  
 After successful login (and 2FA), you land on the **home screen** with the three tool tiles.
  
@@ -161,6 +172,14 @@ Spins up a populated org from a template.
 3. **Review/override** the device serials and the supporting-user list inline if needed.
 4. Click **Commission**. Watch the progress in the console pane — sites, buildings, devices, and users are created in dependency-safe order.
 
+<p align="center">
+  <img src="docs/screenshots/Commission-Templates.png" alt="Selecting a commission template" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/Commission-Autofill-Templates.png" alt="Commission form with kit-filled serials" width="48%" />
+</p>
+
+> 💡 Selecting a kit auto-fills every serial-number field — handy when you're cycling through the same hardware between classes.
+
 ### Users Invite Tool
  
 Bulk-invites users to your current org by pulling them from another org's **guest visits** in a date range.
@@ -171,6 +190,17 @@ Bulk-invites users to your current org by pulling them from another org's **gues
 2. **Pick a date range** — vCommander fetches the guest-visit participants who checked in during that window.
 3. **Review the list** — you can edit names and emails inline, or remove rows you don't want to invite.
 4. **Send invites** — invitations are sent against the org you're logged into. A copy-able summary at the end breaks down successful vs. failed invites.
+
+<p align="center">
+  <img src="docs/screenshots/User-Invite-API.png" alt="Step 1 — External org API key" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/User-Invite-Site-Select.png" alt="Step 2 — Site & date selection" width="48%" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/User-Invite-Review-Participants.png" alt="Step 3 — Review participants" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/User-Invite-Invitation-Complete.png" alt="Step 4 — Invitations complete" width="48%" />
+</p>
 
 ### Decommission Tool
  
@@ -186,8 +216,71 @@ Inventories the entire org, lets you select what to wipe, then deletes it all in
 3. **Select** — tick the rows you want gone. Use *Select All* per category for shortcuts.
 4. **Decommission** — click the button, **confirm in the dialog**, and watch deletion progress.
 5. **Results** — see a summary of successful vs. failed deletions. Export a TXT report at any time for your records.
+
+<p align="center">
+  <img src="docs/screenshots/Decommission-Scan-Complete.png" alt="Asset inventory after scan" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/Decommission-In-Progress.png" alt="Deletion progress in dependency order" width="48%" />
+</p>
+
 > 🛡 **Safety net:** Nothing is deleted until you both tick boxes *and* click through the confirmation dialog. You can always close the app to abort before confirming.
  
+---
+
+## Per-Template Walkthroughs
+
+Each template provisions a different shape of org, and a matching decommission cleans up exactly what was created. The pairs below show what a successful run looks like end-to-end — handy for verifying your output, or sanity-checking what's about to disappear.
+
+### Essentials (`ESS`)
+
+A minimal org with a camera, an alarm panel, and a guest site — useful for quick demos. Decommission removes the camera, alarm device, and guest site.
+
+<p align="center">
+  <img src="docs/screenshots/ESS-Commission-Complete.png" alt="ESS commission complete" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/Decommission-Complete-ESS.png" alt="ESS decommission complete" width="48%" />
+</p>
+
+### Access Control Specialist (`ACS`)
+
+The lightest template — only enables custom roles and disables global site admin. No physical devices are claimed, so there's nothing for the Decommission tool to clean up afterward.
+
+<p align="center">
+  <img src="docs/screenshots/ACS-Commission-Complete.png" alt="ACS commission complete" width="60%" />
+</p>
+
+### Video Security Specialist – Lab (`VSSL`)
+
+The full lab build: bullet, PTZ, command connector, access controller, with LPR + face analytics enabled and access groups, levels, and users provisioned. Decommission walks back through users, cameras, the connector, and the access controller in dependency order.
+
+<p align="center">
+  <img src="docs/screenshots/VSSL-Commission-Complete.png" alt="VSSL commission complete" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/Decommission-Complete-VSSL.png" alt="VSSL decommission complete" width="48%" />
+</p>
+
+### Video Security Specialist – Exam (`VSSE`)
+
+Three cameras (dome, fisheye, bullet) with org-wide LPR analytics and camera analytics turned on. Decommission removes all three cameras.
+
+<p align="center">
+  <img src="docs/screenshots/VSSE-Commission-Complete.png" alt="VSSE commission complete" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/Decommission-Complete-VSSE.png" alt="VSSE decommission complete" width="48%" />
+</p>
+
+### Alarms Specialist (`AS`)
+
+Camera + access controller + alarm panel + keypad, plus a configured alarm site. Decommission removes the camera, access controller, and both alarm devices.
+
+<p align="center">
+  <img src="docs/screenshots/AS-Commission-Complete.png" alt="AS commission complete" width="48%" />
+  &nbsp;
+  <img src="docs/screenshots/Decommission-Complete-AS.png" alt="AS decommission complete" width="48%" />
+</p>
+
+> 📋 If your run finished without "Commission complete!" or "Decommission Complete" at the bottom, open the API call log (see [Where Data Lives](#where-data-lives)) and look for the failing step — the missing line in the log will line up with whichever step is missing from the screenshots above.
+
 ---
 
 ## Supported Assets (Decommission)
@@ -206,6 +299,8 @@ The Decommission tool can delete:
 - Alarm Devices
 - Users (Admins / Members)
 > ℹ️ **Read-only category:** "Unassigned Devices" appears in the inventory but cannot be deleted — Verkada does not expose a delete endpoint for those.
+
+See the [Per-Template Walkthroughs](#per-template-walkthroughs) section above for examples of what a successful decommission summary looks like for each template.
  
 ---
 
