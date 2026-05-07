@@ -3,6 +3,7 @@ import asyncio
 import flet as ft
 
 from constants import (
+    APP_VERSION,
     BG,
     BORDER,
     CARD_PADDING,
@@ -41,7 +42,7 @@ class HomeView(ft.View):
         header = ft.Row(
             [
                 ft.Text(
-                    "vCommander", size=24, color=PRIMARY, weight=ft.FontWeight.BOLD
+                    f"vCommander v{APP_VERSION}", size=24, color=PRIMARY, weight=ft.FontWeight.BOLD
                 ),
                 ft.Row(
                     [
