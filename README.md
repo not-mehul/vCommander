@@ -403,8 +403,9 @@ To prevent dependency errors, the Decommission tool deletes assets in this fixed
 6. Guest Sites
 7. Access Controllers
 8. Cameras
-9. Alarm Devices
-10. **Alarm Sites** (includes Alarm Systems, last because they own children)
+9. Command Connector
+10. Alarm Devices
+11. **Alarm Sites** (includes Alarm Systems, last because they own children)
 > ⚠️ Editing `DELETION_ORDER` carelessly will produce foreign-key-style API errors mid-run. If you add a new asset type, slot it where its dependencies are already gone.
 
 ## Troubleshooting & FAQ
