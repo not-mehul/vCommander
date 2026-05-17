@@ -640,11 +640,15 @@ class UsersView(ft.View):
         """
         if not self._invited_records:
             return  # button shouldn't be visible without records, but be safe
-
-        names = "\t".join(
-            f"{first} {last}".strip() for first, last, _ in self._invited_records
+        sorted_records = sorted(
+            self._invited_records, key=lambda r: f"{r[0]} {r[1]}".strip().lower()
         )
-        emails = "\t".join(email for _, _, email in self._invited_records)
+
+        # 2. Build the tab-separated strings from the sorted list
+        names = "\t".join(
+            f"{first} {last}".strip() for first, last, _ in sorted_records
+        )
+        emails = "\t".join(email for _, _, email in sorted_records)
         text = f"{names}\n{emails}"
 
         async def _copy() -> None:

@@ -659,6 +659,15 @@ class CommissionView(ft.View):
             )
             track(ok)
 
+        if door_id and bullet_id:
+            ok, _ = await step(
+                "Linking LPR camera to door",
+                client.link_lpr_camera_to_door,
+                door_id,
+                bullet_id,
+            )
+            track(ok)
+
         ok, group_id = await step(
             "Creating Access Group",
             ext_client.create_access_group,

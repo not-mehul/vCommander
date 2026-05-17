@@ -824,6 +824,78 @@ class VerkadaInternalAPIClient:
                 "{}",
             )
 
+    def link_lpr_camera_to_door(self, door_id: str, lpr_camera_id: str) -> None:
+        """
+        Links an LPR camera to a door so the camera can trigger door unlocks.
+
+        Performs two steps:
+          1. Grants the 'lpr-unlock-enabled' door config param.
+          2. Registers the LPR camera as an IO device on the door.
+
+        Args:
+            door_id: The ID of the door to configure.
+            lpr_camera_id: The ID of the LPR-enabled camera to bind to the door.
+
+        Raises:
+            PermissionError: If not authenticated.
+            ConnectionError: If either step fails. The error message identifies
+                which step (config grant / device_io) failed.
+        """
+        # Step 1: Grant lpr-unlock-enabled on the door
+        config_url = (
+            f"https://api.command.verkada.com/__v/{self.org_short_name}/door/config/set"
+        )
+        config_payload = {
+            "doorId": door_id,
+            "action": "grant",
+            "paramName": "lpr-unlock-enabled",
+            "paramValue": "True",
+        }
+        config_data = self._request(
+            "POST",
+            config_url,
+            json=config_payload,
+            error_context=(
+                f"Failed to link LPR camera to door '{door_id}' "
+                f"(step 1: grant lpr-unlock-enabled)"
+            ),
+        )
+        log_api_call(
+            "POST",
+            f"{self.org_short_name}/door/config/set",
+            f'{{"doorId": "{door_id}", "paramName": "lpr-unlock-enabled"}}',
+            self._status(config_data),
+            "{}",
+        )
+
+        # Step 2: Register the LPR camera as a device_io on the door
+        io_url = (
+            f"https://api.command.verkada.com/__v/{self.org_short_name}"
+            f"/door/{door_id}/device_io"
+        )
+        io_payload = {
+            "configs": {"lprCameraId": lpr_camera_id},
+            "ioDeviceTypeName": "lpr-camera",
+            "ioSlotType": "lpr-camera",
+            "ioSlotIndex": 0,
+        }
+        io_data = self._request(
+            "POST",
+            io_url,
+            json=io_payload,
+            error_context=(
+                f"Failed to link LPR camera to door '{door_id}' "
+                f"(step 2: register device_io)"
+            ),
+        )
+        log_api_call(
+            "POST",
+            f"{self.org_short_name}/door/{door_id}/device_io",
+            f'{{"lprCameraId": "{lpr_camera_id}"}}',
+            self._status(io_data),
+            "{}",
+        )
+
     def invite_user(
         self, email: str, first_name: str, last_name: str, role: str = "Org Admin"
     ) -> dict:
@@ -1677,7 +1749,7 @@ class VerkadaInternalAPIClient:
             case "alarm_sites":
                 object_type = "responseSites"
                 request_type = "POST"
-                subdomain = "vproresponse"
+                subdomain = "vagent"
                 path = "response/site/list"
                 payload = {"includeResponseConfigs": True}
 
@@ -1831,7 +1903,7 @@ class VerkadaInternalAPIClient:
                     )
                 response_site_id, alarm_site_internal_id = object_id
                 request_type = "POST"
-                subdomain = "vproresponse"
+                subdomain = "vagent"
                 path = "response/site/delete"
                 payload = {
                     "responseSiteId": response_site_id,

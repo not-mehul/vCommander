@@ -1,0 +1,15 @@
+--- Changelog ---
+v3.0
+- Revamped GUI, new frontend built with Flet
+- Restructured backend to support long-term iteration
+- Added Commission Tool
+- Version check on startup with Github
+
+v3.1
+- (New feature) Sort the copy button for the invited users in alphabetical order
+- (Bug fix) Updated the subdomain for vproresponse to vagent
+- (Bug fix) Added LPR camera door linking to the commission tool
+
+
+--- NEWS ---
+- When the Alarm is triggered, you will not be able to delete an Alarm Site. It needs to be resolved to delete an alarm site.
