@@ -328,7 +328,7 @@ Everything user-tunable lives at the top of [`constants.py`](constants.py):
  
 | Constant | Default | Purpose |
 |---|---|---|
-| `APP_VERSION` | `3.0` | Shown in the title bar and used in API key names. |
+| `APP_VERSION` | `3.1` | Shown in the title bar and used in API key names. |
 | `GITHUB_REPO` | `not-mehul/vcommander` | Repo polled for the auto-update banner. |
 | `DEV_SKIP_LOGIN` | `False` | Set `True` to bypass auth and land on Home (dev only). |
 | `MIN_WIDTH` / `MIN_HEIGHT` | 1100 × 800 | Window minimum size. |
