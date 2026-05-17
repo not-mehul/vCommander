@@ -4,7 +4,7 @@ from pathlib import Path
 import flet as ft
 
 # App Info
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 GITHUB_REPO = "not-mehul/vCommander"
 
 _INTERNAL_MARKER = Path(__file__).parent / "assets" / "kits.internal.csv"
