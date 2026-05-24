@@ -451,7 +451,7 @@ class CommissionView(ft.View):
 
         ok, camera_id = await step(
             f"Adding camera ({dome_serial})",
-            client.add_object,
+            client.add_device,
             ESS_CAMERA_NAME,
             dome_serial,
         )
@@ -459,7 +459,7 @@ class CommissionView(ft.View):
 
         ok, panel_id = await step(
             f"Adding alarm panel ({panel_serial})",
-            client.add_object,
+            client.add_device,
             ESS_PANEL_NAME,
             panel_serial,
         )
@@ -480,12 +480,11 @@ class CommissionView(ft.View):
         if camera_id and site_id:
             ok, _ = await step(
                 "Configuring camera",
-                client.configure_object,
-                "camera",
+                client.configure_camera,
                 camera_id,
                 ESS_CAMERA_NAME,
                 site_id,
-                {"address": ESS_ADDRESS},
+                ESS_ADDRESS,
             )
             track(ok)
 
@@ -519,16 +518,21 @@ class CommissionView(ft.View):
             track(ok)
 
         if panel_id and site_id:
-            ok, _ = await step(
-                "Configuring alarm panel",
-                client.configure_object,
-                "alarm_panel",
-                panel_id,
-                ESS_PANEL_NAME,
+            ok, alarm_system_id = await step(
+                "Creating alarm system",
+                client.create_alarm_system,
                 site_id,
-                {},
             )
             track(ok)
+            if alarm_system_id:
+                ok, _ = await step(
+                    "Configuring alarm panel",
+                    client.configure_alarm_panel,
+                    panel_id,
+                    ESS_PANEL_NAME,
+                    alarm_system_id,
+                )
+                track(ok)
 
     async def _run_vssl_flow(self, step, track, page, client, ext_client) -> None:
         bullet_serial = self._device_serial("Bullet")
@@ -542,7 +546,7 @@ class CommissionView(ft.View):
 
         ok, bullet_id = await step(
             f"Adding camera ({bullet_serial})",
-            client.add_object,
+            client.add_device,
             VSS_BULLET_NAME,
             bullet_serial,
         )
@@ -550,7 +554,7 @@ class CommissionView(ft.View):
 
         ok, ptz_id = await step(
             f"Adding PTZ ({ptz_serial})",
-            client.add_object,
+            client.add_device,
             VSS_PTZ_NAME,
             ptz_serial,
         )
@@ -558,7 +562,7 @@ class CommissionView(ft.View):
 
         ok, connector_id = await step(
             f"Adding command connector ({connector_serial})",
-            client.add_object,
+            client.add_device,
             VSS_CONNECTOR_NAME,
             connector_serial,
         )
@@ -566,7 +570,7 @@ class CommissionView(ft.View):
 
         ok, controller_id = await step(
             f"Adding access controller ({controller_serial})",
-            client.add_object,
+            client.add_device,
             VSS_CONTROLLER_NAME,
             controller_serial,
         )
@@ -587,55 +591,57 @@ class CommissionView(ft.View):
         if bullet_id and site_id:
             ok, _ = await step(
                 "Configuring bullet",
-                client.configure_object,
-                "camera",
+                client.configure_camera,
                 bullet_id,
                 VSS_BULLET_NAME,
                 site_id,
-                {"address": VSS_ADDRESS},
+                VSS_ADDRESS,
             )
             track(ok)
 
         if ptz_id and site_id:
             ok, _ = await step(
                 "Configuring PTZ",
-                client.configure_object,
-                "camera",
+                client.configure_camera,
                 ptz_id,
                 VSS_PTZ_NAME,
                 site_id,
-                {"address": VSS_ADDRESS},
+                VSS_ADDRESS,
             )
             track(ok)
 
         if connector_id and site_id:
             ok, _ = await step(
                 "Configuring connector",
-                client.configure_object,
-                "connector",
+                client.configure_connector,
                 connector_id,
                 VSS_CONNECTOR_NAME,
                 site_id,
-                {"address": VSS_ADDRESS},
+                VSS_ADDRESS,
             )
             track(ok)
 
         door_id = None
         if controller_id and site_id:
-            ok, door_id = await step(
+            ok, access_controller_id = await step(
                 "Configuring access controller",
-                client.configure_object,
-                "controller",
+                client.configure_access_controller,
                 controller_id,
                 VSS_CONTROLLER_NAME,
                 site_id,
-                {
-                    "floor_id": floor_id,
-                    "timezone": HQ_TIMEZONE,
-                    "door_name": VSS_DOOR_NAME,
-                },
+                floor_id,
+                HQ_TIMEZONE,
             )
             track(ok)
+            if access_controller_id:
+                ok, door_id = await step(
+                    "Creating door",
+                    client.create_door,
+                    access_controller_id,
+                    VSS_DOOR_NAME,
+                    floor_id,
+                )
+                track(ok)
 
         ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
         track(ok)
@@ -662,7 +668,7 @@ class CommissionView(ft.View):
         if door_id and bullet_id:
             ok, _ = await step(
                 "Linking LPR camera to door",
-                client.link_lpr_camera_to_door,
+                client.enable_lpr_door,
                 door_id,
                 bullet_id,
             )
@@ -714,7 +720,7 @@ class CommissionView(ft.View):
 
         ok, dome_id = await step(
             f"Adding dome ({dome_serial})",
-            client.add_object,
+            client.add_device,
             VSS_EXAM_DOME_NAME,
             dome_serial,
         )
@@ -722,7 +728,7 @@ class CommissionView(ft.View):
 
         ok, bullet_id = await step(
             f"Adding bullet ({bullet_serial})",
-            client.add_object,
+            client.add_device,
             VSS_EXAM_BULLET_NAME,
             bullet_serial,
         )
@@ -730,7 +736,7 @@ class CommissionView(ft.View):
 
         ok, fisheye_id = await step(
             f"Adding fisheye ({fisheye_serial})",
-            client.add_object,
+            client.add_device,
             VSS_EXAM_FISHEYE_NAME,
             fisheye_serial,
         )
@@ -744,12 +750,11 @@ class CommissionView(ft.View):
             if cam_id and site_id:
                 ok, _ = await step(
                     f"Configuring {cam_name.lower()}",
-                    client.configure_object,
-                    "camera",
+                    client.configure_camera,
                     cam_id,
                     cam_name,
                     site_id,
-                    {"address": VSS_ADDRESS},
+                    VSS_ADDRESS,
                 )
                 track(ok)
 
@@ -787,7 +792,7 @@ class CommissionView(ft.View):
 
         ok, dome_id = await step(
             f"Adding camera ({dome_serial})",
-            client.add_object,
+            client.add_device,
             AS_DOME_NAME,
             dome_serial,
         )
@@ -795,7 +800,7 @@ class CommissionView(ft.View):
 
         ok, controller_id = await step(
             f"Adding access controller ({controller_serial})",
-            client.add_object,
+            client.add_device,
             AS_CONTROLLER_NAME,
             controller_serial,
         )
@@ -803,7 +808,7 @@ class CommissionView(ft.View):
 
         ok, panel_id = await step(
             f"Adding alarm panel ({panel_serial})",
-            client.add_object,
+            client.add_device,
             AS_PANEL_NAME,
             panel_serial,
         )
@@ -811,7 +816,7 @@ class CommissionView(ft.View):
 
         ok, keypad_id = await step(
             f"Adding alarm keypad ({keypad_serial})",
-            client.add_object,
+            client.add_device,
             AS_KEYPAD_NAME,
             keypad_serial,
         )
@@ -831,20 +836,25 @@ class CommissionView(ft.View):
 
         door_id = None
         if controller_id and site_id:
-            ok, door_id = await step(
+            ok, access_controller_id = await step(
                 "Configuring access controller",
-                client.configure_object,
-                "controller",
+                client.configure_access_controller,
                 controller_id,
                 AS_CONTROLLER_NAME,
                 site_id,
-                {
-                    "floor_id": floor_id,
-                    "timezone": HQ_TIMEZONE,
-                    "door_name": AS_DOOR_NAME,
-                },
+                floor_id,
+                HQ_TIMEZONE,
             )
             track(ok)
+            if access_controller_id:
+                ok, door_id = await step(
+                    "Creating door",
+                    client.create_door,
+                    access_controller_id,
+                    AS_DOOR_NAME,
+                    floor_id,
+                )
+                track(ok)
 
         if door_id:
             ok, _ = await step(
@@ -860,12 +870,11 @@ class CommissionView(ft.View):
         if dome_id and site_id:
             ok, _ = await step(
                 "Configuring camera",
-                client.configure_object,
-                "camera",
+                client.configure_camera,
                 dome_id,
                 AS_DOME_NAME,
                 site_id,
-                {"address": AS_ADDRESS},
+                AS_ADDRESS,
             )
             track(ok)
 
@@ -891,31 +900,32 @@ class CommissionView(ft.View):
             track(ok)
 
         if panel_id and keypad_id and site_id:
-            # configure_object("alarm_panel", ...) creates the alarm system
-            # internally and returns its ID, which the keypad step needs.
+            # Alarm panels and keypads attach to an alarm system, which
+            # must be created first. The keypad step needs the system id.
             ok, alarm_system_id = await step(
-                "Configuring alarm panel",
-                client.configure_object,
-                "alarm_panel",
-                panel_id,
-                AS_PANEL_NAME,
+                "Creating alarm system",
+                client.create_alarm_system,
                 site_id,
-                {},
             )
             track(ok)
 
             if alarm_system_id:
                 ok, _ = await step(
+                    "Configuring alarm panel",
+                    client.configure_alarm_panel,
+                    panel_id,
+                    AS_PANEL_NAME,
+                    alarm_system_id,
+                )
+                track(ok)
+
+                ok, _ = await step(
                     "Configuring alarm keypad",
-                    client.configure_object,
-                    "keypad",
+                    client.configure_keypad,
                     keypad_id,
                     AS_KEYPAD_NAME,
-                    site_id,
-                    {
-                        "alarm_system_id": alarm_system_id,
-                        "serial_number": keypad_serial,
-                    },
+                    alarm_system_id,
+                    keypad_serial,
                 )
                 track(ok)
 
@@ -939,10 +949,10 @@ class CommissionView(ft.View):
                 continue
             ok, _ = await step(
                 f"Adding user {first} {last}",
-                client.add_supporting_user,
+                client.invite_user,
+                email_val,
                 first,
                 last,
-                email_val,
                 role,
             )
             track(ok)

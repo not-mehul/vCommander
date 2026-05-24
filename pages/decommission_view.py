@@ -18,8 +18,8 @@ from apis.external_api import VerkadaExternalAPIClient
 from constants import (
     _EXTERNAL_DELETERS,
     _EXTERNAL_GETTERS,
-    _INTERNAL_DELETE_SLUGS,
-    _INTERNAL_FETCH_SLUGS,
+    _INTERNAL_DELETERS,
+    _INTERNAL_GETTERS,
     ASSET_CATEGORIES,
     BG,
     BORDER,
@@ -247,7 +247,7 @@ class DecommissionView(ft.View):
                 e.page,
                 loop,
                 "Granting Access System Admin",
-                client.set_access_system_admin,
+                client.enable_access_system_admin,
             )
 
             intercom_serials: set[str] = set()
@@ -314,9 +314,9 @@ class DecommissionView(ft.View):
     ) -> list[dict]:
         """Fetch one category of assets, applying intercom dedup where needed."""
         try:
-            if category in _INTERNAL_FETCH_SLUGS:
-                slug = _INTERNAL_FETCH_SLUGS[category]
-                items = await loop.run_in_executor(_executor, client.get_object, slug)
+            if category in _INTERNAL_GETTERS:
+                getter = getattr(client, _INTERNAL_GETTERS[category])
+                items = await loop.run_in_executor(_executor, getter)
                 if category == "Access Controllers" and intercom_serials:
                     items = [
                         item
@@ -584,15 +584,17 @@ class DecommissionView(ft.View):
         await asyncio.sleep(0)
 
         try:
-            if category in _INTERNAL_DELETE_SLUGS:
-                slug = _INTERNAL_DELETE_SLUGS[category]
-                if slug == "alarm_sites":
-                    delete_id = [item.get("id"), item.get("site_id")]
+            if category in _INTERNAL_DELETERS:
+                # delete_alarm_site takes (response_site_id, site_id); the
+                # rest take a single id. Keep the special case here so the
+                # client API stays uniform.
+                deleter = getattr(int_client, _INTERNAL_DELETERS[category])
+                if category == "Alarm Sites":
+                    await loop.run_in_executor(
+                        _executor, deleter, item.get("id"), item.get("site_id")
+                    )
                 else:
-                    delete_id = item_id
-                await loop.run_in_executor(
-                    _executor, int_client.delete_object, slug, delete_id
-                )
+                    await loop.run_in_executor(_executor, deleter, item_id)
             else:
                 method_name = _EXTERNAL_DELETERS[category]
                 delete_fn = getattr(ext_client, method_name)
