@@ -74,12 +74,8 @@ CARD_SHADOW = ft.BoxShadow(
 #   - create_alarm_site   (8-tuple: city, country, lat, lon, state, street1,
 #                          timezone, zipcode)
 #   - create_guest_site   (4-tuple: full_address, lat, lon, country_code)
+#   - configure_camera / configure_connector (3-tuple: label, lat, lon)
 # These calls unpack tuples into the matching NamedTuple internally.
-#
-# For configure_object, callers must wrap these tuples in a dict — e.g.
-# {"address": ESS_ADDRESS} for cameras/connectors, or
-# {"floor_id": ..., "timezone": ...} for controllers — because
-# configure_object expects object_parameters to be a dict with named keys.
 
 # ESS commission constants — all fixed for the HQ reference setup
 ESS_SITE_NAME = "HQ"
@@ -156,8 +152,8 @@ AS_ALARM_ADDRESS = (
     "94401",
 )
 
-# Default IANA timezone for HQ-located devices. Used when constructing
-# configure_object("controller", ...) parameter dicts in the view.
+# Default IANA timezone for HQ-located devices. Passed to
+# configure_access_controller() in the view.
 HQ_TIMEZONE = "America/Los_Angeles"
 
 # Template field requirements per template code.
@@ -236,29 +232,38 @@ DELETION_ORDER = [
 ROLE_PROPAGATION_SECONDS = 3
 BUILDING_PROVISION_SECONDS = 3
 
-_INTERNAL_FETCH_SLUGS = {
-    "Sensors": "sensors",
-    "Intercoms": "intercoms",
-    "Desk Stations": "desk_stations",
-    "Mailroom Sites": "mailroom_sites",
-    "Command Connectors": "connectors",
-    "Access Controllers": "access_controllers",
-    "Alarm Devices": "alarm_devices",
-    "Alarm Sites": "alarm_sites",
-    "Unassigned Devices": "unassigned_devices",
+# Default HTTP timeout for every internal-API request (seconds).
+DEFAULT_TIMEOUT = 30
+
+# Maps a UI category label to the VerkadaInternalAPIClient method that
+# fetches/deletes that category. decommission_view uses these for dynamic
+# dispatch when iterating over the user's category selection.
+#
+# When you add a new category, add the entry here AND implement the
+# matching get_<x>() / delete_<x>() on VerkadaInternalAPIClient.
+_INTERNAL_GETTERS = {
+    "Sensors": "get_sensor",
+    "Intercoms": "get_intercom",
+    "Desk Stations": "get_desk_station",
+    "Mailroom Sites": "get_mailroom_site",
+    "Command Connectors": "get_connector",
+    "Access Controllers": "get_access_controller",
+    "Alarm Devices": "get_alarm_device",
+    "Alarm Sites": "get_alarm_site",
+    "Unassigned Devices": "get_unassigned_device",
 }
 
-_INTERNAL_DELETE_SLUGS = {
-    "Cameras": "cameras",
-    "Sensors": "sensors",
-    "Desk Stations": "desk_stations",
-    "Mailroom Sites": "mailroom_sites",
-    "Command Connectors": "connectors",
-    "Access Controllers": "access_controllers",
-    "Guest Sites": "guest_sites",
-    "Alarm Devices": "alarm_devices",
-    "Alarm Sites": "alarm_sites",
-    "Intercoms": "intercoms",
+_INTERNAL_DELETERS = {
+    "Cameras": "delete_camera",
+    "Sensors": "delete_sensor",
+    "Desk Stations": "delete_desk_station",
+    "Mailroom Sites": "delete_mailroom_site",
+    "Command Connectors": "delete_connector",
+    "Access Controllers": "delete_access_controller",
+    "Guest Sites": "delete_guest_site",
+    "Alarm Devices": "delete_alarm_device",
+    "Alarm Sites": "delete_alarm_site",
+    "Intercoms": "delete_intercom",
 }
 
 _EXTERNAL_GETTERS = {
