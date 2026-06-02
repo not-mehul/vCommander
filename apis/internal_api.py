@@ -191,37 +191,6 @@ class VerkadaInternalAPIClient:
             ),
         )
 
-    def _enable_org_feature(
-        self,
-        agreement_key: str,
-        feature_flags: dict[str, bool],
-        feature_label: str,
-    ) -> None:
-        """
-        Internal helper: sign an org agreement, then set feature flags.
-        If the agreement step fails, flags are NOT touched. If the flag
-        step fails, the agreement stays signed (idempotent).
-        """
-        self._request(
-            "org.sign_agreement",
-            path_params={"org_id": self.org_id},
-            json={"agreementKey": agreement_key, "userEmail": self.email},
-            error_context=(
-                f"Failed to enable {feature_label} "
-                f"(step 1: sign {agreement_key} agreement)"
-            ),
-            log_request=f'{{"agreementKey": "{agreement_key}"}}',
-        )
-        self._request(
-            "org.feature.set",
-            json={
-                "organizationId": self.org_id,
-                "params": feature_flags,
-                "annotations": {"timestamp": int(time.time()), "userId": self.user_id},
-            },
-            error_context=f"Failed to enable {feature_label} (step 2: feature flags)",
-        )
-
     def _set_camera_features(
         self,
         camera_ids: list[str],
@@ -526,7 +495,7 @@ class VerkadaInternalAPIClient:
             The device ID string on success.
         """
         data, status = self._request(
-            "device.commission",
+            "org.add_device",
             json={
                 "organizationId": self.org_id,
                 "devices": [
@@ -558,7 +527,7 @@ class VerkadaInternalAPIClient:
             )
 
         self._log(
-            "device.commission",
+            "org.add_device",
             status,
             log_request=f'{{"serialNumber": "{serial_number}", "name": "{device_name}"}}',
             log_response=f'{{"deviceId": "{device_id}"}}',
@@ -567,7 +536,7 @@ class VerkadaInternalAPIClient:
 
     def get_unassigned_device(self) -> list[dict[str, Any]]:
         return self._fetch_list(
-            "unassigned_devices.list",
+            "org.unassigned_devices.list",
             response_key="devices",
             path_params={"org_id": self.org_id},
             mapping_func=lambda x: {
@@ -576,6 +545,32 @@ class VerkadaInternalAPIClient:
                 "serial_number": x["serialNumber"],
             },
         )
+
+    def is_org_empty(self) -> bool:
+        """
+        Pre-flight check for destructive flows: returns True iff the org
+        holds no devices/sites/users (i.e. delete would succeed).
+        """
+        data, _ = self._request(
+            "org.check_empty",
+            json={"organizationId": self.org_id, "validateOnly": True},
+            error_context="Failed to check if org is empty",
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+        )
+        return bool(data.get("orgEmpty"))
+
+    def get_device_count(self) -> dict[str, int]:
+        """
+        Returns {device_type: quantity} across every device category Verkada
+        tracks. Useful for capacity dashboards / decommission accounting.
+        """
+        data, _ = self._request(
+            "org.device_count",
+            path_params={"org_id": self.org_id},
+            error_context="Failed to fetch device counts",
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+        )
+        return {d["deviceType"]: d["quantity"] for d in data.get("deviceCounts", [])}
 
     # ------------------------------------------------------------------
     # Users
@@ -675,15 +670,9 @@ class VerkadaInternalAPIClient:
         VerkadaExternalAPIClient). Key expires in 1 hour.
 
         Raises:
-            ConnectionError: If the API key limit (10) is exceeded or other errors occur.
+            ConnectionError: If the API key limit (10) is exceeded.
+            APIError: On other API failures.
         """
-        # Special-cased: the "10 key limit" case needs a custom error message.
-        if not self.auth_data:
-            raise PermissionError("Not authenticated. Please call login() first.")
-
-        endpoint, formatted_path = resolve("apikey.create", {"org_id": self.org_id})
-        url = build_url(endpoint, self.org_short_name, formatted_path)
-
         payload = {
             "api_key_name": API_NAME + str(int(time.time())),
             "expires_at": int(time.time() + 3600),
@@ -693,51 +682,57 @@ class VerkadaInternalAPIClient:
                 "PUBLIC_API_ACCESS_READ_WRITE",
                 "PUBLIC_API_ALARMS_READ_WRITE",
                 "PUBLIC_API_CORE_READ_WRITE",
+                "PUBLIC_API_HELIX_READ_WRITE",
                 "PUBLIC_API_WORKPLACE_READ_WRITE",
                 "PUBLIC_API_INTERCOM_READ_WRITE",
+                "PUBLIC_API_CAMERA_AUDIO",
             ],
         }
+        log_request = f'{{"api_key_name": "{payload["api_key_name"]}"}}'
 
         try:
-            response = self.session.post(
-                url,
+            data, status = self._request(
+                "org.api_key.create",
+                path_params={"org_id": self.org_id},
                 json=payload,
-                headers=self._get_headers(),
-                timeout=DEFAULT_TIMEOUT,
+                error_context="Failed to create external API key",
+                log_request=log_request,
+                auto_log=False,
             )
-            data = response.json()
-        except JSONDecodeError:
-            raise ConnectionError(
-                "Failed to create external API key: non-JSON response."
-            )
-        except RequestException as e:
-            raise ConnectionError(f"Failed to create external API key: {e}")
-
-        if not response.ok:
-            msg = data.get("message", response.text)
-            if response.status_code == 400 and msg == "Would exceed 10 api keys limit":
+        except APIError as e:
+            if e.status_code == 400 and "10 api keys limit" in str(e):
                 raise ConnectionError(
                     "Failed to create external API key: exceeded 10 API keys limit."
                 )
-            raise ConnectionError(f"Failed to create external API key: {msg}")
+            raise
 
         api_key = data.get("apiKey", "")
-        log_api_call(
-            endpoint.method,
-            f"{self.org_short_name}/{formatted_path}",
-            f'{{"api_key_name": "{payload["api_key_name"]}"}}',
-            str(response.status_code),
-            f'{{"apiKey": "{api_key}"}}',
+        self._log(
+            "org.api_key.create",
+            status,
+            path_params={"org_id": self.org_id},
+            log_request=log_request,
+            log_response=f'{{"apiKey": "{api_key}"}}',
         )
         return api_key
 
-    # TODO
-    def get_external_api_key(self) -> None:
-        pass
+    def get_external_api_key(self) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "org.api_key.list",
+            response_key="apiKeys",
+            path_params={"org_id": self.org_id},
+            mapping_func=lambda x: {
+                "id": x["apiKeyId"],
+                "name": x["apiKeyName"],
+            },
+        )
 
-    # TODO
-    def delete_external_api_key(self) -> None:
-        pass
+    def delete_external_api_key(self, api_key_id: str) -> None:
+        self._delete(
+            "org.api_key.delete",
+            path_params={"org_id": self.org_id, "api_key_id": api_key_id},
+            oid=api_key_id,
+        )
 
     # ------------------------------------------------------------------
     # System-wide permissions
@@ -781,42 +776,64 @@ class VerkadaInternalAPIClient:
     def enable_custom_roles(self) -> None:
         """Enables custom roles for the organization."""
         self._request(
-            "org.custom_roles.enable",
+            "org.custom_roles",
             path_params={"org_id": self.org_id},
             json={},
             error_context="Failed to enable custom roles",
         )
 
-    def enable_org_analytics(self) -> None:
+    def enable_org_features(self, with_analytics: bool) -> None:
         """
-        Sign CV_ANALYTICS agreement and enable org-level analytics
-        (face detection, people history, person attributes).
+        Sign org agreement(s) and enable feature flags during commissioning.
+
+        Two profiles, selected by the toggle:
+          with_analytics=True  → sign LPR + CV_ANALYTICS, enable all 8 flags
+          with_analytics=False → sign LPR only, enable the 4 LPR-related flags
+
+        Sequential calls — no rollback. If sign_agreement succeeds but
+        org.features fails, the agreement stays signed (idempotent) and
+        the caller retries.
         """
-        self._enable_org_feature(
-            agreement_key="CV_ANALYTICS",
-            feature_flags={
+        if with_analytics:
+            agreements = ["LPR", "CV_ANALYTICS"]
+            flags = {
+                "ai-summarization": True,
                 "face-detection": True,
+                "license-plate-recognition": True,
+                "natural-language-search": True,
                 "people-history": True,
                 "person-attributes": True,
+                "poi-notifications": True,
+                "vehicle-history": True,
+            }
+        else:
+            agreements = ["LPR"]
+            flags = {
+                "ai-summarization": True,
+                "license-plate-recognition": True,
+                "natural-language-search": True,
+                "vehicle-history": True,
+            }
+
+        for key in agreements:
+            self._request(
+                "org.sign_agreement",
+                path_params={"org_id": self.org_id},
+                json={"agreementKey": key, "userEmail": self.email},
+                error_context=f"Failed to sign {key} agreement",
+                log_request=f'{{"agreementKey": "{key}"}}',
+            )
+
+        self._request(
+            "org.features",
+            json={
+                "organizationId": self.org_id,
+                "params": flags,
+                "annotations": {"timestamp": int(time.time()), "userId": self.user_id},
             },
-            feature_label="org analytics",
+            error_context="Failed to set org features",
+            log_request=f'{{"params": "{len(flags)} flags"}}',
         )
-
-    # TODO
-    def disable_org_analytics(self) -> None:
-        pass
-
-    def enable_lpr_mode(self) -> None:
-        """Sign LPR agreement and enable org-level license-plate-recognition."""
-        self._enable_org_feature(
-            agreement_key="LPR",
-            feature_flags={"license-plate-recognition": True},
-            feature_label="LPR mode",
-        )
-
-    # TODO
-    def disable_lpr_mode(self) -> None:
-        pass
 
     # ------------------------------------------------------------------
     # Sites
