@@ -1334,7 +1334,7 @@ class VerkadaInternalAPIClient:
 
     def get_intercom(self) -> list[dict[str, Any]]:
         return self._fetch_list(
-            "intercoms.list",
+            "intercom.list",
             response_key="intercoms",
             path_params={"org_id": self.org_id},
             mapping_func=lambda x: {
@@ -1346,14 +1346,15 @@ class VerkadaInternalAPIClient:
 
     def delete_intercom(self, device_id: str) -> None:
         self._delete(
-            "intercoms.delete",
+            "intercom.delete",
             path_params={"org_id": self.org_id, "object_id": device_id},
+            json={"sharding": True},
             oid=device_id,
         )
 
     def get_desk_station(self) -> list[dict[str, Any]]:
         return self._fetch_list(
-            "desk_stations.list",
+            "desk_station.list",
             response_key="deskApps",
             path_params={"org_id": self.org_id},
             mapping_func=lambda x: {
@@ -1365,7 +1366,7 @@ class VerkadaInternalAPIClient:
 
     def delete_desk_station(self, device_id: str) -> None:
         self._delete(
-            "desk_stations.delete",
+            "desk_station.delete",
             path_params={"org_id": self.org_id, "object_id": device_id},
             json={"sharding": True},
             oid=device_id,
@@ -1377,7 +1378,7 @@ class VerkadaInternalAPIClient:
 
     def get_sensor(self) -> list[dict[str, Any]]:
         return self._fetch_list(
-            "sensors.list",
+            "sensor.list",
             response_key="sensorDevice",
             payload={"organizationId": self.org_id},
             mapping_func=lambda x: {
@@ -1389,7 +1390,7 @@ class VerkadaInternalAPIClient:
 
     def delete_sensor(self, device_id: str) -> None:
         self._delete(
-            "sensors.delete",
+            "sensor.delete",
             json={"deviceId": device_id, "sharding": True},
             oid=device_id,
         )
