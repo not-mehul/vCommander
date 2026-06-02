@@ -198,7 +198,7 @@ class VerkadaInternalAPIClient:
         feature_label: str,
     ) -> None:
         self._request(
-            "camera.feature.set",
+            "camera.create.feature",
             json={"cameraIds": camera_ids, "params": feature_flags},
             error_context=f"Failed to enable {feature_label}",
             log_request=f'{{"cameraIds": {camera_ids}}}',
@@ -908,9 +908,32 @@ class VerkadaInternalAPIClient:
     # Camera
     # ------------------------------------------------------------------
 
-    # TODO
-    def get_camera(self) -> None:
-        pass
+    def get_camera(self) -> list[dict[str, Any]]:
+        """
+        Lists all cameras in the org via the device search endpoint.
+
+        Paging is fixed at size=1000: orgs with more than 1000 cameras
+        will silently truncate. The endpoint supports cursor paging
+        (searchAfter); wire it up if/when the cap becomes a real ceiling.
+        """
+        return self._fetch_list(
+            "camera.list",
+            response_key="devices",
+            payload={
+                "terms": {"deviceType": ["camera"]},
+                "sortField": "device_type",
+                "sortOrder": "asc",
+                "size": 1000,
+                "searchAfter": None,
+                "deviceTypes": ["camera"],
+            },
+            mapping_func=lambda x: {
+                "id": x["deviceId"],
+                "name": x.get("deviceName"),
+                "serial_number": x.get("serialNumber"),
+                "site_id": x.get("siteId"),
+            },
+        )
 
     def configure_camera(
         self,
@@ -927,19 +950,19 @@ class VerkadaInternalAPIClient:
         log_req = f'{{"cameraId": "{camera_id}"}}'
 
         self._request(
-            "camera.name.set",
+            "camera.create.name",
             json={"cameraId": camera_id, "name": camera_name},
             error_context=f"Failed to configure name for camera '{camera_name}'",
             log_request=log_req,
         )
         self._request(
-            "camera.site.batch.set",
+            "camera.create.site",
             json={"cameraIds": [camera_id], "destinationSiteId": site_id},
             error_context=f"Failed to assign camera '{camera_name}' to site",
             log_request=log_req,
         )
         self._request(
-            "camera.location.set",
+            "camera.create.location",
             json={
                 "cameraId": camera_id,
                 "angle": 0,
@@ -952,11 +975,11 @@ class VerkadaInternalAPIClient:
         )
 
     def delete_camera(self, camera_id: str) -> None:
-        self._delete("cameras.delete", json={"cameraId": camera_id}, oid=camera_id)
+        self._delete("camera.delete", json={"cameraId": camera_id}, oid=camera_id)
 
     def get_connector(self) -> list[dict[str, Any]]:
         return self._fetch_list(
-            "connectors.list",
+            "command_connector.list",
             response_key="items",
             payload={"organizationId": self.org_id},
             mapping_func=lambda x: {
@@ -977,7 +1000,7 @@ class VerkadaInternalAPIClient:
         addr = address if isinstance(address, Address) else Address(*address)
 
         data, status = self._request(
-            "connector.update_box",
+            "command_connector.create",
             json={
                 "deviceId": device_id,
                 "locationLabel": addr.label,
@@ -996,14 +1019,14 @@ class VerkadaInternalAPIClient:
                 "no deviceId in response."
             )
         self._log(
-            "connector.update_box",
+            "command_connector.create",
             status,
             log_request=f'{{"deviceId": "{device_id}"}}',
         )
 
     def delete_connector(self, device_id: str) -> None:
         self._delete(
-            "connectors.delete",
+            "command_connector.delete",
             json={"deviceId": device_id, "organizationId": self.org_id},
             oid=device_id,
         )
@@ -1023,16 +1046,15 @@ class VerkadaInternalAPIClient:
             feature_label="camera analytics",
         )
 
-    # TODO
-    def disable_camera_analytics(self) -> None:
-        pass
-
     def enable_camera_lpr(self, camera_ids: list[str]) -> None:
         """
         Enable LPR on a list of cameras AND set their operating mode to 'lpr'.
 
         Two phases: one batch feature-flag call, then one config call per
         camera (the operating-mode endpoint accepts only one cameraId).
+
+        Caller must pass only Bullet-model camera IDs; LPR cannot be
+        enabled on other camera models.
         """
         self._set_camera_features(
             camera_ids,
@@ -1041,7 +1063,7 @@ class VerkadaInternalAPIClient:
         )
         for camera_id in camera_ids:
             self._request(
-                "camera.config.set",
+                "camera.create.lpr_config",
                 json={
                     "cameraId": camera_id,
                     "params": {"camera-config.operating-mode": "lpr"},
@@ -1049,10 +1071,6 @@ class VerkadaInternalAPIClient:
                 error_context="Failed to enable camera LPR (step 2: operating mode)",
                 log_request=f'{{"cameraId": "{camera_id}"}}',
             )
-
-    # TODO
-    def disable_camera_lpr(self) -> None:
-        pass
 
     # ------------------------------------------------------------------
     # Access Control
