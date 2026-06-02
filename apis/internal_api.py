@@ -592,54 +592,43 @@ class VerkadaInternalAPIClient:
         name are None if the response did not include user details.
 
         Raises ValueError if the user is already in the org.
-        Raises ConnectionError for other API failures.
+        Raises ConnectionError / APIError for other API failures.
         """
-        if not self.auth_data:
-            raise PermissionError("Not authenticated. Please call login() first.")
-
-        endpoint, formatted_path = resolve("user.invite")
-        url = build_url(endpoint, self.org_short_name, formatted_path)
-
-        org_admin = role == "Org Admin"
         payload = {
             "organizationId": self.org_id,
             "email": email,
-            "orgAdmin": org_admin,
+            "orgAdmin": role == "Org Admin",
             "commandUserAdmin": False,
             "firstName": first_name,
             "lastName": last_name,
             "inviteFf": True,
         }
+        log_request = (
+            f'{{"email": "{email}", "firstName": "{first_name}", '
+            f'"lastName": "{last_name}"}}'
+        )
 
         try:
-            response = self.session.post(
-                url,
+            data, status = self._request(
+                "user.create",
                 json=payload,
-                headers=self._get_headers(),
-                timeout=DEFAULT_TIMEOUT,
+                error_context=f"Invite failed for {email}",
+                log_request=log_request,
+                auto_log=False,
             )
-            data = response.json()
-        except JSONDecodeError:
-            raise ConnectionError(f"Invite failed for {email}: non-JSON response.")
-        except RequestException as e:
-            raise ConnectionError(f"Invite failed for {email}: {e}")
-
-        if not response.ok:
-            err_id = data.get("id", "")
-            msg = data.get("message", response.text)
-            if err_id == "cannot_invite_existing":
+        except APIError as e:
+            if e.code == "cannot_invite_existing":
                 raise ValueError(f"User already exists in this org: {email}")
-            raise ConnectionError(f"Invite failed for {email}: {msg}")
+            raise
 
         invitation_id = (data.get("orgInvitation") or [{}])[0].get(
             "orgInvitationId", ""
         )
-        log_api_call(
-            endpoint.method,
-            f"{self.org_short_name}/{formatted_path}",
-            f'{{"email": "{email}", "firstName": "{first_name}", "lastName": "{last_name}"}}',
-            str(response.status_code),
-            f'{{"orgInvitationId": "{invitation_id}"}}',
+        self._log(
+            "user.create",
+            status,
+            log_request=log_request,
+            log_response=f'{{"orgInvitationId": "{invitation_id}"}}',
         )
 
         users = data.get("users") or []
@@ -652,13 +641,43 @@ class VerkadaInternalAPIClient:
             }
         return {"user_id": None, "email": email, "name": None}
 
-    # TODO
-    def get_user(self) -> None:
-        pass
+    def get_user(self) -> list[dict[str, Any]]:
+        """
+        Lists active + invited org users.
 
-    # TODO
-    def delete_user(self) -> None:
-        pass
+        Paging is fixed at pageSize=1000: orgs with more than 1000 users
+        will silently truncate. The v2 endpoint supports cursor paging
+        (searchAfter); wire it up if/when the cap becomes a real ceiling.
+        """
+        return self._fetch_list(
+            "user.list",
+            response_key="users",
+            path_params={"org_id": self.org_id},
+            payload={
+                "paging": {"pageSize": 1000, "sortOrder": ["full_name:asc"]},
+                "isVisitor": False,
+                "status": ["active", "invited"],
+                "organizationId": self.org_id,
+                "userDirectoryIds": [],
+                "includeRoleGrants": True,
+                "includeGroups": True,
+                "useEs": True,
+            },
+            mapping_func=lambda x: {
+                "id": x["userId"],
+                "email": x["email"],
+                "first_name": x.get("firstName"),
+                "last_name": x.get("lastName"),
+                "is_org_admin": x.get("isOrganizationAdmin", False),
+            },
+        )
+
+    def delete_user(self, user_id: str) -> None:
+        self._delete(
+            "user.delete",
+            json={"organizationId": self.org_id, "userIds": [user_id]},
+            oid=user_id,
+        )
 
     # ------------------------------------------------------------------
     # API Keys
