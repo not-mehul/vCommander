@@ -139,20 +139,57 @@ class VerkadaInternalAPIClient:
         endpoint, formatted_path = resolve("login")
         return build_url(endpoint, self.org_short_name, formatted_path)
 
-    def _set_global_site_admin(self, enabled: bool) -> dict:
+    def _set_global_site_admin(self, enabled: bool) -> None:
+        key = (
+            "permissions.global_site_admin.enable"
+            if enabled
+            else "permissions.global_site_admin.disable"
+        )
         action = "enable" if enabled else "disable"
-        data, _ = self._request(
-            "org.settings.update",
+        self._request(
+            key,
             json={
                 "organizationId": self.org_id,
                 "settings": {"globalSiteAdmin": enabled},
             },
             error_context=f"Failed to {action} Global Site Admin",
             log_request=(
-                f'{{"settings": {{"globalSiteAdmin": {str(enabled).lower()}}}}}'
+                f'{{"globalSiteAdmin": {str(enabled).lower()}}}'
             ),
         )
-        return data
+
+    def _set_user_permission(
+        self,
+        endpoint_key: str,
+        permission: str,
+        *,
+        grant: bool,
+        label: str,
+    ) -> None:
+        """
+        Grant or revoke a single org-scoped permission on the current user.
+
+        v2 splits the legacy multi-grant `access.roles.modify` endpoint
+        into per-permission enable/disable keys (each just a thin wrapper
+        around POST org/set_user_permissions with the grant/revoke arrays
+        swapped); this helper carries the payload shape so callers only
+        name the endpoint key and the permission string.
+        """
+        perms = [{"entityId": self.org_id, "permission": permission}]
+        self._request(
+            endpoint_key,
+            json={
+                "organizationId": self.org_id,
+                "targetUserId": self.user_id,
+                "returnPermissions": False,
+                "grant": perms if grant else [],
+                "revoke": [] if grant else perms,
+            },
+            error_context=f"Failed to {'grant' if grant else 'revoke'} {label}",
+            log_request=(
+                f'{{"targetUserId": "{self.user_id}", "permission": "{permission}"}}'
+            ),
+        )
 
     def _enable_org_feature(
         self,
@@ -706,56 +743,36 @@ class VerkadaInternalAPIClient:
     # System-wide permissions
     # ------------------------------------------------------------------
 
-    def enable_global_site_admin(self) -> dict:
+    def enable_global_site_admin(self) -> None:
         """Enable globalSiteAdmin: org admins inherit access to all sites."""
-        return self._set_global_site_admin(True)
+        self._set_global_site_admin(True)
 
-    def disable_global_site_admin(self) -> dict:
+    def disable_global_site_admin(self) -> None:
         """Disable globalSiteAdmin: per-site grants required."""
-        return self._set_global_site_admin(False)
+        self._set_global_site_admin(False)
 
-    def enable_access_system_admin(self) -> None:
+    def enable_access_admin(self) -> None:
         """
-        Escalates the current user to ACCESS_CONTROL_SYSTEM_ADMIN +
-        ACCESS_CONTROL_USER_ADMIN. Required to delete certain access
-        control hardware.
+        Grant the current user the elevated access-control admin roles
+        (ACCESS_CONTROL_SYSTEM_ADMIN + ACCESS_CONTROL_USER_ADMIN) required
+        to delete certain access control hardware.
+
+        Two API calls — atomicity note: if the second fails, the user is
+        left with SYSTEM_ADMIN but not USER_ADMIN. There's no rollback;
+        the caller surfaces the failure and retries.
         """
-        self._request(
-            "access.roles.modify",
-            json={
-                "grants": [
-                    {
-                        "entityId": self.org_id,
-                        "granteeId": self.user_id,
-                        "roleKey": "ACCESS_CONTROL_SYSTEM_ADMIN",
-                        "role": "ACCESS_CONTROL_SYSTEM_ADMIN",
-                    },
-                    {
-                        "entityId": self.org_id,
-                        "granteeId": self.user_id,
-                        "roleKey": "ACCESS_CONTROL_USER_ADMIN",
-                        "role": "ACCESS_CONTROL_USER_ADMIN",
-                    },
-                ],
-            },
-            error_context="Failed to set Access System Admin",
-            log_request=(
-                f'{{"granteeId": "{self.user_id}", '
-                f'"roles": ["ACCESS_CONTROL_SYSTEM_ADMIN", "ACCESS_CONTROL_USER_ADMIN"]}}'
-            ),
+        self._set_user_permission(
+            "permissions.access_system_admin.enable",
+            "ACCESS_CONTROL_SYSTEM_ADMIN",
+            grant=True,
+            label="Access System Admin",
         )
-
-    # TODO
-    def disable_access_system_admin(self) -> None:
-        pass
-
-    # TODO
-    def enable_access_user_admin(self) -> None:
-        pass
-
-    # TODO
-    def disable_access_user_admin(self) -> None:
-        pass
+        self._set_user_permission(
+            "permissions.access_user_admin.enable",
+            "ACCESS_CONTROL_USER_ADMIN",
+            grant=True,
+            label="Access User Admin",
+        )
 
     # ------------------------------------------------------------------
     # Org Roles/Agreements
