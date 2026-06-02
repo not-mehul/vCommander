@@ -361,6 +361,36 @@ class VerkadaInternalAPIClient:
     # Authentication
     # ------------------------------------------------------------------
 
+    def _post_login(
+        self,
+        payload: dict,
+        *,
+        log_label: str,
+        log_request: str,
+        error_label: str,
+    ) -> tuple[dict, int]:
+        """
+        Pre-auth POST to the login endpoint. Returns (decoded_body, status_code).
+
+        Both login() and verify_mfa() use this — they run pre-auth so they
+        can't go through _request (which enforces auth). The helper owns
+        the POST + JSON-decode + decode-failure log; the caller branches
+        on success / MFA / bad-credentials in the returned body.
+        """
+        try:
+            response = self.session.post(
+                self._login_url(), json=payload, timeout=DEFAULT_TIMEOUT,
+            )
+            data = response.json()
+        except JSONDecodeError:
+            log_api_call("POST", log_label, log_request, "200", "non-JSON response")
+            raise ConnectionError(
+                f"{error_label}: server returned a non-JSON response."
+            )
+        except RequestException as e:
+            raise ConnectionError(f"{error_label}: {e}")
+        return data, response.status_code
+
     def login(self) -> None:
         """
         Authenticate with the Verkada Provisioning API.
@@ -381,7 +411,6 @@ class VerkadaInternalAPIClient:
             self.session.cookies.set("token", "dev-csrf")
             return
 
-        login_url = self._login_url()
         payload = {
             "email": self.email,
             "orgShortName": self.org_short_name,
@@ -391,49 +420,29 @@ class VerkadaInternalAPIClient:
             "shard": self.shard,
             "subdomain": True,
         }
+        log_label = f"{self.org_short_name}/user/login"
+        log_request = f'{{"email": "{self.email}"}}'
 
-        # login() runs pre-auth so it cannot use _request (which enforces auth).
-        try:
-            response = self.session.post(
-                login_url, json=payload, timeout=DEFAULT_TIMEOUT
-            )
-            data = response.json()
-        except JSONDecodeError:
-            log_api_call(
-                "POST",
-                f"{self.org_short_name}/user/login",
-                f'{{"email": "{self.email}"}}',
-                "200",
-                "non-JSON response",
-            )
-            raise ConnectionError("Login failed: server returned a non-JSON response.")
-
+        data, status = self._post_login(
+            payload,
+            log_label=log_label,
+            log_request=log_request,
+            error_label="Login failed",
+        )
         msg = data.get("message", "")
 
-        if response.status_code == 200 and data.get("loggedIn"):
+        if status == 200 and data.get("loggedIn"):
             self.auth_data = self._parse_login_response(data)
             return
 
         if "2FA invalid" in msg:
             self._pending_payload = payload
             sms_contact = data.get("data", {}).get("smsSent")
-            log_api_call(
-                "POST",
-                f"{self.org_short_name}/user/login",
-                f'{{"email": "{self.email}"}}',
-                "200 (MFA)",
-                msg,
-            )
+            log_api_call("POST", log_label, log_request, "200 (MFA)", msg)
             raise MFARequiredError("MFA Required", sms_contact)
 
-        log_api_call(
-            "POST",
-            f"{self.org_short_name}/user/login",
-            f'{{"email": "{self.email}"}}',
-            str(response.status_code),
-            msg,
-        )
-        raise ConnectionError(f"Login failed: {msg or response.text}")
+        log_api_call("POST", log_label, log_request, str(status), msg)
+        raise ConnectionError(f"Login failed: {msg or 'unknown error'}")
 
     def verify_mfa(self, otp_code: str) -> None:
         """
@@ -444,46 +453,29 @@ class VerkadaInternalAPIClient:
         if not self._pending_payload:
             raise ValueError("No pending login. Call login() first.")
 
-        mfa_payload = self._pending_payload.copy()
-        mfa_payload["otp"] = otp_code
+        payload = {**self._pending_payload, "otp": otp_code}
+        log_label = f"{self.org_short_name}/user/login (MFA)"
+        log_request = '{"otp": "***"}'
 
-        try:
-            response = self.session.post(
-                self._login_url(),
-                json=mfa_payload,
-                timeout=DEFAULT_TIMEOUT,
-            )
-            data = response.json()
-        except JSONDecodeError:
-            raise ConnectionError(
-                "MFA verification failed: server returned a non-JSON response."
-            )
-
+        data, status = self._post_login(
+            payload,
+            log_label=log_label,
+            log_request=log_request,
+            error_label="MFA verification failed",
+        )
         msg = data.get("message", "")
 
-        if response.status_code == 200 and data.get("loggedIn"):
+        if status == 200 and data.get("loggedIn"):
             self.auth_data = self._parse_login_response(data)
             self._pending_payload = None
             return
 
         if "2FA invalid" in msg:
-            log_api_call(
-                "POST",
-                f"{self.org_short_name}/user/login (MFA)",
-                '{"otp": "***"}',
-                "200 (bad OTP)",
-                msg,
-            )
+            log_api_call("POST", log_label, log_request, "200 (bad OTP)", msg)
             raise ValueError("Incorrect 2FA code. Please try again.")
 
-        log_api_call(
-            "POST",
-            f"{self.org_short_name}/user/login (MFA)",
-            '{"otp": "***"}',
-            str(response.status_code),
-            msg,
-        )
-        raise ConnectionError(f"MFA verification failed: {msg or response.text}")
+        log_api_call("POST", log_label, log_request, str(status), msg)
+        raise ConnectionError(f"MFA verification failed: {msg or 'unknown error'}")
 
     # ------------------------------------------------------------------
     # Devices
