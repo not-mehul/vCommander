@@ -1795,7 +1795,7 @@ class VerkadaInternalAPIClient:
 
         # Step 1: create the guest site
         data, _ = self._request(
-            "guest.site.create",
+            "guest.create",
             path_params={"org_id": self.org_id},
             json={
                 "siteId": site_id,
@@ -1811,7 +1811,7 @@ class VerkadaInternalAPIClient:
 
         # Step 2: enable the guest trial
         self._request(
-            "guest.trial.create",
+            "guest.activate_trial",
             path_params={"org_id": self.org_id, "site_id": site_id},
             json={"productType": "GUEST"},
             error_context=f"Failed to enable guest trial for '{site_id}'",
@@ -1819,24 +1819,64 @@ class VerkadaInternalAPIClient:
         )
         return guest_site_id
 
-    # TODO
-    def get_guest_site(self) -> None:
-        pass
-
     def delete_guest_site(self, site_id: str) -> None:
         self._delete(
-            "guest_sites.delete",
-            path_params={"org_id": self.org_id, "object_id": site_id},
+            "guest.delete",
+            path_params={"org_id": self.org_id, "site_id": site_id},
             oid=site_id,
         )
 
-    # TODO
-    def create_mailroom_site(self) -> None:
-        pass
+    def create_mailroom_site(self, site_id: str, address: Address) -> str:
+        """
+        Activates the org mailroom trial, then creates a mailroom (package)
+        site. Returns the packageLocationId.
+
+        The trial is org-level (one-time) and re-runs harmlessly on each
+        call; site creation is per-site.
+        """
+        addr = address if isinstance(address, Address) else Address(*address)
+
+        # Step 1: activate the org-level mailroom trial
+        self._request(
+            "mailroom.activate_trial",
+            path_params={"org_id": self.org_id},
+            json={},
+            error_context="Failed to activate mailroom trial",
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+        )
+
+        # Step 2: create the mailroom site
+        data, status = self._request(
+            "mailroom.create",
+            path_params={"org_id": self.org_id},
+            json={
+                "siteId": site_id,
+                "latitude": addr.latitude,
+                "longitude": addr.longitude,
+                "fullAddress": addr.label,
+            },
+            error_context=f"Failed to create mailroom site on '{site_id}'",
+            log_request=f'{{"siteId": "{site_id}"}}',
+            auto_log=False,
+        )
+        location_id = data.get("packageLocationId")
+        if not location_id:
+            raise ConnectionError(
+                f"Failed to create mailroom site on '{site_id}': "
+                "no packageLocationId in response."
+            )
+        self._log(
+            "mailroom.create",
+            status,
+            path_params={"org_id": self.org_id},
+            log_request=f'{{"siteId": "{site_id}"}}',
+            log_response=f'{{"packageLocationId": "{location_id}"}}',
+        )
+        return location_id
 
     def get_mailroom_site(self) -> list[dict[str, Any]]:
         return self._fetch_list(
-            "mailroom_sites.list",
+            "mailroom.list",
             response_key="package_sites",
             path_params={"org_id": self.org_id},
             mapping_func=lambda x: {"id": x["siteId"], "name": x["siteName"]},
@@ -1844,7 +1884,7 @@ class VerkadaInternalAPIClient:
 
     def delete_mailroom_site(self, site_id: str) -> None:
         self._delete(
-            "mailroom_sites.delete",
-            path_params={"org_id": self.org_id, "object_id": site_id},
+            "mailroom.delete",
+            path_params={"org_id": self.org_id, "site_id": site_id},
             oid=site_id,
         )
