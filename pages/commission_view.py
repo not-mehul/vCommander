@@ -9,6 +9,7 @@ is rendered in the live progress panel on the right."""
 
 import asyncio
 import csv
+import functools
 import os
 
 import flet as ft
@@ -488,7 +489,11 @@ class CommissionView(ft.View):
             )
             track(ok)
 
-        ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
+        ok, _ = await step(
+            "Enabling org features",
+            client.enable_org_features,
+            self.face_analytics_switch.value,
+        )
         track(ok)
 
         if self.face_analytics_switch.value and camera_id:
@@ -634,19 +639,25 @@ class CommissionView(ft.View):
             )
             track(ok)
             if access_controller_id:
+                # LPR door: created with the LPR config up front (v2 has no
+                # retroactive flag-flip), then the camera is paired below.
                 ok, door_id = await step(
                     "Creating door",
-                    client.create_door,
-                    access_controller_id,
-                    VSS_DOOR_NAME,
-                    floor_id,
+                    functools.partial(
+                        client.create_door,
+                        access_controller_id,
+                        VSS_DOOR_NAME,
+                        floor_id,
+                        lpr=True,
+                    ),
                 )
                 track(ok)
 
-        ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
-        track(ok)
-
-        ok, _ = await step("Enabling LPR analytics", client.enable_lpr_mode)
+        ok, _ = await step(
+            "Enabling org features",
+            client.enable_org_features,
+            self.face_analytics_switch.value,
+        )
         track(ok)
 
         if self.face_analytics_switch.value and ptz_id:
@@ -668,7 +679,7 @@ class CommissionView(ft.View):
         if door_id and bullet_id:
             ok, _ = await step(
                 "Linking LPR camera to door",
-                client.enable_lpr_door,
+                client.pair_lpr_camera,
                 door_id,
                 bullet_id,
             )
@@ -758,10 +769,11 @@ class CommissionView(ft.View):
                 )
                 track(ok)
 
-        ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
-        track(ok)
-
-        ok, _ = await step("Enabling LPR analytics", client.enable_lpr_mode)
+        ok, _ = await step(
+            "Enabling org features",
+            client.enable_org_features,
+            self.face_analytics_switch.value,
+        )
         track(ok)
 
         if self.face_analytics_switch.value and (dome_id or fisheye_id):
@@ -878,7 +890,11 @@ class CommissionView(ft.View):
             )
             track(ok)
 
-        ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
+        ok, _ = await step(
+            "Enabling org features",
+            client.enable_org_features,
+            self.face_analytics_switch.value,
+        )
         track(ok)
 
         if self.face_analytics_switch.value and dome_id:

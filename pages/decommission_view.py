@@ -247,7 +247,7 @@ class DecommissionView(ft.View):
                 e.page,
                 loop,
                 "Granting Access System Admin",
-                client.enable_access_system_admin,
+                client.enable_access_admin,
             )
 
             intercom_serials: set[str] = set()
@@ -585,13 +585,19 @@ class DecommissionView(ft.View):
 
         try:
             if category in _INTERNAL_DELETERS:
-                # delete_alarm_site takes (response_site_id, site_id); the
-                # rest take a single id. Keep the special case here so the
-                # client API stays uniform.
+                # Most deleters take a single id. Two take extra args, so
+                # special-case them here to keep the client API uniform:
+                #   - delete_alarm_site takes (response_site_id, site_id)
+                #   - delete_alarm_device takes (device_id, device_type),
+                #     where type picks the right v2 delete endpoint.
                 deleter = getattr(int_client, _INTERNAL_DELETERS[category])
                 if category == "Alarm Sites":
                     await loop.run_in_executor(
                         _executor, deleter, item.get("id"), item.get("site_id")
+                    )
+                elif category == "Alarm Devices":
+                    await loop.run_in_executor(
+                        _executor, deleter, item_id, item.get("type")
                     )
                 else:
                     await loop.run_in_executor(_executor, deleter, item_id)
