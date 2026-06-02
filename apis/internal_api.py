@@ -11,6 +11,8 @@ from apis.endpoints import (
     MFARequiredError,
     _DOOR_CREATE_CONFIGS,
     _DOOR_CREATE_IOS,
+    _DOOR_EVENT,
+    _LPR_DOOR_CREATE_CONFIGS,
     build_url,
     resolve,
 )
@@ -1078,7 +1080,7 @@ class VerkadaInternalAPIClient:
 
     def get_access_controller(self) -> list[dict[str, Any]]:
         return self._fetch_list(
-            "access_controllers.list",
+            "access_controller.list",
             response_key="accessControllers",
             mapping_func=lambda x: {
                 "id": x["accessControllerId"],
@@ -1100,10 +1102,11 @@ class VerkadaInternalAPIClient:
         accessControllerId used to bind doors via create_door().
         """
         data, status = self._request(
-            "controller.setup",
+            "access_controller.create",
             json={
                 "configs": {"acu-mode": "normal"},
                 "deviceId": device_id,
+                "enableLte": False,
                 "floorId": floor_id,
                 "name": controller_name,
                 "siteId": site_id,
@@ -1120,7 +1123,7 @@ class VerkadaInternalAPIClient:
                 "no accessControllerId returned."
             )
         self._log(
-            "controller.setup",
+            "access_controller.create",
             status,
             log_request=f'{{"deviceId": "{device_id}"}}',
             log_response=f'{{"accessControllerId": "{controller_id}"}}',
@@ -1129,7 +1132,7 @@ class VerkadaInternalAPIClient:
 
     def delete_access_controller(self, device_id: str) -> None:
         self._delete(
-            "access_controllers.delete",
+            "access_controller.delete",
             json={"deviceId": device_id, "sharding": True},
             oid=device_id,
         )
@@ -1140,31 +1143,21 @@ class VerkadaInternalAPIClient:
         """
         Creates a 24/7 access level (schedule) for the given door.
 
+        The weekly ALLOW-all-day event grid comes from the shared
+        _DOOR_EVENT default.
+
         Args:
             group_id: User group to grant access to. Empty string → no groups attached.
         """
-        # 24/7 schedule: ALLOW for every weekday, all day.
-        START_TIME = "00:00:00.000"
-        END_TIME = "23:59:59.999"
-        events = [
-            {
-                "date": None,
-                "doorPermissionState": "ALLOW",
-                "endTime": END_TIME,
-                "startTime": START_TIME,
-                "weekday": day,
-            }
-            for day in range(1, 8)
-        ]
         self._request(
-            "access.schedules.create",
+            "access_level.create",
             json={
                 "defaultDoorLockState": "ACCESS_CONTROL",
                 "defaultDoorPermissionState": "DENY",
                 "deleted": False,
                 "doors": [door_id],
                 "endDateTime": None,
-                "events": events,
+                "events": _DOOR_EVENT,
                 "name": access_level_name,
                 "priority": "SCHEDULE",
                 "sites": [site_id],
@@ -1176,25 +1169,94 @@ class VerkadaInternalAPIClient:
             log_request=f'{{"name": "{access_level_name}"}}',
         )
 
-    # TODO
-    def get_access_level(self) -> None:
-        pass
+    def get_access_level(self) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "access_level.list",
+            response_key="schedules",
+            path_params={"org_id": self.org_id},
+            mapping_func=lambda x: {
+                "id": x["scheduleId"],
+                "name": x.get("name"),
+                "doors": x.get("doors", []),
+            },
+        )
 
-    # TODO
-    def delete_access_level(self) -> None:
-        pass
+    def delete_access_level(self, schedule_id: str) -> None:
+        self._delete(
+            "access_level.delete",
+            path_params={"schedule_id": schedule_id},
+            oid=schedule_id,
+        )
 
-    # TODO
-    def create_access_group(self) -> None:
-        pass
+    def create_access_group(self, group_name: str) -> str:
+        """Creates an access (user) group. Returns the new group_id."""
+        data, status = self._request(
+            "access_group.create",
+            json={"organizationId": self.org_id, "groupName": group_name},
+            error_context=f"Failed to create access group '{group_name}'",
+            log_request=f'{{"groupName": "{group_name}"}}',
+            auto_log=False,
+        )
+        group_id = data.get("groupId")
+        if not group_id:
+            raise ConnectionError(
+                f"Failed to create access group '{group_name}': no groupId in response."
+            )
+        self._log(
+            "access_group.create",
+            status,
+            log_request=f'{{"groupName": "{group_name}"}}',
+            log_response=f'{{"groupId": "{group_id}"}}',
+        )
+        return group_id
 
-    # TODO
-    def get_access_group(self) -> None:
-        pass
+    def get_access_group(self) -> list[dict[str, Any]]:
+        """
+        Lists access groups. The endpoint returns a `children` map keyed
+        by group_id (not a list), so this can't use _fetch_list — flatten
+        the map into the standard {id, name} shape here.
+        """
+        data, status = self._request(
+            "access_group.list",
+            json={"organizationId": self.org_id},
+            error_context="Failed to fetch from access_group.list",
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+            auto_log=False,
+        )
+        children = data.get("children") or {}
+        results = [
+            {"id": group_id, "name": (info or {}).get("name")}
+            for group_id, info in children.items()
+        ]
+        self._log(
+            "access_group.list",
+            status,
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+            log_response=f'{{"count": {len(results)}}}',
+        )
+        return results
 
-    # TODO
-    def delete_access_group(self) -> None:
-        pass
+    def delete_access_group(self, group_id: str) -> None:
+        self._delete(
+            "access_group.delete",
+            json={"groupId": group_id, "organizationId": self.org_id},
+            oid=group_id,
+        )
+
+    def add_user_to_access_group(self, user_id: str, group_id: str) -> None:
+        """Adds a single user to a single access group (batch endpoint, 1-item lists)."""
+        self._request(
+            "access_group.add_user",
+            json={
+                "userIds": [user_id],
+                "groupIds": [group_id],
+                "organizationId": self.org_id,
+            },
+            error_context=(
+                f"Failed to add user '{user_id}' to access group '{group_id}'"
+            ),
+            log_request=f'{{"userId": "{user_id}", "groupId": "{group_id}"}}',
+        )
 
     def create_building(
         self, building_name: str, address: Address, floors: list
@@ -1231,31 +1293,71 @@ class VerkadaInternalAPIClient:
             )
         return floor_id
 
-    # TODO
-    def get_building(self) -> None:
-        pass
+    def get_building(self) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "building.list",
+            response_key="items",
+            path_params={"org_id": self.org_id},
+            mapping_func=lambda x: {
+                "id": x["buildingId"],
+                "name": x.get("name"),
+                "floors": x.get("floors", []),
+            },
+        )
 
-    # TODO
-    def delete_building(self) -> None:
-        pass
+    def delete_building(self, building_id: str) -> None:
+        """Deletes a building. All of its floors must be deleted first."""
+        self._delete(
+            "building.delete",
+            json={"buildingId": building_id},
+            oid=building_id,
+        )
+
+    def get_floor(self) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "floor.list",
+            response_key="items",
+            path_params={"org_id": self.org_id},
+            mapping_func=lambda x: {
+                "id": x["floorId"],
+                "name": x.get("name"),
+                "building_id": x.get("buildingId"),
+            },
+        )
+
+    def delete_floor(self, floor_id: str) -> None:
+        self._delete(
+            "floor.delete",
+            json={"floorId": floor_id},
+            oid=floor_id,
+        )
 
     def create_door(
         self,
         access_controller_id: str,
         door_name: str,
         floor_id: str,
+        *,
+        lpr: bool = False,
     ) -> str:
         """
         Creates a door bound to the given access controller. Returns door_id.
 
         Typically called after configure_controller() (which returns the
         access_controller_id this method needs).
+
+        Args:
+            lpr: When True, the door is created with the LPR config set
+                (lpr-unlock-enabled). v2 has no retroactive config-flip
+                endpoint, so LPR doors must opt in at creation time; pair
+                the camera afterward with pair_lpr_camera().
         """
+        configs = _LPR_DOOR_CREATE_CONFIGS if lpr else _DOOR_CREATE_CONFIGS
         data, status = self._request(
             "door.create",
             json={
                 "accessControllerId": access_controller_id,
-                "configs": _DOOR_CREATE_CONFIGS,
+                "configs": configs,
                 "deviceIos": _DOOR_CREATE_IOS,
                 "doorType": "standard",
                 "floorId": floor_id,
@@ -1284,36 +1386,36 @@ class VerkadaInternalAPIClient:
         )
         return door_id
 
-    # TODO
-    def get_door(self) -> None:
-        pass
-
-    # TODO
-    def delete_door(self) -> None:
-        pass
-
-    def enable_lpr_door(self, door_id: str, lpr_camera_id: str) -> None:
-        """
-        Wires an LPR camera into a door so plate reads can unlock it.
-            1. grant lpr-unlock-enabled on the door
-            2. register the camera as an IO device on the door
-        """
-        self._request(
-            "door.config.set",
-            json={
-                "doorId": door_id,
-                "action": "grant",
-                "paramName": "lpr-unlock-enabled",
-                "paramValue": "True",
+    def get_door(self) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "door.list",
+            response_key="doors",
+            mapping_func=lambda x: {
+                "id": x["doorId"],
+                "name": x.get("name"),
+                "access_controller_id": x.get("accessControllerId"),
+                "floor_id": x.get("floorId"),
             },
-            error_context=(
-                f"Failed to link LPR camera to door '{door_id}' "
-                f"(step 1: grant lpr-unlock-enabled)"
-            ),
-            log_request=f'{{"doorId": "{door_id}", "paramName": "lpr-unlock-enabled"}}',
         )
+
+    def delete_door(self, door_id: str) -> None:
+        self._delete(
+            "door.delete",
+            json={"doorId": door_id},
+            oid=door_id,
+        )
+
+    def pair_lpr_camera(self, door_id: str, lpr_camera_id: str) -> None:
+        """
+        Registers an LPR camera as an IO device on a door so plate reads
+        can unlock it.
+
+        The door must have been created with lpr=True (its configs already
+        carry lpr-unlock-enabled). This is a single call — v2 folds the
+        old grant-config step into door creation.
+        """
         self._request(
-            "door.device_io",
+            "door.pair_lpr_camera",
             path_params={"door_id": door_id},
             json={
                 "configs": {"lprCameraId": lpr_camera_id},
@@ -1321,11 +1423,78 @@ class VerkadaInternalAPIClient:
                 "ioSlotType": "lpr-camera",
                 "ioSlotIndex": 0,
             },
-            error_context=(
-                f"Failed to link LPR camera to door '{door_id}' "
-                f"(step 2: register device_io)"
-            ),
+            error_context=f"Failed to pair LPR camera with door '{door_id}'",
             log_request=f'{{"lprCameraId": "{lpr_camera_id}"}}',
+        )
+
+    def create_visitor_access(
+        self, site_id: str, visitor_access_name: str, visitor_access_description: str
+    ) -> str:
+        """
+        Creates a visitor access (visit type) for a site. Returns the
+        visitTypeId.
+
+        Only the dynamic fields (site, name, description) are passed; the
+        endpoint default fills the rest (roll-call on, all unlock methods
+        off, 3-hour max duration).
+        """
+        data, status = self._request(
+            "visitor_access.create",
+            json={
+                "cardEnabled": False,
+                "codeEnabled": False,
+                "qrCodeEnabled": False,
+                "lpEnabled": False,
+                "liveLinkEnabled": False,
+                "bleEnabled": False,
+                "remoteUnlockEnabled": False,
+                "faceUnlockEnabled": False,
+                "rollCallEnabled": True,
+                "sites": [site_id],
+                "doors": [],
+                "updatedSchedule": False,
+                "rollCallSiteIds": [site_id],
+                "maximumDurationSeconds": 10800,
+                "schedules": [],
+                "directoryId": None,
+                "name": visitor_access_name,
+                "description": visitor_access_description,
+            },
+            error_context=(
+                f"Failed to create visitor access '{visitor_access_name}'"
+            ),
+            log_request=f'{{"name": "{visitor_access_name}"}}',
+            auto_log=False,
+        )
+        visit_type_id = data.get("visitTypeId")
+        if not visit_type_id:
+            raise ConnectionError(
+                f"Failed to create visitor access '{visitor_access_name}': "
+                "no visitTypeId in response."
+            )
+        self._log(
+            "visitor_access.create",
+            status,
+            log_request=f'{{"name": "{visitor_access_name}"}}',
+            log_response=f'{{"visitTypeId": "{visit_type_id}"}}',
+        )
+        return visit_type_id
+
+    def get_visitor_access(self) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "visitor_access.list",
+            response_key="visitTypes",
+            mapping_func=lambda x: {
+                "id": x["visitTypeId"],
+                "name": x.get("name"),
+            },
+        )
+
+    def delete_visitor_access(self, visitor_access_id: str) -> None:
+        self._delete(
+            "visitor_access.delete",
+            path_params={"visitor_access_id": visitor_access_id},
+            oid=visitor_access_id,
         )
 
     # ------------------------------------------------------------------
