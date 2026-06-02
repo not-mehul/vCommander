@@ -34,6 +34,36 @@ class APIError(ConnectionError):
         self.status_code = status_code
 
 
+# Alarm device `type` strings (returned by alarm_system/get_devices) mapped
+# to the v2 delete endpoint key for that device. Panels/keypads/expanders/
+# wireless decommission; wired in/out use a different delete path.
+_ALARM_DEVICE_DELETE_KEYS = {
+    "COLOSSUS": "alarm.panel.delete",
+    "SYLVIE": "alarm.keypad.delete",
+    "KURIBO": "alarm.expander.delete",
+    "WIRELESS_CONTACT_SENSOR": "alarm.wireless_contact_sensor.delete",
+    "WIRELESS_PANIC_BUTTON": "alarm.wireless_panic_button.delete",
+    "UNIVERSAL_TRANSMITTER": "alarm.wireless_universal_transmitter.delete",
+    "WIRED_GENERIC_OUTPUT": "alarm.wired_output.delete",
+    "WIRED_CONTACT_SENSOR": "alarm.wired_input.delete",
+}
+
+# Fixed overnight (23:30–06:30) arm schedule applied to every camera guard.
+# startMinute 1110 = 18.5h*60; endMinute 390 = 6.5h*60. Each entry spans
+# one night, rolling Sun→Mon … Sat→Sun.
+_GUARD_SCHEDULES = [
+    {
+        "startDay": day,
+        "startMinute": 1110,
+        "startSecond": 0,
+        "endDay": (day + 1) % 7,
+        "endMinute": 390,
+        "endSecond": 0,
+    }
+    for day in range(7)
+]
+
+
 class VerkadaInternalAPIClient:
     """
     Client for the Verkada internal (Command) API.
@@ -1568,6 +1598,8 @@ class VerkadaInternalAPIClient:
     # Alarms
     # ------------------------------------------------------------------
 
+    # ── Alarm Site ───────────────────────────────────────────────────
+
     def create_alarm_site(
         self,
         business_name: str,
@@ -1586,11 +1618,12 @@ class VerkadaInternalAPIClient:
 
         # Step 1: create the response site
         data, _ = self._request(
-            "alarm.response_site.create",
+            "alarm.site.create",
             json={
-                "adminContactUserId": self.user_id,
+                "organizationId": self.org_id,
+                "siteId": site_id,
                 "businessName": business_name,
-                "dispatchEnabled": True,
+                "permitNumber": "",
                 "locationRequest": {
                     "apt": "",
                     "city": addr.city,
@@ -1603,8 +1636,7 @@ class VerkadaInternalAPIClient:
                     "timezone": addr.timezone,
                     "zipcode": addr.zipcode,
                 },
-                "permitNumber": "",
-                "siteId": site_id,
+                "adminContactUserId": self.user_id,
             },
             error_context=f"Failed to configure alarm site for '{business_name}'",
             log_request=f'{{"siteId": "{site_id}"}}',
@@ -1613,7 +1645,7 @@ class VerkadaInternalAPIClient:
 
         # Step 2: enable the software trial
         self._request(
-            "alarm.software_trial.create",
+            "alarm.site.activate_trial",
             json={"siteId": site_id},
             error_context=f"Failed to enable alarm trial for '{business_name}'",
             log_request=f'{{"siteId": "{site_id}"}}',
@@ -1621,18 +1653,59 @@ class VerkadaInternalAPIClient:
         return response_site_id
 
     def get_alarm_site(self) -> list[dict[str, Any]]:
-        return self._fetch_list(
-            "alarm_sites.list",
-            response_key="responseSites",
-            payload={"includeResponseConfigs": True},
-            mapping_func=lambda x: {
-                "id": x["id"],
-                "site_id": x["siteId"],
-                "alarm_site_id": x["id"],
-                "alarm_system_id": x.get("alarmSystemId"),
-                "name": x["businessName"],
-            },
+        """
+        Lists alarm (response) sites across the org.
+
+        v2 has no org-wide alarm-site endpoint — alarm.site.list resolves
+        one site by siteId — so enumerate the org's sites (site.list) and
+        probe each, keeping those that resolve to a response site. Sites
+        without an alarm site are skipped silently.
+
+        response_config_id is surfaced in the mapping for callers that
+        need it (e.g. set_alarm_self_monitored / partition assignment).
+        """
+        site_ids = self._fetch_list(
+            "site.list",
+            response_key="sites",
+            payload={"orgId": self.org_id},
+            mapping_func=lambda x: x.get("siteId"),
         )
+
+        results: list[dict[str, Any]] = []
+        for site_id in site_ids:
+            if not site_id:
+                continue
+            try:
+                data, _ = self._request(
+                    "alarm.site.list",
+                    json={
+                        "includeMonthlyAlarmCounts": True,
+                        "includePsapInfo": True,
+                        "siteId": site_id,
+                    },
+                    error_context=f"Failed to fetch alarm site for '{site_id}'",
+                    log_request=f'{{"siteId": "{site_id}"}}',
+                )
+            except APIError:
+                # Site has no alarm site — skip.
+                continue
+            response_site = data.get("responseSite") or {}
+            if not response_site.get("id"):
+                continue
+            response_configs = data.get("responseConfigs") or []
+            response_config_id = (
+                response_configs[0].get("id") if response_configs else None
+            )
+            results.append(
+                {
+                    "id": response_site.get("id"),
+                    "site_id": response_site.get("siteId"),
+                    "alarm_site_id": response_site.get("id"),
+                    "name": response_site.get("businessName"),
+                    "response_config_id": response_config_id,
+                }
+            )
+        return results
 
     def delete_alarm_site(self, response_site_id: str, site_id: str) -> None:
         """
@@ -1640,10 +1713,32 @@ class VerkadaInternalAPIClient:
         identifies alarm sites by (responseSiteId, siteId).
         """
         self._delete(
-            "alarm_sites.delete",
-            json={"responseSiteId": response_site_id, "siteId": site_id},
+            "alarm.site.delete",
+            json={"siteId": site_id, "responseSiteId": response_site_id},
             oid=response_site_id,
         )
+
+    def set_alarm_self_monitored(
+        self, site_id: str, response_config_id: str
+    ) -> None:
+        """Sets an alarm response config to the self-monitored response level."""
+        self._request(
+            "alarm.site.set_self_monitored",
+            json={
+                "siteId": site_id,
+                "responseConfigId": response_config_id,
+                "updateType": "CONFIG_UPDATE_TYPE_UPDATE_RESPONSE_LEVEL",
+                "updateResponseLevelInput": {
+                    "responseLevel": "RESPONSE_LEVEL_SELF_MONITORED"
+                },
+            },
+            error_context=(
+                f"Failed to set alarm site '{site_id}' to self-monitored"
+            ),
+            log_request=f'{{"responseConfigId": "{response_config_id}"}}',
+        )
+
+    # ── Alarm System ─────────────────────────────────────────────────
 
     def create_alarm_system(self, site_id: str) -> str:
         """
@@ -1673,20 +1768,200 @@ class VerkadaInternalAPIClient:
         )
         return system_id
 
-    # TODO
-    def get_alarm_system(self) -> None:
-        pass
+    def get_alarm_system(self) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "alarm.system.list",
+            response_key="alarmSystems",
+            payload={"orgId": self.org_id},
+            mapping_func=lambda x: {
+                "id": x["id"],
+                "site_id": x.get("siteId"),
+                "leader_device_id": x.get("leaderDeviceId"),
+            },
+        )
 
     def delete_alarm_system(self, alarm_system_id: str) -> None:
         self._delete(
-            "alarm_systems.delete",
+            "alarm.system.delete",
             json={"alarmSystemId": alarm_system_id},
             oid=alarm_system_id,
         )
 
-    # TODO
-    def get_alarm_panel(self) -> None:
-        pass
+    # ── Alarm Partition ──────────────────────────────────────────────
+
+    def create_alarm_partition(self, alarm_system_id: str, name: str) -> str:
+        """Creates a partition on an alarm system. Returns partition_id."""
+        data, status = self._request(
+            "alarm.partition.create",
+            json={"alarmSystemId": alarm_system_id, "name": name},
+            error_context=f"Failed to create alarm partition '{name}'",
+            log_request=f'{{"alarmSystemId": "{alarm_system_id}", "name": "{name}"}}',
+            auto_log=False,
+        )
+        partition_id = (data.get("partition") or {}).get("id")
+        if not partition_id:
+            raise ConnectionError(
+                f"Failed to create alarm partition '{name}': no partition id."
+            )
+        self._log(
+            "alarm.partition.create",
+            status,
+            log_request=f'{{"name": "{name}"}}',
+            log_response=f'{{"partitionId": "{partition_id}"}}',
+        )
+        return partition_id
+
+    def assign_alarm_partition_response(
+        self, partition_id: str, response_config_id: str
+    ) -> None:
+        """Binds a partition to an alarm response config."""
+        self._request(
+            "alarm.partition.assign_response",
+            json={
+                "partitionId": partition_id,
+                "responseConfigId": response_config_id,
+            },
+            error_context=(
+                f"Failed to assign response config to partition '{partition_id}'"
+            ),
+            log_request=(
+                f'{{"partitionId": "{partition_id}", '
+                f'"responseConfigId": "{response_config_id}"}}'
+            ),
+        )
+
+    def get_alarm_partition(self, alarm_system_id: str) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "alarm.partition.list",
+            response_key="partitions",
+            payload={"alarmSystemId": alarm_system_id},
+            mapping_func=lambda x: {
+                "id": x["id"],
+                "name": x.get("name"),
+                "response_config_id": x.get("responseConfigId"),
+            },
+        )
+
+    def delete_alarm_partition(self, partition_id: str) -> None:
+        self._delete(
+            "alarm.partition.delete",
+            json={"partitionId": partition_id},
+            oid=partition_id,
+        )
+
+    # ── Alarm Guard (camera-based) ───────────────────────────────────
+
+    def create_alarm_guard(
+        self,
+        site_id: str,
+        name: str,
+        camera_ids: list[str],
+        response_config_id: str,
+        timezone: str,
+    ) -> str:
+        """
+        Creates a camera guard on an alarm site. Returns guard_id.
+
+        Guards arm a set of cameras on the fixed overnight _GUARD_SCHEDULES
+        window. cameraType defaults to C_M42_SECURE for every camera (the
+        documented default); pass only secure-capable cameras.
+        """
+        data, status = self._request(
+            "alarm.guard.create",
+            json={
+                "siteId": site_id,
+                "organizationId": self.org_id,
+                "name": name,
+                "cameraIds": camera_ids,
+                "cameras": [
+                    {"cameraId": cid, "cameraType": "C_M42_SECURE"}
+                    for cid in camera_ids
+                ],
+                "schedules": _GUARD_SCHEDULES,
+                "responseConfigId": response_config_id,
+                "timezoneIana": timezone,
+            },
+            error_context=f"Failed to create alarm guard '{name}'",
+            log_request=f'{{"siteId": "{site_id}", "name": "{name}"}}',
+            auto_log=False,
+        )
+        guard_id = (data.get("guard") or {}).get("id")
+        if not guard_id:
+            raise ConnectionError(
+                f"Failed to create alarm guard '{name}': no guard id in response."
+            )
+        self._log(
+            "alarm.guard.create",
+            status,
+            log_request=f'{{"name": "{name}"}}',
+            log_response=f'{{"guardId": "{guard_id}"}}',
+        )
+        return guard_id
+
+    def get_alarm_guard(self, site_id: str) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "alarm.guard.list",
+            response_key="guards",
+            payload={"organizationId": self.org_id, "siteId": site_id},
+            mapping_func=lambda x: {
+                "id": x["id"],
+                "name": x.get("name"),
+                "camera_ids": x.get("cameraIds", []),
+            },
+        )
+
+    def delete_alarm_guard(self, guard_id: str) -> None:
+        self._delete(
+            "alarm.guard.delete",
+            json={"guardId": guard_id},
+            oid=guard_id,
+        )
+
+    # ── Alarm Devices: shared listing ────────────────────────────────
+
+    def _list_alarm_devices(
+        self,
+        alarm_system_id: str,
+        endpoint_key: str,
+        *,
+        device_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Shared body for the per-type alarm device get_* methods.
+
+        Every alarm device .list key hits the same alarm_system/get_devices
+        endpoint and returns ALL devices in the system; filtering by `type`
+        client-side is what distinguishes panels from keypads from sensors.
+        device_type=None returns every device (used by get_alarm_device).
+        """
+        data, status = self._request(
+            endpoint_key,
+            json={"alarmSystemId": alarm_system_id},
+            error_context=f"Failed to fetch from {endpoint_key}",
+            log_request=f'{{"alarmSystemId": "{alarm_system_id}"}}',
+            auto_log=False,
+        )
+        results = [
+            {
+                "id": d["id"],
+                "name": d.get("name"),
+                "serial_number": (d.get("verkadaDeviceConfig") or {}).get(
+                    "serialNumber"
+                ),
+                "type": d.get("type"),
+            }
+            for d in (data.get("devices") or [])
+            if device_type is None or d.get("type") == device_type
+        ]
+        self._log(
+            endpoint_key,
+            status,
+            log_request=f'{{"alarmSystemId": "{alarm_system_id}"}}',
+            log_response=f'{{"count": {len(results)}}}',
+        )
+        return results
+
+    # ── Alarm Panel ──────────────────────────────────────────────────
 
     def configure_alarm_panel(
         self,
@@ -1699,7 +1974,7 @@ class VerkadaInternalAPIClient:
         Use create_alarm_system() first to get the alarm_system_id.
         """
         self._request(
-            "alarm.panel.setup",
+            "alarm.panel.create",
             json={
                 "alarmSystemId": alarm_system_id,
                 "deviceId": device_id,
@@ -1712,13 +1987,15 @@ class VerkadaInternalAPIClient:
             ),
         )
 
-    # TODO
-    def delete_alarm_panel(self) -> None:
-        pass
+    def get_alarm_panel(self, alarm_system_id: str) -> list[dict[str, Any]]:
+        return self._list_alarm_devices(
+            alarm_system_id, "alarm.panel.list", device_type="COLOSSUS"
+        )
 
-    # TODO
-    def get_alarm_keypad(self) -> None:
-        pass
+    def delete_alarm_panel(self, device_id: str) -> None:
+        self._delete("alarm.panel.delete", json={"deviceId": device_id}, oid=device_id)
+
+    # ── Alarm Keypad ─────────────────────────────────────────────────
 
     def configure_keypad(
         self,
@@ -1729,7 +2006,7 @@ class VerkadaInternalAPIClient:
     ) -> None:
         """Attaches an alarm keypad to an existing alarm system."""
         self._request(
-            "alarm.keypad.setup",
+            "alarm.keypad.create",
             json={
                 "alarmSystemId": alarm_system_id,
                 "deviceId": device_id,
@@ -1742,42 +2019,314 @@ class VerkadaInternalAPIClient:
             ),
         )
 
-    # TODO
-    def delete_alarm_keypad(self) -> None:
-        pass
-
-    def get_alarm_device(self) -> list[dict[str, Any]]:
-        return self._fetch_list(
-            "alarm_devices.list",
-            response_key="devices",
-            payload={"organizationId": self.org_id},
-            mapping_func=lambda x: {
-                "id": x["id"],
-                "name": x["name"],
-                "serial_number": x["verkadaDeviceConfig"]["serialNumber"],
-            },
+    def get_alarm_keypad(self, alarm_system_id: str) -> list[dict[str, Any]]:
+        return self._list_alarm_devices(
+            alarm_system_id, "alarm.keypad.list", device_type="SYLVIE"
         )
 
-    # TODO
-    def configure_alarm_device(self) -> list[dict[str, Any]]:
-        return self._fetch_list(
-            "alarm_devices.list",
-            response_key="devices",
-            payload={"organizationId": self.org_id},
-            mapping_func=lambda x: {
-                "id": x["id"],
-                "name": x["name"],
-                "serial_number": x["verkadaDeviceConfig"]["serialNumber"],
+    def delete_alarm_keypad(self, device_id: str) -> None:
+        self._delete("alarm.keypad.delete", json={"deviceId": device_id}, oid=device_id)
+
+    # ── Alarm Expander ───────────────────────────────────────────────
+
+    def configure_alarm_expander(
+        self,
+        device_id: str,
+        expander_name: str,
+        alarm_system_id: str,
+        serial_number: str,
+    ) -> None:
+        """Attaches an alarm output expander to an existing alarm system."""
+        self._request(
+            "alarm.expander.create",
+            json={
+                "alarmSystemId": alarm_system_id,
+                "deviceId": device_id,
+                "name": expander_name,
+                "serialNumber": serial_number,
             },
+            error_context=f"Failed to configure alarm expander '{expander_name}'",
+            log_request=(
+                f'{{"deviceId": "{device_id}", "alarmSystemId": "{alarm_system_id}"}}'
+            ),
         )
 
-    # TODO
-    def delete_alarm_device(self, device_id: str) -> None:
+    def get_alarm_expander(self, alarm_system_id: str) -> list[dict[str, Any]]:
+        return self._list_alarm_devices(
+            alarm_system_id, "alarm.expander.list", device_type="KURIBO"
+        )
+
+    def delete_alarm_expander(self, device_id: str) -> None:
         self._delete(
-            "alarm_devices.delete",
+            "alarm.expander.delete", json={"deviceId": device_id}, oid=device_id
+        )
+
+    # ── Alarm Wireless Devices ───────────────────────────────────────
+
+    def configure_wireless_contact_sensor(
+        self,
+        device_id: str,
+        name: str,
+        alarm_system_id: str,
+        partition_id: str,
+        serial_number: str,
+    ) -> None:
+        """Attaches a wireless contact (door) sensor to a partition."""
+        self._request(
+            "alarm.wireless_contact_sensor.create",
+            json={
+                "alarmSystemId": alarm_system_id,
+                "devices": [
+                    {
+                        "deviceId": device_id,
+                        "alarmSystemId": alarm_system_id,
+                        "serialNumber": serial_number,
+                        "name": name,
+                        "partitionId": partition_id,
+                        "contactSensorType": "DOOR",
+                    }
+                ],
+            },
+            error_context=f"Failed to configure wireless contact sensor '{name}'",
+            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
+        )
+
+    def get_wireless_contact_sensor(
+        self, alarm_system_id: str
+    ) -> list[dict[str, Any]]:
+        return self._list_alarm_devices(
+            alarm_system_id,
+            "alarm.wireless_contact_sensor.list",
+            device_type="WIRELESS_CONTACT_SENSOR",
+        )
+
+    def delete_wireless_contact_sensor(self, device_id: str) -> None:
+        self._delete(
+            "alarm.wireless_contact_sensor.delete",
             json={"deviceId": device_id},
             oid=device_id,
         )
+
+    def configure_wireless_panic_button(
+        self,
+        device_id: str,
+        name: str,
+        alarm_system_id: str,
+        partition_id: str,
+        serial_number: str,
+    ) -> None:
+        """Attaches a wireless panic button to a partition."""
+        self._request(
+            "alarm.wireless_panic_button.create",
+            json={
+                "alarmSystemId": alarm_system_id,
+                "devices": [
+                    {
+                        "deviceId": device_id,
+                        "alarmSystemId": alarm_system_id,
+                        "serialNumber": serial_number,
+                        "name": name,
+                        "partitionId": partition_id,
+                        "gestureType": "SINGLE_PRESS",
+                    }
+                ],
+            },
+            error_context=f"Failed to configure wireless panic button '{name}'",
+            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
+        )
+
+    def get_wireless_panic_button(
+        self, alarm_system_id: str
+    ) -> list[dict[str, Any]]:
+        return self._list_alarm_devices(
+            alarm_system_id,
+            "alarm.wireless_panic_button.list",
+            device_type="WIRELESS_PANIC_BUTTON",
+        )
+
+    def delete_wireless_panic_button(self, device_id: str) -> None:
+        self._delete(
+            "alarm.wireless_panic_button.delete",
+            json={"deviceId": device_id},
+            oid=device_id,
+        )
+
+    def configure_wireless_universal_transmitter(
+        self,
+        device_id: str,
+        name: str,
+        alarm_system_id: str,
+        partition_id: str,
+        serial_number: str,
+    ) -> None:
+        """Attaches a wireless universal transmitter to a partition."""
+        self._request(
+            "alarm.wireless_universal_transmitter.create",
+            json={
+                "alarmSystemId": alarm_system_id,
+                "devices": [
+                    {
+                        "deviceId": device_id,
+                        "alarmSystemId": alarm_system_id,
+                        "serialNumber": serial_number,
+                        "name": name,
+                        "partitionId": partition_id,
+                    }
+                ],
+            },
+            error_context=(
+                f"Failed to configure wireless universal transmitter '{name}'"
+            ),
+            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
+        )
+
+    def get_wireless_universal_transmitter(
+        self, alarm_system_id: str
+    ) -> list[dict[str, Any]]:
+        return self._list_alarm_devices(
+            alarm_system_id,
+            "alarm.wireless_universal_transmitter.list",
+            device_type="UNIVERSAL_TRANSMITTER",
+        )
+
+    def delete_wireless_universal_transmitter(self, device_id: str) -> None:
+        self._delete(
+            "alarm.wireless_universal_transmitter.delete",
+            json={"deviceId": device_id},
+            oid=device_id,
+        )
+
+    # ── Alarm Wired Devices ──────────────────────────────────────────
+
+    def create_wired_output(
+        self, name: str, alarm_system_id: str, panel_id: str, pin_num: int
+    ) -> str:
+        """Creates a wired generic output on a panel pin. Returns device_id."""
+        data, status = self._request(
+            "alarm.wired_output.create",
+            json={
+                "device": {"name": name, "type": "WIRED_GENERIC_OUTPUT"},
+                "alarmSystemId": alarm_system_id,
+                "hubId": panel_id,
+                "pinNum": pin_num,
+            },
+            error_context=f"Failed to create wired output '{name}'",
+            log_request=f'{{"name": "{name}", "pinNum": {pin_num}}}',
+            auto_log=False,
+        )
+        device_id = (data.get("device") or {}).get("id")
+        if not device_id:
+            raise ConnectionError(
+                f"Failed to create wired output '{name}': no device id in response."
+            )
+        self._log(
+            "alarm.wired_output.create",
+            status,
+            log_request=f'{{"name": "{name}"}}',
+            log_response=f'{{"deviceId": "{device_id}"}}',
+        )
+        return device_id
+
+    def get_wired_output(self, alarm_system_id: str) -> list[dict[str, Any]]:
+        return self._list_alarm_devices(
+            alarm_system_id,
+            "alarm.wired_output.list",
+            device_type="WIRED_GENERIC_OUTPUT",
+        )
+
+    def delete_wired_output(self, device_id: str) -> None:
+        self._delete(
+            "alarm.wired_output.delete", json={"deviceId": device_id}, oid=device_id
+        )
+
+    def create_wired_input(
+        self,
+        name: str,
+        alarm_system_id: str,
+        panel_id: str,
+        partition_id: str,
+        pin_num: int,
+    ) -> str:
+        """Creates a wired contact-sensor input on a panel pin. Returns device_id."""
+        data, status = self._request(
+            "alarm.wired_input.create",
+            json={
+                "device": {
+                    "name": name,
+                    "type": "WIRED_CONTACT_SENSOR",
+                    "sensorConfig": {
+                        "wiredContactSensorConfig": {
+                            "type": "DOOR",
+                            "doorHeldOpenDelay": 0,
+                        }
+                    },
+                },
+                "alarmSystemId": alarm_system_id,
+                "partitionId": partition_id,
+                "hubId": panel_id,
+                "pinNum": pin_num,
+                "normalState": "CLOSED",
+            },
+            error_context=f"Failed to create wired input '{name}'",
+            log_request=f'{{"name": "{name}", "pinNum": {pin_num}}}',
+            auto_log=False,
+        )
+        device_id = (data.get("device") or {}).get("id")
+        if not device_id:
+            raise ConnectionError(
+                f"Failed to create wired input '{name}': no device id in response."
+            )
+        self._log(
+            "alarm.wired_input.create",
+            status,
+            log_request=f'{{"name": "{name}"}}',
+            log_response=f'{{"deviceId": "{device_id}"}}',
+        )
+        return device_id
+
+    def get_wired_input(self, alarm_system_id: str) -> list[dict[str, Any]]:
+        return self._list_alarm_devices(
+            alarm_system_id,
+            "alarm.wired_input.list",
+            device_type="WIRED_CONTACT_SENSOR",
+        )
+
+    def delete_wired_input(self, device_id: str) -> None:
+        self._delete(
+            "alarm.wired_input.delete", json={"deviceId": device_id}, oid=device_id
+        )
+
+    # ── Alarm Devices: unified accessors (UI compatibility) ──────────
+
+    def get_alarm_device(self) -> list[dict[str, Any]]:
+        """
+        Lists every alarm device across all of the org's alarm systems.
+
+        v2 has no org-wide device endpoint — alarm_system/get_devices is
+        per-system — so list the systems (alarm.system.list) and aggregate
+        their devices. Each item carries its `type`, which delete_alarm_device
+        needs to pick the right delete endpoint.
+        """
+        results: list[dict[str, Any]] = []
+        for system in self.get_alarm_system():
+            results.extend(
+                self._list_alarm_devices(system["id"], "alarm.panel.list")
+            )
+        return results
+
+    def delete_alarm_device(self, device_id: str, device_type: str) -> None:
+        """
+        Deletes an alarm device, choosing the delete endpoint from its
+        type (panels/keypads/expanders/wireless decommission; wired in/out
+        use a different delete path). device_type comes from the `type`
+        field surfaced by get_alarm_device.
+        """
+        key = _ALARM_DEVICE_DELETE_KEYS.get(device_type)
+        if not key:
+            raise ValueError(
+                f"Unknown alarm device type {device_type!r} for device {device_id!r}"
+            )
+        self._delete(key, json={"deviceId": device_id}, oid=device_id)
 
     # ------------------------------------------------------------------
     # Workplace
