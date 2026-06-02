@@ -1,126 +1,35 @@
 import time
-from ast import Pass
-from typing import Any, NamedTuple
+from typing import Any
 
 import requests
 from requests.exceptions import JSONDecodeError, RequestException
 
-from apis.endpoints import build_url, resolve
+from apis.endpoints import (
+    Address,
+    AlarmAddress,
+    GuestAddress,
+    MFARequiredError,
+    _DOOR_CREATE_CONFIGS,
+    _DOOR_CREATE_IOS,
+    build_url,
+    resolve,
+)
 from constants import API_NAME, DEFAULT_TIMEOUT, DEV_SKIP_LOGIN
 from utils.logger import log_api_call
 
-# ----------------------------------------------------------------------
-# Address types
-# ----------------------------------------------------------------------
 
-
-class Address(NamedTuple):
-    """Simple geo location used by cameras, connectors, and buildings."""
-
-    label: str
-    latitude: float
-    longitude: float
-
-
-class AlarmAddress(NamedTuple):
-    """Full structured address used by alarm response sites."""
-
-    city: str
-    country: str
-    latitude: float
-    longitude: float
-    state: str
-    street1: str
-    timezone: str
-    zipcode: str
-
-
-class GuestAddress(NamedTuple):
-    """Address used by guest/visitor management sites."""
-
-    full_address: str
-    latitude: float
-    longitude: float
-    country_code: str
-
-
-class MFARequiredError(Exception):
+class APIError(ConnectionError):
     """
-    Raised when the API requires 2FA to complete login.
-    sms_contact contains the last digits of the SMS-receiving number, if provided.
+    API returned an error response. Carries the typed `id` code from the
+    body so callers can branch on specific error kinds (e.g. invite_user
+    catches code='cannot_invite_existing'). Subclasses ConnectionError so
+    legacy `except ConnectionError` blocks still catch it.
     """
 
-    def __init__(self, message: str = "MFA Required", sms_contact: str | None = None):
+    def __init__(self, message: str = "", *, code: str = "", status_code: int = 0):
         super().__init__(message)
-        self.sms_contact = sms_contact
-
-
-_DOOR_CREATE_CONFIGS = [
-    {"paramName": "default-unlock-time", "paramValue": "10"},
-    {"paramName": "assa-extended-unlock-time", "paramValue": "20"},
-    {"paramName": "has-door-sensor", "paramValue": "True"},
-    {"paramName": "ignore-dpi-relock", "paramValue": "False"},
-    {"paramName": "passthrough-dpi-enabled", "paramValue": "False"},
-    {"paramName": "dho-enabled", "paramValue": "False"},
-    {"paramName": "dho-trigger-time", "paramValue": "60"},
-    {"paramName": "has-rex", "paramValue": "True"},
-    {"paramName": "rex-unlock-time", "paramValue": "3"},
-    {"paramName": "has-rex2", "paramValue": "False"},
-    {"paramName": "rex2-unlock-time", "paramValue": "3"},
-    {"paramName": "dfo-rex-cooloff-time", "paramValue": "10"},
-    {"paramName": "ble-unlock-enabled", "paramValue": "True"},
-    {"paramName": "ble-unlock-rssi", "paramValue": "-45"},
-    {"paramName": "ble-connect-rssi", "paramValue": "-55"},
-    {"paramName": "ble-unlock-cooldown-time", "paramValue": "5"},
-    {"paramName": "tof-unlock-distance-mm", "paramValue": "500"},
-    {"paramName": "third-party-io-baud-rate", "paramValue": "14400"},
-    {"paramName": "badge-reader", "paramValue": "True"},
-    {"paramName": "mobile-unlock-enabled", "paramValue": "True"},
-    {"paramName": "door-api-unlock-enabled", "paramValue": "False"},
-    {"paramName": "nfc-enabled", "paramValue": "True"},
-    {"paramName": "lpr-unlock-enabled", "paramValue": "True"},
-    {"paramName": "lpr-unlock-cooldown-time", "paramValue": "0"},
-    {"paramName": "ignore-outbound-reader-ac", "paramValue": "False"},
-    {"paramName": "lf-card-reading-enabled", "paramValue": "True"},
-    {"paramName": "polling-frequency-ms", "paramValue": "10000"},
-    {"paramName": "c3po-in1-type", "paramValue": "NONE"},
-    {"paramName": "c3po-in2-type", "paramValue": "NONE"},
-    {"paramName": "replace-ios-with-security-relay", "paramValue": "False"},
-]
-
-_DOOR_CREATE_IOS = [
-    {
-        "configs": {},
-        "ioDeviceTypeName": "ad31",
-        "ioSlotIndex": 0,
-        "ioSlotType": "rs485",
-    },
-    {
-        "configs": {},
-        "ioDeviceTypeName": "reader",
-        "ioSlotIndex": 0,
-        "ioSlotType": "wiegand",
-    },
-    {"configs": {}, "ioDeviceTypeName": "lock", "ioSlotIndex": 0, "ioSlotType": "lock"},
-    {
-        "configs": {"signalConfig": "NO"},
-        "ioDeviceTypeName": "dpi",
-        "ioSlotIndex": 0,
-        "ioSlotType": "dpi",
-    },
-    {
-        "configs": {"signalConfig": "NO"},
-        "ioDeviceTypeName": "rex",
-        "ioSlotIndex": 0,
-        "ioSlotType": "rex",
-    },
-    {
-        "configs": {"signalConfig": "NO"},
-        "ioDeviceTypeName": "rex2",
-        "ioSlotIndex": 0,
-        "ioSlotType": "rex2",
-    },
-]
+        self.code = code
+        self.status_code = status_code
 
 
 class VerkadaInternalAPIClient:
@@ -232,7 +141,7 @@ class VerkadaInternalAPIClient:
 
     def _set_global_site_admin(self, enabled: bool) -> dict:
         action = "enable" if enabled else "disable"
-        return self._request(
+        data, _ = self._request(
             "org.settings.update",
             json={
                 "organizationId": self.org_id,
@@ -243,6 +152,7 @@ class VerkadaInternalAPIClient:
                 f'{{"settings": {{"globalSiteAdmin": {str(enabled).lower()}}}}}'
             ),
         )
+        return data
 
     def _enable_org_feature(
         self,
@@ -298,7 +208,7 @@ class VerkadaInternalAPIClient:
         payload: dict | None = None,
     ) -> list[dict[str, Any]]:
         """Shared body for every get_* method."""
-        data = self._request(
+        data, status = self._request(
             endpoint_key,
             path_params=path_params,
             json=payload,
@@ -310,7 +220,7 @@ class VerkadaInternalAPIClient:
         results = [mapping_func(item) for item in items]
         self._log(
             endpoint_key,
-            data,
+            status,
             path_params=path_params,
             log_request=f'{{"organizationId": "{self.org_id}"}}',
             log_response=f'{{"count": {len(results)}}}',
@@ -344,7 +254,7 @@ class VerkadaInternalAPIClient:
         log_request: str = "",
         log_response: str = "",
         auto_log: bool = True,
-    ) -> dict:
+    ) -> tuple[dict, int]:
         """
         Execute an authenticated request against a registered endpoint.
 
@@ -355,9 +265,17 @@ class VerkadaInternalAPIClient:
         Set auto_log=False when you need to log a field extracted from
         the response, and call _log() manually after extraction.
 
+        Returns:
+            (data, status_code) — `data` is the decoded body (top-level
+            lists are wrapped as {"items": [...]}); `status_code` is the
+            HTTP status. Both are exposed so callers can pass the status
+            into _log() after extracting response fields.
+
         Raises:
             PermissionError: If not authenticated.
-            ConnectionError: On any HTTP, transport, or decode failure.
+            APIError: On any non-2xx HTTP response; carries the typed `id`
+                code from the response body when present.
+            ConnectionError: On transport or decode failure.
         """
         if not self.auth_data:
             raise PermissionError("Not authenticated. Please call login() first.")
@@ -382,8 +300,9 @@ class VerkadaInternalAPIClient:
                 data = response.json()
             except JSONDecodeError:
                 if not response.ok:
-                    raise ConnectionError(
-                        f"{error_context}: {response.text or 'non-JSON response.'}"
+                    raise APIError(
+                        f"{error_context}: {response.text or 'non-JSON response.'}",
+                        status_code=response.status_code,
                     )
                 data = {}
         else:
@@ -397,9 +316,12 @@ class VerkadaInternalAPIClient:
             msg = (
                 data_dict.get("message", response.text) if data_dict else response.text
             )
-            raise ConnectionError(f"{error_context}: {msg or 'unknown error'}")
-
-        data_dict.setdefault("__status_code__", response.status_code)
+            code = data_dict.get("id", "") if isinstance(data_dict, dict) else ""
+            raise APIError(
+                f"{error_context}: {msg or 'unknown error'}",
+                code=code,
+                status_code=response.status_code,
+            )
 
         if auto_log:
             log_api_call(
@@ -410,12 +332,12 @@ class VerkadaInternalAPIClient:
                 log_response,
             )
 
-        return data_dict
+        return data_dict, response.status_code
 
     def _log(
         self,
         endpoint_key: str,
-        data: dict,
+        status_code: int,
         *,
         log_request: str = "",
         log_response: str = "",
@@ -431,7 +353,7 @@ class VerkadaInternalAPIClient:
             endpoint.method,
             f"{self.org_short_name}/{formatted_path}",
             log_request,
-            str(data.get("__status_code__", "")),
+            str(status_code),
             log_response,
         )
 
@@ -574,7 +496,7 @@ class VerkadaInternalAPIClient:
         Returns:
             The device ID string on success.
         """
-        data = self._request(
+        data, status = self._request(
             "device.commission",
             json={
                 "organizationId": self.org_id,
@@ -608,7 +530,7 @@ class VerkadaInternalAPIClient:
 
         self._log(
             "device.commission",
-            data,
+            status,
             log_request=f'{{"serialNumber": "{serial_number}", "name": "{device_name}"}}',
             log_response=f'{{"deviceId": "{device_id}"}}',
         )
@@ -895,7 +817,7 @@ class VerkadaInternalAPIClient:
         """
         Creates a camera group (site) in the organization. Returns site_id.
         """
-        data = self._request(
+        data, status = self._request(
             "site.create",
             json={"organizationId": self.org_id, "name": site_name},
             error_context=f"Failed to create site '{site_name}'",
@@ -916,7 +838,7 @@ class VerkadaInternalAPIClient:
 
         self._log(
             "site.create",
-            data,
+            status,
             log_request=f'{{"name": "{site_name}"}}',
             log_response=f'{{"cameraGroupId": "{site_id}"}}',
         )
@@ -1002,7 +924,7 @@ class VerkadaInternalAPIClient:
         """Configures a Command Connector (vfortress box)."""
         addr = address if isinstance(address, Address) else Address(*address)
 
-        data = self._request(
+        data, status = self._request(
             "connector.update_box",
             json={
                 "deviceId": device_id,
@@ -1023,7 +945,7 @@ class VerkadaInternalAPIClient:
             )
         self._log(
             "connector.update_box",
-            data,
+            status,
             log_request=f'{{"deviceId": "{device_id}"}}',
         )
 
@@ -1107,7 +1029,7 @@ class VerkadaInternalAPIClient:
         Sets up a newly commissioned access controller. Returns the
         accessControllerId used to bind doors via create_door().
         """
-        data = self._request(
+        data, status = self._request(
             "controller.setup",
             json={
                 "configs": {"acu-mode": "normal"},
@@ -1129,7 +1051,7 @@ class VerkadaInternalAPIClient:
             )
         self._log(
             "controller.setup",
-            data,
+            status,
             log_request=f'{{"deviceId": "{device_id}"}}',
             log_response=f'{{"accessControllerId": "{controller_id}"}}',
         )
@@ -1213,7 +1135,7 @@ class VerkadaInternalAPIClient:
         """
         addr = address if isinstance(address, Address) else Address(*address)
 
-        data = self._request(
+        data, _ = self._request(
             "building.create",
             json={
                 "name": building_name,
@@ -1259,7 +1181,7 @@ class VerkadaInternalAPIClient:
         Typically called after configure_controller() (which returns the
         access_controller_id this method needs).
         """
-        data = self._request(
+        data, status = self._request(
             "door.create",
             json={
                 "accessControllerId": access_controller_id,
@@ -1286,7 +1208,7 @@ class VerkadaInternalAPIClient:
             )
         self._log(
             "door.create",
-            data,
+            status,
             log_request=f'{{"name": "{door_name}"}}',
             log_response=f'{{"doorId": "{door_id}"}}',
         )
@@ -1423,7 +1345,7 @@ class VerkadaInternalAPIClient:
         )
 
         # Step 1: create the response site
-        data = self._request(
+        data, _ = self._request(
             "alarm.response_site.create",
             json={
                 "adminContactUserId": self.user_id,
@@ -1490,7 +1412,7 @@ class VerkadaInternalAPIClient:
         Used as a precursor to configure_alarm_panel / configure_keypad,
         which need a system to attach devices to.
         """
-        data = self._request(
+        data, status = self._request(
             "alarm.system.create",
             json={"orgId": self.org_id, "siteId": site_id},
             error_context=f"Failed to create alarm system on site '{site_id}'",
@@ -1505,7 +1427,7 @@ class VerkadaInternalAPIClient:
             )
         self._log(
             "alarm.system.create",
-            data,
+            status,
             log_request=f'{{"siteId": "{site_id}"}}',
             log_response=f'{{"alarmSystemId": "{system_id}"}}',
         )
@@ -1632,7 +1554,7 @@ class VerkadaInternalAPIClient:
         )
 
         # Step 1: create the guest site
-        data = self._request(
+        data, _ = self._request(
             "guest.site.create",
             path_params={"org_id": self.org_id},
             json={
