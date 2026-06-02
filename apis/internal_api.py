@@ -870,13 +870,20 @@ class VerkadaInternalAPIClient:
         )
         return site_id
 
-    # TODO
-    def get_site(self) -> None:
-        pass
+    def get_site(self) -> list[dict[str, Any]]:
+        return self._fetch_list(
+            "site.list",
+            response_key="sites",
+            payload={"orgId": self.org_id},
+            mapping_func=lambda x: {"id": x["siteId"], "name": x["name"]},
+        )
 
-    # TODO
-    def delete_site(self) -> None:
-        pass
+    def delete_site(self, site_id: str) -> None:
+        self._delete(
+            "site.delete",
+            json={"cameraGroupId": site_id},
+            oid=site_id,
+        )
 
     # ------------------------------------------------------------------
     # Camera
