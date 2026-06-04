@@ -104,6 +104,7 @@ ESS_GUEST_ADDRESS = (
     -122.3210929,
     "US",
 )
+ESS_PARTITION_NAME = "VCE Partition"
 
 VSS_SITE_NAME = "HQ"
 VSS_BULLET_NAME = "HQ Bullet"

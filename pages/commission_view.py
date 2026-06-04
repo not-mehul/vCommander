@@ -40,6 +40,7 @@ from constants import (
     ESS_FLOORS,
     ESS_GUEST_ADDRESS,
     ESS_PANEL_NAME,
+    ESS_PARTITION_NAME,
     ESS_SITE_NAME,
     FIELD_SPACING,
     HQ_TIMEZONE,
@@ -538,6 +539,23 @@ class CommissionView(ft.View):
                     alarm_system_id,
                 )
                 track(ok)
+
+                ok, partition_id, alarm_response_id = await step(
+                    "Configuring Alarm Partition",
+                    client.create_alarm_partition,
+                    alarm_system_id,
+                    ESS_PARTITION_NAME,
+                )
+                track(ok)
+
+                if alarm_response_id:
+                    ok, _ = await step(
+                        "Setting response to Self-Monitored",
+                        client.set_alarm_self_monitored,
+                        site_id,
+                        alarm_response_id,
+                    )
+                    track(ok)
 
     async def _run_vssl_flow(self, step, track, page, client, ext_client) -> None:
         bullet_serial = self._device_serial("Bullet")

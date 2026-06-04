@@ -5,14 +5,14 @@ import requests
 from requests.exceptions import JSONDecodeError, RequestException
 
 from apis.endpoints import (
-    Address,
-    AlarmAddress,
-    GuestAddress,
-    MFARequiredError,
     _DOOR_CREATE_CONFIGS,
     _DOOR_CREATE_IOS,
     _DOOR_EVENT,
     _LPR_DOOR_CREATE_CONFIGS,
+    Address,
+    AlarmAddress,
+    GuestAddress,
+    MFARequiredError,
     build_url,
     resolve,
 )
@@ -185,9 +185,7 @@ class VerkadaInternalAPIClient:
                 "settings": {"globalSiteAdmin": enabled},
             },
             error_context=f"Failed to {action} Global Site Admin",
-            log_request=(
-                f'{{"globalSiteAdmin": {str(enabled).lower()}}}'
-            ),
+            log_request=(f'{{"globalSiteAdmin": {str(enabled).lower()}}}'),
         )
 
     def _set_user_permission(
@@ -417,7 +415,9 @@ class VerkadaInternalAPIClient:
         """
         try:
             response = self.session.post(
-                self._login_url(), json=payload, timeout=DEFAULT_TIMEOUT,
+                self._login_url(),
+                json=payload,
+                timeout=DEFAULT_TIMEOUT,
             )
             data = response.json()
         except JSONDecodeError:
@@ -1490,9 +1490,7 @@ class VerkadaInternalAPIClient:
                 "name": visitor_access_name,
                 "description": visitor_access_description,
             },
-            error_context=(
-                f"Failed to create visitor access '{visitor_access_name}'"
-            ),
+            error_context=(f"Failed to create visitor access '{visitor_access_name}'"),
             log_request=f'{{"name": "{visitor_access_name}"}}',
             auto_log=False,
         )
@@ -1718,9 +1716,7 @@ class VerkadaInternalAPIClient:
             oid=response_site_id,
         )
 
-    def set_alarm_self_monitored(
-        self, site_id: str, response_config_id: str
-    ) -> None:
+    def set_alarm_self_monitored(self, site_id: str, response_config_id: str) -> None:
         """Sets an alarm response config to the self-monitored response level."""
         self._request(
             "alarm.site.set_self_monitored",
@@ -1732,9 +1728,7 @@ class VerkadaInternalAPIClient:
                     "responseLevel": "RESPONSE_LEVEL_SELF_MONITORED"
                 },
             },
-            error_context=(
-                f"Failed to set alarm site '{site_id}' to self-monitored"
-            ),
+            error_context=(f"Failed to set alarm site '{site_id}' to self-monitored"),
             log_request=f'{{"responseConfigId": "{response_config_id}"}}',
         )
 
@@ -1789,8 +1783,12 @@ class VerkadaInternalAPIClient:
 
     # ── Alarm Partition ──────────────────────────────────────────────
 
-    def create_alarm_partition(self, alarm_system_id: str, name: str) -> str:
-        """Creates a partition on an alarm system. Returns partition_id."""
+    def create_alarm_partition(self, alarm_system_id: str, name: str) -> list[str]:
+        """Creates a partition on an alarm system.
+
+        Returns:
+            list[str]: A list containing [partition_id, alarm_response_id].
+        """
         data, status = self._request(
             "alarm.partition.create",
             json={"alarmSystemId": alarm_system_id, "name": name},
@@ -1798,18 +1796,24 @@ class VerkadaInternalAPIClient:
             log_request=f'{{"alarmSystemId": "{alarm_system_id}", "name": "{name}"}}',
             auto_log=False,
         )
-        partition_id = (data.get("partition") or {}).get("id")
+        partition = data.get("partition") or {}
+        partition_id = partition.get("id")
+        alarm_response_id = partition.get("responseConfigId")
         if not partition_id:
             raise ConnectionError(
                 f"Failed to create alarm partition '{name}': no partition id."
+            )
+        if not alarm_response_id:
+            raise ConnectionError(
+                f"Failed to create alarm partition '{name}': no alarm response id."
             )
         self._log(
             "alarm.partition.create",
             status,
             log_request=f'{{"name": "{name}"}}',
-            log_response=f'{{"partitionId": "{partition_id}"}}',
+            log_response=f'{{"partitionId": "{partition_id}", "alarm_response_id": "{alarm_response_id}"}}',
         )
-        return partition_id
+        return [partition_id, alarm_response_id]
 
     def assign_alarm_partition_response(
         self, partition_id: str, response_config_id: str
@@ -2091,9 +2095,7 @@ class VerkadaInternalAPIClient:
             log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
         )
 
-    def get_wireless_contact_sensor(
-        self, alarm_system_id: str
-    ) -> list[dict[str, Any]]:
+    def get_wireless_contact_sensor(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._list_alarm_devices(
             alarm_system_id,
             "alarm.wireless_contact_sensor.list",
@@ -2135,9 +2137,7 @@ class VerkadaInternalAPIClient:
             log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
         )
 
-    def get_wireless_panic_button(
-        self, alarm_system_id: str
-    ) -> list[dict[str, Any]]:
+    def get_wireless_panic_button(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._list_alarm_devices(
             alarm_system_id,
             "alarm.wireless_panic_button.list",
@@ -2309,9 +2309,7 @@ class VerkadaInternalAPIClient:
         """
         results: list[dict[str, Any]] = []
         for system in self.get_alarm_system():
-            results.extend(
-                self._list_alarm_devices(system["id"], "alarm.panel.list")
-            )
+            results.extend(self._list_alarm_devices(system["id"], "alarm.panel.list"))
         return results
 
     def delete_alarm_device(self, device_id: str, device_type: str) -> None:
