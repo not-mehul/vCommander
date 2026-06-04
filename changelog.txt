@@ -10,11 +10,14 @@ v3.1
 - (Bug fix) Updated the subdomain for vproresponse to vagent
 - (Bug fix) Added LPR camera door linking to the commission tool
 
+v3.2
+- Alarms now creates a response, setting it to Self-monitored mode.
+
+
 
 --- NEWS ---
 - When the Alarm is triggered, you will not be able to delete an Alarm Site. It needs to be resolved to delete an alarm site.
 
 --- TODO ---
-- Alarms Response is not configured
 - Alarms Setup does not toggle analytics
 - General Keycode is not Set

@@ -506,7 +506,7 @@ class CommissionView(ft.View):
             track(ok)
 
         if site_id:
-            ok, _ = await step(
+            ok, alarm_response_id = await step(
                 "Creating alarm site",
                 client.create_alarm_site,
                 "Verkada",
@@ -514,6 +514,15 @@ class CommissionView(ft.View):
                 site_id,
             )
             track(ok)
+
+            if alarm_response_id:
+                ok, _ = await step(
+                    "Setting response to Self-Monitored",
+                    client.set_alarm_self_monitored,
+                    site_id,
+                    alarm_response_id,
+                )
+                track(ok)
 
             ok, _ = await step(
                 "Creating guest site",
@@ -539,25 +548,6 @@ class CommissionView(ft.View):
                     alarm_system_id,
                 )
                 track(ok)
-
-                ok, partition = await step(
-                    "Configuring Alarm Partition",
-                    client.create_alarm_partition,
-                    alarm_system_id,
-                    ESS_PARTITION_NAME,
-                )
-                track(ok)
-
-                # create_alarm_partition returns [partition_id, alarm_response_id]
-                alarm_response_id = partition[1] if partition else None
-                if alarm_response_id:
-                    ok, _ = await step(
-                        "Setting response to Self-Monitored",
-                        client.set_alarm_self_monitored,
-                        site_id,
-                        alarm_response_id,
-                    )
-                    track(ok)
 
     async def _run_vssl_flow(self, step, track, page, client, ext_client) -> None:
         bullet_serial = self._device_serial("Bullet")
