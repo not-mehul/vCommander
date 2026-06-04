@@ -540,7 +540,7 @@ class CommissionView(ft.View):
                 )
                 track(ok)
 
-                ok, partition_id, alarm_response_id = await step(
+                ok, partition = await step(
                     "Configuring Alarm Partition",
                     client.create_alarm_partition,
                     alarm_system_id,
@@ -548,6 +548,8 @@ class CommissionView(ft.View):
                 )
                 track(ok)
 
+                # create_alarm_partition returns [partition_id, alarm_response_id]
+                alarm_response_id = partition[1] if partition else None
                 if alarm_response_id:
                     ok, _ = await step(
                         "Setting response to Self-Monitored",
