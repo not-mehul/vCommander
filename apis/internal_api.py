@@ -1606,7 +1606,8 @@ class VerkadaInternalAPIClient:
     ) -> str:
         """
         Creates an alarm response site and enables its software trial.
-        Returns the response_site_id created in step 1.
+        Returns the response_config_id from the auto-created response config
+        (used for set_alarm_self_monitored and partition response assignment).
         """
         addr = (
             alarm_address
@@ -1639,7 +1640,10 @@ class VerkadaInternalAPIClient:
             error_context=f"Failed to configure alarm site for '{business_name}'",
             log_request=f'{{"siteId": "{site_id}"}}',
         )
-        response_site_id = (data.get("responseSite") or {}).get("id") or ""
+        response_configs = data.get("responseConfigs") or []
+        response_config_id = (
+            response_configs[0].get("id") if response_configs else ""
+        )
 
         # Step 2: enable the software trial
         self._request(
@@ -1648,7 +1652,7 @@ class VerkadaInternalAPIClient:
             error_context=f"Failed to enable alarm trial for '{business_name}'",
             log_request=f'{{"siteId": "{site_id}"}}',
         )
-        return response_site_id
+        return response_config_id
 
     def get_alarm_site(self) -> list[dict[str, Any]]:
         """
