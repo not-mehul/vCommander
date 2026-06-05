@@ -33,3 +33,17 @@ def log_api_call(
     print(line)
     with open(get_log_path(), "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def log_system(message: str, *, level: str = "INFO") -> None:
+    """Append a free-form system/progress message to the log + stdout.
+
+    Used by orchestration flows (e.g. the decommission tool) to narrate
+    what they're doing around the raw API-call lines that log_api_call
+    emits. `level` is a short tag (INFO/WARN/ERROR) shown in the prefix.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] [{level}] {message}"
+    print(line)
+    with open(get_log_path(), "a", encoding="utf-8") as f:
+        f.write(line + "\n")

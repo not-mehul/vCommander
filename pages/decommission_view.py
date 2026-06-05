@@ -25,6 +25,7 @@ from constants import (
     BORDER,
     CARD_PADDING,
     CARD_SHADOW,
+    CATEGORY_GROUPS,
     DELETION_ORDER,
     ERROR,
     FIELD_SPACING,
@@ -37,8 +38,38 @@ from constants import (
     WARNING,
 )
 from utils.executor import _executor
+from utils.logger import log_system
 from utils.session import get_external_client, get_internal_client, set_external_client
 from utils.ui_utils import set_button_loading, show_alert
+
+# Reverse lookup: child category -> parent group name (built once from
+# CATEGORY_GROUPS so the view can ask "which group does this belong to?").
+_CATEGORY_TO_GROUP = {
+    child: group for group, children in CATEGORY_GROUPS.items() for child in children
+}
+
+
+def _item_serial(item: dict) -> str | None:
+    """Return the item's serial number if the scan surfaced one."""
+    serial = item.get("serial_number")
+    return serial or None
+
+
+def _item_descriptor(item: dict, *, include_id: bool = True) -> str:
+    """Human-readable one-liner for an asset: name · SN · id.
+
+    Serial number is included only when present (sites, doors, floors and
+    other logical objects don't have one); the object id is included by
+    default so every row is traceable back to the API.
+    """
+    name = item.get("name") or item.get("id") or "Unknown"
+    parts = [str(name)]
+    serial = _item_serial(item)
+    if serial:
+        parts.append(f"SN {serial}")
+    if include_id and item.get("id"):
+        parts.append(f"id {item['id']}")
+    return "  ·  ".join(parts)
 
 # State machine
 SCAN = "scan"
@@ -392,53 +423,27 @@ class DecommissionView(ft.View):
 
     def _render_select(self):
         self._category_checkboxes: dict[str, ft.Checkbox] = {}
+        self._group_checkboxes: dict[str, ft.Checkbox] = {}
         tiles = []
+        rendered_groups: set[str] = set()
 
         for category in ASSET_CATEGORIES:
+            group = _CATEGORY_TO_GROUP.get(category)
+            if group:
+                # Render the whole group once, at its first child's position;
+                # _build_group_tile handles all of the group's children.
+                if group in rendered_groups:
+                    continue
+                rendered_groups.add(group)
+                group_tile = self._build_group_tile(group)
+                if group_tile:
+                    tiles.append(group_tile)
+                continue
+
             items = self._assets.get(category, [])
             if not items:
                 continue
-
-            cb = ft.Checkbox(
-                value=True,
-                active_color=PRIMARY,
-                check_color=TEXT_PRIMARY,
-            )
-            self._category_checkboxes[category] = cb
-            self._selected_categories.setdefault(category, True)
-
-            def on_change(_e, cat=category, checkbox=cb):
-                self._selected_categories[cat] = bool(checkbox.value)
-
-            cb.on_change = on_change
-
-            item_names = ft.Column(
-                [
-                    ft.Text(
-                        f"  • {item.get('name', 'Unknown')}",
-                        color=TEXT_SECONDARY,
-                        size=12,
-                    )
-                    for item in items
-                ],
-                spacing=4,
-            )
-
-            tiles.append(
-                ft.ExpansionTile(
-                    title=ft.Row(
-                        [cb, ft.Text(f"{category} ({len(items)})", color=TEXT_PRIMARY)]
-                    ),
-                    controls=[
-                        ft.Container(
-                            content=item_names,
-                            padding=ft.padding.only(left=40, bottom=10),
-                        )
-                    ],
-                    expanded=False,
-                    tile_padding=ft.padding.symmetric(horizontal=10, vertical=5),
-                )
-            )
+            tiles.append(self._build_leaf_tile(category, items))
 
         self._delete_btn = _make_button(
             "Delete Selected", self._on_delete, bgcolor=ERROR
@@ -467,6 +472,127 @@ class DecommissionView(ft.View):
             self._delete_btn,
         ]
 
+    def _build_leaf_tile(self, category: str, items: list[dict]) -> ft.ExpansionTile:
+        """Build a single category's checkbox + expandable item list.
+
+        Registers the checkbox in self._category_checkboxes and, for
+        categories that belong to a group, refreshes the parent checkbox
+        whenever this one toggles. Each item line shows name · SN · id.
+        """
+        cb = ft.Checkbox(value=True, active_color=PRIMARY, check_color=TEXT_PRIMARY)
+        self._category_checkboxes[category] = cb
+        self._selected_categories[category] = True
+        group = _CATEGORY_TO_GROUP.get(category)
+
+        def on_change(e, cat=category, checkbox=cb, grp=group):
+            self._selected_categories[cat] = bool(checkbox.value)
+            if grp:
+                self._refresh_parent(grp)
+                e.page.update()
+
+        cb.on_change = on_change
+
+        item_names = ft.Column(
+            [
+                ft.Text(f"  • {_item_descriptor(item)}", color=TEXT_SECONDARY, size=12)
+                for item in items
+            ],
+            spacing=4,
+        )
+
+        return ft.ExpansionTile(
+            title=ft.Row(
+                [cb, ft.Text(f"{category} ({len(items)})", color=TEXT_PRIMARY)]
+            ),
+            controls=[
+                ft.Container(
+                    content=item_names,
+                    padding=ft.padding.only(left=40, bottom=10),
+                )
+            ],
+            expanded=False,
+            tile_padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+
+    def _build_group_tile(self, group: str) -> ft.ExpansionTile | None:
+        """Build a parent tile for a group (Access Control / Alarms).
+
+        The parent checkbox toggles every non-empty child at once and shows
+        an indeterminate state when only some children are selected. Returns
+        None when the group has no scanned assets (nothing to show).
+        """
+        child_tiles = []
+        total = 0
+        for child in CATEGORY_GROUPS[group]:
+            items = self._assets.get(child, [])
+            if not items:
+                continue
+            total += len(items)
+            child_tiles.append(self._build_leaf_tile(child, items))
+
+        if not child_tiles:
+            return None
+
+        parent_cb = ft.Checkbox(
+            value=True,
+            tristate=True,
+            active_color=PRIMARY,
+            check_color=TEXT_PRIMARY,
+        )
+        self._group_checkboxes[group] = parent_cb
+
+        def on_parent_change(e, grp=group):
+            present = [
+                c for c in CATEGORY_GROUPS[grp] if c in self._category_checkboxes
+            ]
+            # Click semantics: if everything is already on, turn the group
+            # off; otherwise turn it all on. (Avoids the confusing tristate
+            # cycle for a bulk toggle.)
+            all_on = all(self._selected_categories.get(c) for c in present)
+            target = not all_on
+            for c in present:
+                self._category_checkboxes[c].value = target
+                self._selected_categories[c] = target
+            self._refresh_parent(grp)
+            e.page.update()
+
+        parent_cb.on_change = on_parent_change
+
+        return ft.ExpansionTile(
+            title=ft.Row(
+                [
+                    parent_cb,
+                    ft.Text(
+                        f"{group} ({total})",
+                        color=TEXT_PRIMARY,
+                        weight=ft.FontWeight.W_600,
+                    ),
+                ]
+            ),
+            controls=[
+                ft.Container(
+                    content=ft.Column(child_tiles, spacing=2),
+                    padding=ft.padding.only(left=20),
+                )
+            ],
+            expanded=False,
+            tile_padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+
+    def _refresh_parent(self, group: str) -> None:
+        """Sync a group's parent checkbox to its children (on/off/mixed)."""
+        cb = self._group_checkboxes.get(group)
+        if cb is None:
+            return
+        present = [c for c in CATEGORY_GROUPS[group] if c in self._category_checkboxes]
+        values = [bool(self._selected_categories.get(c)) for c in present]
+        if values and all(values):
+            cb.value = True
+        elif not any(values):
+            cb.value = False
+        else:
+            cb.value = None  # indeterminate — some children selected
+
     def _export_assets_csv(self, e):
         downloads = os.path.expanduser("~/Downloads")
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -478,12 +604,15 @@ class DecommissionView(ft.View):
                     {
                         "Category": category,
                         "Name": item.get("name", ""),
+                        "Serial Number": _item_serial(item) or "",
                         "ID": item.get("id", ""),
                     }
                 )
         try:
             with open(filepath, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["Category", "Name", "ID"])
+                writer = csv.DictWriter(
+                    f, fieldnames=["Category", "Name", "Serial Number", "ID"]
+                )
                 writer.writeheader()
                 writer.writerows(rows)
             show_alert(
@@ -532,6 +661,19 @@ class DecommissionView(ft.View):
         loop = asyncio.get_running_loop()
         self._results = {}
 
+        planned = [
+            category
+            for category in DELETION_ORDER
+            if category in selected_categories and self._assets.get(category)
+        ]
+        grand_total = sum(len(self._assets[c]) for c in planned)
+        log_system(
+            "=== Decommission started: "
+            f"{grand_total} assets across {len(planned)} categories "
+            f"(order: {', '.join(planned) or 'none'}) ==="
+        )
+
+        deleted_total = 0
         for category in DELETION_ORDER:
             if category not in selected_categories:
                 continue
@@ -544,6 +686,7 @@ class DecommissionView(ft.View):
                 ft.Text(category, color=PRIMARY, size=14, weight=ft.FontWeight.W_600)
             )
             page.update()
+            log_system(f"--- {category}: deleting {len(items)} item(s) ---")
 
             success = 0
             for item in items:
@@ -552,7 +695,21 @@ class DecommissionView(ft.View):
                 ):
                     success += 1
 
+            deleted_total += success
+            failed = len(items) - success
+            log_system(
+                f"--- {category}: {success}/{len(items)} deleted"
+                + (f", {failed} failed" if failed else "")
+                + " ---",
+                level="WARN" if failed else "INFO",
+            )
             self._results[category] = (success, len(items))
+
+        log_system(
+            f"=== Decommission complete: {deleted_total}/{grand_total} "
+            "assets deleted ===",
+            level="WARN" if deleted_total != grand_total else "INFO",
+        )
 
         self._state = COMPLETE
         self._render_complete()
@@ -573,31 +730,31 @@ class DecommissionView(ft.View):
         """
         item_id = item.get("id") or "unknown"
         item_name = item.get("name") or item_id
+        serial = _item_serial(item)
+        # Label shown in the UI row: name plus serial when the asset has one.
+        row_label = item_name if not serial else f"{item_name}  ·  SN {serial}"
+        # Fuller descriptor (name · SN · id) goes to the log for traceability.
+        descriptor = _item_descriptor(item)
 
         step_icon = ft.ProgressRing(
             width=14, height=14, stroke_width=2, color=TEXT_SECONDARY
         )
-        step_text = ft.Text(f"  Deleting {item_name}...", color=TEXT_SECONDARY, size=12)
+        step_text = ft.Text(f"  Deleting {row_label}...", color=TEXT_SECONDARY, size=12)
         step_row = ft.Row([step_icon, step_text], spacing=8)
         self._processing_column.controls.append(step_row)
         page.update()
         await asyncio.sleep(0)
+        log_system(f"{category}: deleting {descriptor}")
 
         try:
             if category in _INTERNAL_DELETERS:
-                # Most deleters take a single id. Two take extra args, so
-                # special-case them here to keep the client API uniform:
-                #   - delete_alarm_site takes (response_site_id, site_id)
-                #   - delete_alarm_device takes (device_id, device_type),
-                #     where type picks the right v2 delete endpoint.
+                # Most deleters take a single id. Alarm Sites needs two —
+                # delete_alarm_site takes (response_site_id, site_id) — so
+                # special-case it to keep the rest of the client API uniform.
                 deleter = getattr(int_client, _INTERNAL_DELETERS[category])
                 if category == "Alarm Sites":
                     await loop.run_in_executor(
                         _executor, deleter, item.get("id"), item.get("site_id")
-                    )
-                elif category == "Alarm Devices":
-                    await loop.run_in_executor(
-                        _executor, deleter, item_id, item.get("type")
                     )
                 else:
                     await loop.run_in_executor(_executor, deleter, item_id)
@@ -609,15 +766,17 @@ class DecommissionView(ft.View):
             step_row.controls[0] = ft.Icon(
                 ft.Icons.CHECK_CIRCLE, color=SECONDARY, size=16
             )
-            step_text.value = f"  Deleted {item_name}"
+            step_text.value = f"  Deleted {row_label}"
             step_text.color = SECONDARY
             page.update()
+            log_system(f"{category}: deleted {descriptor}")
             return True
         except Exception as ex:
             step_row.controls[0] = ft.Icon(ft.Icons.ERROR, color=ERROR, size=16)
-            step_text.value = f"  Failed: {item_name} — {ex}"
+            step_text.value = f"  Failed: {row_label} — {ex}"
             step_text.color = ERROR
             page.update()
+            log_system(f"{category}: FAILED to delete {descriptor} — {ex}", level="ERROR")
             return False
 
     # ------------------------------------------------------------------

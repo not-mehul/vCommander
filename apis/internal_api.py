@@ -2354,6 +2354,55 @@ class VerkadaInternalAPIClient:
             results.extend(self._list_alarm_devices(system["id"], "alarm.panel.list"))
         return results
 
+    # ── Org-wide alarm accessors (no system/site arg) ────────────────
+    # The per-type getters above all require an alarm_system_id (or
+    # site_id for guards/partitions). The decommission scan has neither,
+    # so these zero-arg wrappers aggregate across every system/site —
+    # mirroring get_alarm_device. They are what constants._INTERNAL_GETTERS
+    # points the alarm categories at.
+
+    def _aggregate_over_systems(self, per_system_getter) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for system in self.get_alarm_system():
+            results.extend(per_system_getter(system["id"]))
+        return results
+
+    def get_alarm_panel_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_alarm_panel)
+
+    def get_alarm_keypad_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_alarm_keypad)
+
+    def get_alarm_expander_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_alarm_expander)
+
+    def get_wireless_contact_sensor_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_wireless_contact_sensor)
+
+    def get_wireless_panic_button_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_wireless_panic_button)
+
+    def get_wireless_universal_transmitter_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_wireless_universal_transmitter)
+
+    def get_wired_input_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_wired_input)
+
+    def get_wired_output_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_wired_output)
+
+    def get_alarm_partition_all(self) -> list[dict[str, Any]]:
+        return self._aggregate_over_systems(self.get_alarm_partition)
+
+    def get_alarm_guard_all(self) -> list[dict[str, Any]]:
+        """Guards are scoped per response site, not per alarm system."""
+        results: list[dict[str, Any]] = []
+        for site in self.get_alarm_site():
+            site_id = site.get("site_id")
+            if site_id:
+                results.extend(self.get_alarm_guard(site_id))
+        return results
+
     def delete_alarm_device(self, device_id: str, device_type: str) -> None:
         """
         Deletes an alarm device, choosing the delete endpoint from its
