@@ -16,7 +16,13 @@ from apis.endpoints import (
     build_url,
     resolve,
 )
-from constants import API_NAME, DEFAULT_TIMEOUT, DEV_SKIP_LOGIN
+from constants import (
+    API_NAME,
+    AS_INSTRUCTOR_KEYCODE,
+    AS_INSTRUCTOR_KEYCODE_NAME,
+    DEFAULT_TIMEOUT,
+    DEV_SKIP_LOGIN,
+)
 from utils.logger import log_api_call
 
 
@@ -1641,9 +1647,7 @@ class VerkadaInternalAPIClient:
             log_request=f'{{"siteId": "{site_id}"}}',
         )
         response_configs = data.get("responseConfigs") or []
-        response_config_id = (
-            response_configs[0].get("id") if response_configs else ""
-        )
+        response_config_id = response_configs[0].get("id") if response_configs else ""
 
         # Step 2: enable the software trial
         self._request(
@@ -1777,6 +1781,40 @@ class VerkadaInternalAPIClient:
                 "leader_device_id": x.get("leaderDeviceId"),
             },
         )
+
+    def set_alarm_keycode(self, alarm_system_id: str) -> str:
+        """
+        Creates a general alarm keycode on a site. Returns keycode_id.
+
+        Used as a precursor to configure_alarm_panel / configure_keypad,
+        which need a system to attach devices to.
+        """
+        data, status = self._request(
+            "alarm.system.create_general_keycode",
+            json={
+                "alarmSystemId": alarm_system_id,
+                "name": AS_INSTRUCTOR_KEYCODE_NAME,
+                "code": AS_INSTRUCTOR_KEYCODE,
+                "partitionIds": [],
+                "firePermissionScope": "FIRE_PERMISSION_SCOPE_OPERATION",
+            },
+            error_context=f"Failed to create general keycode on site '{alarm_system_id}'",
+            log_request=f'{{"siteId": "{alarm_system_id}"}}',
+            auto_log=False,
+        )
+        keycode_id = (data.get("keycode") or {}).get("id")
+        if not keycode_id:
+            raise ConnectionError(
+                f"Failed to create general keycode on site '{alarm_system_id}': "
+                "no keycode ID in response."
+            )
+        self._log(
+            "alarm.system.create_general_keycode",
+            status,
+            log_request=f'{{"alarm_system_id": "{alarm_system_id}"}}',
+            log_response=f'{{"keycode_id": "{keycode_id}"}}',
+        )
+        return keycode_id
 
     def delete_alarm_system(self, alarm_system_id: str) -> None:
         self._delete(

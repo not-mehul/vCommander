@@ -134,6 +134,8 @@ AS_PANEL_NAME = "HQ Alarm Panel"
 AS_KEYPAD_NAME = "HQ Keypad"
 AS_DOOR_NAME = "HQ Door"
 AS_ACCESS_LEVEL_NAME = "HQ 24/7 Access"
+AS_INSTRUCTOR_KEYCODE_NAME = "VCE Instructor Keycode"
+AS_INSTRUCTOR_KEYCODE = "123456"
 
 AS_BUILDING_NAME = "HQ"
 AS_FLOORS = ["G"]
@@ -180,7 +182,7 @@ TEMPLATE_FIELDS = {
     },
     "AS": {
         "devices": ["Dome", "Access Controller", "Alarm Panel", "Keypad"],
-        "face_analytics": False,
+        "face_analytics": True,
     },
 }
 

@@ -1908,6 +1908,31 @@ ENDPOINTS: dict[str, Endpoint] = {
             }
         },
     ),
+    "alarm.system.create_general_keycode": Endpoint(
+        method="POST",
+        subdomain="vproconfig",
+        path="keycode/create",
+        payload={
+            "alarmSystemId": "<alarm_system_id>",
+            "name": "<keycode_name>",
+            "code": "<keycode>",
+            "partitionIds": [],
+            "firePermissionScope": "FIRE_PERMISSION_SCOPE_OPERATION",
+        },
+        response={
+            "keycode": {
+                "id": "<keycode_id>",
+                "code": "<keycode>",
+                "name": "<keycode_name>",
+                "isDuressCode": False,
+                "alarmSystemId": "<alarm_system_id>",
+                "isPartitionScoped": False,
+                "partitionScopes": [],
+                "firePermissionScope": "FIRE_PERMISSION_SCOPE_OPERATION",
+                "isIntrusion": True,
+            }
+        },
+    ),
     "alarm.partition.create": Endpoint(
         method="POST",
         subdomain="vproconfig",

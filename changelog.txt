@@ -12,12 +12,14 @@ v3.1
 
 v3.2
 - Alarms now creates a response, setting it to Self-monitored mode.
-
+- AI powered search and certain additional analytics also toggled on by default
+- Alarms Specialist Commission will now allow toggling face analytics, with the default toggled to True.
 
 
 --- NEWS ---
 - When the Alarm is triggered, you will not be able to delete an Alarm Site. It needs to be resolved to delete an alarm site.
 
 --- TODO ---
-- Alarms Setup does not toggle analytics
+- Access Levels + Access Groups are not deleted
+- Command Connector does not get cleanly deleted
 - General Keycode is not Set

@@ -916,7 +916,7 @@ class CommissionView(ft.View):
             track(ok)
 
         if site_id:
-            ok, _ = await step(
+            ok, alarm_response_id = await step(
                 "Creating alarm site",
                 client.create_alarm_site,
                 "Verkada",
@@ -924,6 +924,15 @@ class CommissionView(ft.View):
                 site_id,
             )
             track(ok)
+
+            if alarm_response_id:
+                ok, _ = await step(
+                    "Setting response to Self-Monitored",
+                    client.set_alarm_self_monitored,
+                    site_id,
+                    alarm_response_id,
+                )
+                track(ok)
 
         if panel_id and keypad_id and site_id:
             # Alarm panels and keypads attach to an alarm system, which
@@ -952,6 +961,13 @@ class CommissionView(ft.View):
                     AS_KEYPAD_NAME,
                     alarm_system_id,
                     keypad_serial,
+                )
+                track(ok)
+
+                ok, _ = await step(
+                    "Setting up general keycode",
+                    client.set_alarm_keycode,
+                    alarm_system_id,
                 )
                 track(ok)
 
