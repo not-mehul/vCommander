@@ -211,6 +211,7 @@ ASSET_CATEGORIES = [
     "Mailroom Sites",
     # Access Control (grouped)
     "Doors",
+    "Access Station Pro",
     "Access Controllers",
     "Floors",
     "Buildings",
@@ -241,6 +242,7 @@ ASSET_CATEGORIES = [
 CATEGORY_GROUPS = {
     "Access Control": [
         "Doors",
+        "Access Station Pro",
         "Access Controllers",
         "Floors",
         "Buildings",
@@ -284,6 +286,7 @@ DELETION_ORDER = [
     "Mailroom Sites",
     # Access Control
     "Doors",
+    "Access Station Pro",
     "Access Controllers",
     "Floors",
     "Buildings",
@@ -326,6 +329,7 @@ _INTERNAL_GETTERS = {
     "Mailroom Sites": "get_mailroom_site",
     # Access Control
     "Doors": "get_door",
+    "Access Station Pro": "get_access_station_pro",
     "Access Controllers": "get_access_controller",
     "Floors": "get_floor",
     "Buildings": "get_building",
@@ -360,6 +364,7 @@ _INTERNAL_DELETERS = {
     "Mailroom Sites": "delete_mailroom_site",
     # Access Control
     "Doors": "delete_door",
+    "Access Station Pro": "delete_access_station_pro",
     "Access Controllers": "delete_access_controller",
     "Floors": "delete_floor",
     "Buildings": "delete_building",

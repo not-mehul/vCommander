@@ -20,6 +20,8 @@ v3.2
 - (Improvement) Decommission now shows serial numbers alongside object ids
   in the asset list, CSV export, and progress rows
 - (Improvement) Each deletion writes a detailed system message to api_calls.log
+- (Improvement) Decommission now deletes Access Station Pro devices (after
+  doors, before access controllers)
 
 
 --- NEWS ---
