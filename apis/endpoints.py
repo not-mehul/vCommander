@@ -85,6 +85,39 @@ _LPR_DOOR_CREATE_CONFIGS = [
     {"paramName": "replace-ios-with-security-relay", "paramValue": "False"},
 ]
 
+_FACE_STATION_PRO_DOOR_CREATE_CONFIGS = [
+    {"paramName": "default-unlock-time", "paramValue": "10"},
+    {"paramName": "assa-extended-unlock-time", "paramValue": "20"},
+    {"paramName": "has-door-sensor", "paramValue": "True"},
+    {"paramName": "ignore-dpi-relock", "paramValue": "False"},
+    {"paramName": "passthrough-dpi-enabled", "paramValue": "False"},
+    {"paramName": "dho-enabled", "paramValue": "False"},
+    {"paramName": "dho-trigger-time", "paramValue": "60"},
+    {"paramName": "has-rex", "paramValue": "True"},
+    {"paramName": "rex-unlock-time", "paramValue": "3"},
+    {"paramName": "has-rex2", "paramValue": "False"},
+    {"paramName": "rex2-unlock-time", "paramValue": "3"},
+    {"paramName": "dfo-rex-cooloff-time", "paramValue": "10"},
+    {"paramName": "ble-unlock-enabled", "paramValue": "True"},
+    {"paramName": "ble-unlock-rssi", "paramValue": "-45"},
+    {"paramName": "ble-connect-rssi", "paramValue": "-55"},
+    {"paramName": "ble-unlock-cooldown-time", "paramValue": "5"},
+    {"paramName": "tof-unlock-distance-mm", "paramValue": "500"},
+    {"paramName": "third-party-io-baud-rate", "paramValue": "14400"},
+    {"paramName": "badge-reader", "paramValue": "True"},
+    {"paramName": "mobile-unlock-enabled", "paramValue": "True"},
+    {"paramName": "door-api-unlock-enabled", "paramValue": "False"},
+    {"paramName": "nfc-enabled", "paramValue": "True"},
+    {"paramName": "lpr-unlock-enabled", "paramValue": "False"},
+    {"paramName": "lpr-unlock-cooldown-time", "paramValue": "0"},
+    {"paramName": "ignore-outbound-reader-ac", "paramValue": "False"},
+    {"paramName": "lf-card-reading-enabled", "paramValue": "True"},
+    {"paramName": "c3po-in1-type", "paramValue": "NONE"},
+    {"paramName": "c3po-in2-type", "paramValue": "NONE"},
+    {"paramName": "replace-ios-with-security-relay", "paramValue": False},
+    {"paramName": "face-unlock-enabled", "paramValue": "true"},
+]
+
 _DOOR_CREATE_CONFIGS = [
     {"paramName": "default-unlock-time", "paramValue": "10"},
     {"paramName": "assa-extended-unlock-time", "paramValue": "20"},
@@ -483,6 +516,17 @@ ENDPOINTS: dict[str, Endpoint] = {
                 "timestamp": 0,
                 "userId": "<user_id>",
             },
+        },
+        response={},
+    ),
+    "org.allow_face_unlock": Endpoint(
+        method="POST",
+        subdomain=api_region,
+        path="organization/config/set",
+        payload={
+            "organizationId": "<org_id>",
+            "paramName": "face-unlock-enabled",
+            "paramValue": True,
         },
         response={},
     ),
@@ -895,6 +939,78 @@ ENDPOINTS: dict[str, Endpoint] = {
         subdomain="vcerberus",
         path="access_device/decommission",
         payload={"deviceId": "<access_controller_id>", "sharding": True},
+        response={},
+    ),
+    "face_station_pro.create": Endpoint(
+        method="POST",
+        subdomain="vcerberus",
+        path="access/v2/user/access_device/setup",
+        payload={
+            "deviceId": "<access_station_pro_id>",
+            "name": "<access_station_pro_name>",
+            "siteId": "<site_id>",
+            "location": {"label": "<address>", "lat": 0, "lon": 0},
+        },
+        response={
+            "accessControllerId": "<access_controller_id>",
+            "deviceId": "<face_station_pro_id>",
+            "name": "<face_station_pro_name>",
+            "organizationId": "<org_id>",
+            "serialNumber": "<serial_number>",
+            "timezone": "<timezone>",
+            "vconductorModelId": "MOODY",
+        },
+    ),
+    "face_station_pro.set_door_controller": Endpoint(
+        method="POST",
+        subdomain=api_region,
+        path="door/create",
+        payload={
+            "name": "<door_name>",
+            "floorId": "<floor_id>",
+            "accessControllerId": "<access_controller_id>",
+            "deviceIos": _DOOR_CREATE_IOS,
+            "configs": _FACE_STATION_PRO_DOOR_CREATE_CONFIGS,
+            "doorType": "moody_as_acu",
+        },
+        response={
+            "doors": [
+                {
+                    "accessControllerId": "<face_station_pro_id>",
+                    "doorId": "<door_id>",
+                    "floorId": "<floor_id>",
+                    "name": "<door_name>",
+                    "nearbyCameras": [
+                        {
+                            "cameraId": "<face_station_pro_id>",
+                        }
+                    ],
+                }
+            ]
+        },
+    ),
+    "face_station_pro.list": Endpoint(
+        method="GET",
+        subdomain=api_region,
+        path="access/v3/user/access_controllers",
+        payload={},
+        response={
+            "accessControllers": [
+                {
+                    "accessControllerId": "<access_station_pro_id>",
+                    "name": "<access_station_pro_name>",
+                    "organizationId": "<org_id>",
+                    "serialNumber": "<serial_number>",
+                    "vconductorModelId": "MOODY",
+                },
+            ]
+        },
+    ),
+    "face_station_pro.delete": Endpoint(
+        method="POST",
+        subdomain="vcerberus",
+        path="access_device/decommission",
+        payload={"deviceId": "<face_station_pro_id>", "sharding": True},
         response={},
     ),
     "door.create": Endpoint(
@@ -1862,7 +1978,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="POST",
         subdomain="vproconfig",
         path="response/site/delete",
-        payload={"siteId": "<site_id>", "responseSiteId": "<alarm_response_id>"},
+        payload={"siteId": "<site_id>", "responseSiteId": "<alarm_site_id>"},
         response={},
     ),
     "alarm.system.create": Endpoint(

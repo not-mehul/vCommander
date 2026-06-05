@@ -1713,15 +1713,15 @@ class VerkadaInternalAPIClient:
             )
         return results
 
-    def delete_alarm_site(self, response_site_id: str, site_id: str) -> None:
+    def delete_alarm_site(self, alarm_site_id: str, site_id: str) -> None:
         """
         Removes an alarm response site. Requires BOTH ids — Command
         identifies alarm sites by (responseSiteId, siteId).
         """
         self._delete(
             "alarm.site.delete",
-            json={"siteId": site_id, "responseSiteId": response_site_id},
-            oid=response_site_id,
+            json={"siteId": site_id, "responseSiteId": alarm_site_id},
+            oid=alarm_site_id,
         )
 
     def set_alarm_self_monitored(self, site_id: str, response_config_id: str) -> None:
