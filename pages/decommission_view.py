@@ -749,8 +749,10 @@ class DecommissionView(ft.View):
         try:
             if category in _INTERNAL_DELETERS:
                 # Most deleters take a single id. Alarm Sites needs two —
-                # delete_alarm_site takes (response_site_id, site_id) — so
+                # delete_alarm_site takes (alarm_site_id, site_id) — so
                 # special-case it to keep the rest of the client API uniform.
+                # item["id"] from get_alarm_site is the responseSite.id
+                # (alarm_site_id), which the body's responseSiteId expects.
                 deleter = getattr(int_client, _INTERNAL_DELETERS[category])
                 if category == "Alarm Sites":
                     await loop.run_in_executor(
