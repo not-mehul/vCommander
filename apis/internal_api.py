@@ -40,9 +40,23 @@ class APIError(ConnectionError):
         self.status_code = status_code
 
 
+# Wired-input device `type` strings. All of these are created on a panel
+# pin, listed by alarm.wired_input.list, and decommissioned via
+# alarm.wired_input.delete. Only WIRED_CONTACT_SENSOR carries an extra
+# sensorConfig; the rest send just name + type.
+_WIRED_INPUT_TYPES = (
+    "WIRED_CONTACT_SENSOR",
+    "WIRED_GLASS_BREAK_SENSOR",
+    "WIRED_MOTION_SENSOR",
+    "WIRED_GENERIC_SENSOR",
+    "WIRED_PANIC_BUTTON",
+    "WIRED_WATER_LEAK_SENSOR",
+)
+
 # Alarm device `type` strings (returned by alarm_system/get_devices) mapped
 # to the v2 delete endpoint key for that device. Panels/keypads/expanders/
-# wireless decommission; wired in/out use a different delete path.
+# wireless decommission; wired in/out use a different delete path. Every
+# wired-input subtype shares the one alarm.wired_input.delete endpoint.
 _ALARM_DEVICE_DELETE_KEYS = {
     "COLOSSUS": "alarm.panel.delete",
     "SYLVIE": "alarm.keypad.delete",
@@ -51,7 +65,7 @@ _ALARM_DEVICE_DELETE_KEYS = {
     "WIRELESS_PANIC_BUTTON": "alarm.wireless_panic_button.delete",
     "UNIVERSAL_TRANSMITTER": "alarm.wireless_universal_transmitter.delete",
     "WIRED_GENERIC_OUTPUT": "alarm.wired_output.delete",
-    "WIRED_CONTACT_SENSOR": "alarm.wired_input.delete",
+    **{t: "alarm.wired_input.delete" for t in _WIRED_INPUT_TYPES},
 }
 
 # Fixed overnight (23:30–06:30) arm schedule applied to every camera guard.
@@ -2004,7 +2018,7 @@ class VerkadaInternalAPIClient:
         alarm_system_id: str,
         endpoint_key: str,
         *,
-        device_type: str | None = None,
+        device_type: str | tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Shared body for the per-type alarm device get_* methods.
@@ -2012,8 +2026,16 @@ class VerkadaInternalAPIClient:
         Every alarm device .list key hits the same alarm_system/get_devices
         endpoint and returns ALL devices in the system; filtering by `type`
         client-side is what distinguishes panels from keypads from sensors.
-        device_type=None returns every device (used by get_alarm_device).
+        device_type may be a single type, a tuple of types (e.g. the wired
+        input family), or None to return every device (get_alarm_device).
         """
+        if device_type is None:
+            wanted: set[str] | None = None
+        elif isinstance(device_type, str):
+            wanted = {device_type}
+        else:
+            wanted = set(device_type)
+
         data, status = self._request(
             endpoint_key,
             json={"alarmSystemId": alarm_system_id},
@@ -2031,7 +2053,7 @@ class VerkadaInternalAPIClient:
                 "type": d.get("type"),
             }
             for d in (data.get("devices") or [])
-            if device_type is None or d.get("type") == device_type
+            if wanted is None or d.get("type") in wanted
         ]
         self._log(
             endpoint_key,
@@ -2322,29 +2344,38 @@ class VerkadaInternalAPIClient:
         panel_id: str,
         partition_id: str,
         pin_num: int,
+        *,
+        device_type: str = "WIRED_CONTACT_SENSOR",
+        normal_state: str = "CLOSED",
     ) -> str:
-        """Creates a wired contact-sensor input on a panel pin. Returns device_id."""
+        """Creates a wired input on a panel pin. Returns device_id.
+
+        device_type is one of _WIRED_INPUT_TYPES. Only WIRED_CONTACT_SENSOR
+        carries the extra wiredContactSensorConfig; glass-break/motion/
+        generic/panic/water-leak send just name + type.
+        """
+        if device_type not in _WIRED_INPUT_TYPES:
+            raise ValueError(
+                f"Unknown wired input type {device_type!r}; "
+                f"expected one of {_WIRED_INPUT_TYPES}"
+            )
+        device: dict[str, Any] = {"name": name, "type": device_type}
+        if device_type == "WIRED_CONTACT_SENSOR":
+            device["sensorConfig"] = {
+                "wiredContactSensorConfig": {"type": "DOOR", "doorHeldOpenDelay": 0}
+            }
         data, status = self._request(
             "alarm.wired_input.create",
             json={
-                "device": {
-                    "name": name,
-                    "type": "WIRED_CONTACT_SENSOR",
-                    "sensorConfig": {
-                        "wiredContactSensorConfig": {
-                            "type": "DOOR",
-                            "doorHeldOpenDelay": 0,
-                        }
-                    },
-                },
+                "device": device,
                 "alarmSystemId": alarm_system_id,
                 "partitionId": partition_id,
                 "hubId": panel_id,
                 "pinNum": pin_num,
-                "normalState": "CLOSED",
+                "normalState": normal_state,
             },
             error_context=f"Failed to create wired input '{name}'",
-            log_request=f'{{"name": "{name}", "pinNum": {pin_num}}}',
+            log_request=f'{{"name": "{name}", "type": "{device_type}", "pinNum": {pin_num}}}',
             auto_log=False,
         )
         device_id = (data.get("device") or {}).get("id")
@@ -2361,10 +2392,12 @@ class VerkadaInternalAPIClient:
         return device_id
 
     def get_wired_input(self, alarm_system_id: str) -> list[dict[str, Any]]:
+        """Lists every wired-input subtype (contact/glass-break/motion/
+        generic/panic/water-leak) on the system."""
         return self._list_alarm_devices(
             alarm_system_id,
             "alarm.wired_input.list",
-            device_type="WIRED_CONTACT_SENSOR",
+            device_type=_WIRED_INPUT_TYPES,
         )
 
     def delete_wired_input(self, device_id: str) -> None:

@@ -23,6 +23,8 @@ v3.2
 - (Improvement) Each deletion writes a detailed system message to api_calls.log
 - (Improvement) Decommission now deletes Access Station Pro devices (after
   doors, before access controllers)
+- (Improvement) Wired alarm inputs now cover all subtypes (contact, glass
+  break, motion, generic, panic, water leak) for create/list/delete
 
 
 --- NEWS ---
