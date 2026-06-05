@@ -1976,7 +1976,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "alarm.site.delete": Endpoint(
         method="POST",
-        subdomain="vproconfig",
+        subdomain="vagent",
         path="response/site/delete",
         payload={"siteId": "<site_id>", "responseSiteId": "<alarm_site_id>"},
         response={},

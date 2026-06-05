@@ -281,13 +281,19 @@ class DecommissionView(ft.View):
                 client.enable_access_admin,
             )
 
-            intercom_serials: set[str] = set()
+            # Serials that should be filtered out of the Cameras list:
+            # Intercoms and Access Station Pros are both surfaced by the
+            # camera endpoint, but their deletion lives on their own
+            # categories. Without this filter, decommission tries to
+            # delete the same device twice (and the second attempt fails
+            # because it's already gone or uses the wrong endpoint).
+            camera_dedup_serials: set[str] = set()
             for category in ASSET_CATEGORIES:
                 items = await self._scan_category(
-                    loop, client, ext_client, category, intercom_serials
+                    loop, client, ext_client, category, camera_dedup_serials
                 )
-                if category == "Intercoms":
-                    intercom_serials = {
+                if category in ("Intercoms", "Access Station Pro"):
+                    camera_dedup_serials |= {
                         item["serial_number"]
                         for item in items
                         if item.get("serial_number")
@@ -341,18 +347,24 @@ class DecommissionView(ft.View):
         client,
         ext_client,
         category: str,
-        intercom_serials: set[str],
+        camera_dedup_serials: set[str],
     ) -> list[dict]:
-        """Fetch one category of assets, applying intercom dedup where needed."""
+        """Fetch one category of assets.
+
+        camera_dedup_serials accumulates serials of devices (intercoms,
+        Access Station Pros) that also appear in the Cameras / Access
+        Controllers lists; we filter them out so the same device isn't
+        deleted twice through different endpoints.
+        """
         try:
             if category in _INTERNAL_GETTERS:
                 getter = getattr(client, _INTERNAL_GETTERS[category])
                 items = await loop.run_in_executor(_executor, getter)
-                if category == "Access Controllers" and intercom_serials:
+                if category == "Access Controllers" and camera_dedup_serials:
                     items = [
                         item
                         for item in items
-                        if item.get("serial_number") not in intercom_serials
+                        if item.get("serial_number") not in camera_dedup_serials
                     ]
                 return items
 
@@ -367,12 +379,13 @@ class DecommissionView(ft.View):
             getter = getattr(ext_client, method_name)
             items = await loop.run_in_executor(_executor, getter)
 
-            # The external Cameras endpoint also returns intercoms; dedup.
-            if category == "Cameras" and intercom_serials:
+            # The external Cameras endpoint also returns intercoms and
+            # Access Station Pros; dedup so they're only deleted once.
+            if category == "Cameras" and camera_dedup_serials:
                 items = [
                     item
                     for item in items
-                    if item.get("serial_number") not in intercom_serials
+                    if item.get("serial_number") not in camera_dedup_serials
                 ]
             return items
         except Exception as ex:

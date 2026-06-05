@@ -196,11 +196,17 @@ TEMPLATE_DISPLAY_NAMES = {
 }
 
 # Decommission asset categories (scan + display order)
-# Intercoms must come before Cameras and Access Controllers so that
-# intercom serial numbers can be used to filter duplicates from those lists.
+# Intercoms and Access Station Pros must come before Cameras so their
+# serial numbers can be used to filter duplicates from the camera list
+# (an Access Station Pro is surfaced by both the camera and access-
+# controller endpoints). Doors come even earlier — they reference the
+# Access Station Pro as their access controller.
 # Access Control and Alarms sub-categories are grouped in the SELECT UI
-# via CATEGORY_GROUPS below.
+# via CATEGORY_GROUPS below; that grouping is independent of scan order.
 ASSET_CATEGORIES = [
+    # Access devices that have to be scanned before Cameras for dedup.
+    "Doors",
+    "Access Station Pro",
     # Devices
     "Intercoms",
     "Desk Stations",
@@ -209,9 +215,7 @@ ASSET_CATEGORIES = [
     "Command Connectors",
     "Guest Sites",
     "Mailroom Sites",
-    # Access Control (grouped)
-    "Doors",
-    "Access Station Pro",
+    # Rest of Access Control (grouped in UI with Doors / ASP above)
     "Access Controllers",
     "Floors",
     "Buildings",
@@ -268,14 +272,21 @@ CATEGORY_GROUPS = {
 
 # Dependency-aware deletion order — edit with care, the sequence matters.
 #   - Command Users first (the running user is excluded at scan time).
-#   - Intercoms before Cameras before Access Controllers (intercom deletion
-#     must precede the other two to avoid dependency conflicts).
-#   - Access Control: doors before controllers before floors before buildings.
+#   - Intercoms, Doors and Access Station Pros before Cameras: intercoms
+#     and ASPs are also surfaced by the camera endpoint, so deleting them
+#     via their proper endpoints first avoids the camera-side delete
+#     failing on a half-gone device. Doors precede ASPs (door references
+#     ASP as its access controller).
+#   - Rest of Access Control: controllers → floors → buildings → visitor
+#     access → levels → groups.
 #   - Alarms: devices before partitions before panel before system before site.
 #   - Unassigned Devices are informational only — no delete endpoint exists,
 #     so they are intentionally absent here.
 DELETION_ORDER = [
     "Command Users",
+    # Access devices that must precede Cameras
+    "Doors",
+    "Access Station Pro",
     # Devices
     "Intercoms",
     "Desk Stations",
@@ -284,9 +295,7 @@ DELETION_ORDER = [
     "Command Connectors",
     "Guest Sites",
     "Mailroom Sites",
-    # Access Control
-    "Doors",
-    "Access Station Pro",
+    # Rest of Access Control
     "Access Controllers",
     "Floors",
     "Buildings",
