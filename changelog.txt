@@ -14,17 +14,13 @@ v3.2
 - Alarms now creates a response, setting it to Self-monitored mode.
 - AI powered search and certain additional analytics also toggled on by default
 - Alarms Specialist Commission will now allow toggling face analytics, with the default toggled to True.
-- (Improvement) Decommission tool overhaul: deletes the full asset set in an
-  explicit dependency order (devices, then Access Control, then Alarms),
-  with Access Control and Alarms grouped under collapsible parent checkboxes
-- (Improvement) Decommission now shows serial numbers alongside object ids
-  in the asset list, CSV export, and progress rows
-- (Improvement) Each deletion writes a detailed system message to api_calls.log
+- General Keycode is set up for Alarm Specialist - 123456
 
 
 --- NEWS ---
 - When the Alarm is triggered, you will not be able to delete an Alarm Site. It needs to be resolved to delete an alarm site.
 
 --- TODO ---
+- Access Levels + Access Groups are not deleted
 - Command Connector does not get cleanly deleted
-- General Keycode is not Set
+- Time out does not work accurately when the window is not focus
