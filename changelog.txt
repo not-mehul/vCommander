@@ -15,6 +15,14 @@ v3.2
 - AI powered search and certain additional analytics also toggled on by default
 - Alarms Specialist Commission will now allow toggling face analytics, with the default toggled to True.
 - General Keycode is set up for Alarm Specialist - 123456
+- (Improvement) Decommission tool overhaul: deletes the full asset set in an
+  explicit dependency order (devices, then Access Control, then Alarms),
+  with Access Control and Alarms grouped under collapsible parent checkboxes
+- (Improvement) Decommission now shows serial numbers alongside object ids
+  in the asset list, CSV export, and progress rows
+- (Improvement) Each deletion writes a detailed system message to api_calls.log
+- (Improvement) Decommission now deletes Access Station Pro devices (after
+  doors, before access controllers)
 
 
 --- NEWS ---

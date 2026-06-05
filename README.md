@@ -294,7 +294,7 @@ The Decommission tool can delete:
 - Command Connectors
 - Guest Sites
 - Mailroom Sites
-- **Access Control:** Doors, Access Controllers, Floors, Buildings, Visitor Access, Access Levels, Access Groups
+- **Access Control:** Doors, Access Station Pro, Access Controllers, Floors, Buildings, Visitor Access, Access Levels, Access Groups
 - **Alarms:** Keypads, Expanders, Wireless Contact Sensors, Wireless Panic Buttons, Wireless Universal Transmitters, Wired Inputs, Wired Outputs, Guards, Partitions, Panel, System, Site
 - Users (Admins / Members)
 
@@ -404,7 +404,7 @@ To prevent dependency errors, the Decommission tool deletes assets in this fixed
 6. Command Connectors
 7. Guest Sites
 8. Mailroom Sites
-9. **Access Control:** Doors → Access Controllers → Floors → Buildings → Visitor Access → Access Levels → Access Groups
+9. **Access Control:** Doors → Access Station Pro → Access Controllers → Floors → Buildings → Visitor Access → Access Levels → Access Groups
 10. **Alarms:** Keypads → Expanders → Wireless Contact Sensors → Wireless Panic Buttons → Wireless Universal Transmitters → Wired Inputs → Wired Outputs → Guards → Partitions → Panel → System → Site
 
 Intercoms are deleted before Cameras and Access Controllers (paired-device dependency); within Access Control, doors come before the controllers/floors/buildings that own them; within Alarms, devices come before partitions, then panel, then system, then site.

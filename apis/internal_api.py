@@ -248,6 +248,7 @@ class VerkadaInternalAPIClient:
         mapping_func,
         path_params: dict | None = None,
         payload: dict | None = None,
+        filter_func=None,
     ) -> list[dict[str, Any]]:
         """Shared body for every get_* method."""
         data, status = self._request(
@@ -259,6 +260,8 @@ class VerkadaInternalAPIClient:
             auto_log=False,
         )
         items = data.get(response_key, [])
+        if filter_func is not None:
+            items = [item for item in items if filter_func(item)]
         results = [mapping_func(item) for item in items]
         self._log(
             endpoint_key,
@@ -1114,15 +1117,44 @@ class VerkadaInternalAPIClient:
     # Access Control
     # ------------------------------------------------------------------
 
+    # Access Station Pros are surfaced by the same access_controllers
+    # endpoint as regular controllers, tagged with vconductorModelId
+    # "MOODY". The two getters partition that shared list so a device is
+    # never handled as both an access controller and an access station.
+    _ACCESS_STATION_PRO_MODEL = "MOODY"
+
     def get_access_controller(self) -> list[dict[str, Any]]:
         return self._fetch_list(
             "access_controller.list",
             response_key="accessControllers",
+            filter_func=lambda x: x.get("vconductorModelId")
+            != self._ACCESS_STATION_PRO_MODEL,
             mapping_func=lambda x: {
                 "id": x["accessControllerId"],
                 "name": x["name"],
                 "serial_number": x["serialNumber"],
             },
+        )
+
+    def get_access_station_pro(self) -> list[dict[str, Any]]:
+        """Lists Access Station Pro devices (vconductorModelId == MOODY)."""
+        return self._fetch_list(
+            "face_station_pro.list",
+            response_key="accessControllers",
+            filter_func=lambda x: x.get("vconductorModelId")
+            == self._ACCESS_STATION_PRO_MODEL,
+            mapping_func=lambda x: {
+                "id": x["accessControllerId"],
+                "name": x.get("name"),
+                "serial_number": x.get("serialNumber"),
+            },
+        )
+
+    def delete_access_station_pro(self, device_id: str) -> None:
+        self._delete(
+            "face_station_pro.delete",
+            json={"deviceId": device_id, "sharding": True},
+            oid=device_id,
         )
 
     def configure_access_controller(
