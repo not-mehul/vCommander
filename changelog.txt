@@ -25,6 +25,9 @@ v3.2
   doors, before access controllers)
 - (Improvement) Wired alarm inputs now cover all subtypes (contact, glass
   break, motion, generic, panic, water leak) for create/list/delete
+- (Bug fix) Session timeout is now a fixed 30-minute window from login that
+  no longer resets when moving between tools, and is enforced by an app-level
+  watchdog even while inside a tool or when the window is in the background
 
 
 --- NEWS ---

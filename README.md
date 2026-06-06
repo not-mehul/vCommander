@@ -152,7 +152,7 @@ The login screen captures four fields plus an optional 2FA step:
  
 After successful login (and 2FA), you land on the **home screen** with the three tool tiles.
  
-> ⏱ **Session timeout:** You'll be logged out automatically after **30 minutes of inactivity** (configurable in `constants.py` via `SESSION_TIMEOUT_MINUTES`). A warning appears 5 minutes before logout.
+> ⏱ **Session timeout:** You'll be logged out automatically **30 minutes after login** (configurable in `constants.py` via `SESSION_TIMEOUT_MINUTES`). The clock is a fixed window measured from login — moving between tools does not reset or extend it — and it's enforced even while you're inside a tool or the window is in the background. A warning appears 5 minutes before logout.
  
 ### Commission Tool
  
@@ -333,7 +333,7 @@ Everything user-tunable lives at the top of [`constants.py`](constants.py):
 | `GITHUB_REPO` | `not-mehul/vcommander` | Repo polled for the auto-update banner. |
 | `DEV_SKIP_LOGIN` | `False` | Set `True` to bypass auth and land on Home (dev only). |
 | `MIN_WIDTH` / `MIN_HEIGHT` | 1100 × 800 | Window minimum size. |
-| `SESSION_TIMEOUT_MINUTES` | `30` | Idle time before auto-logout. |
+| `SESSION_TIMEOUT_MINUTES` | `30` | Minutes after login before auto-logout (fixed window, not reset by navigation). |
 | `SESSION_WARNING_MINUTES` | `5` | When to show the "session ending" warning. |
 | `ESS_*` / `VSSL_*` / `AS_*` … | HQ data | Default site/building/address constants per template. |
 | `TEMPLATE_FIELDS` | — | Add/remove devices that a template asks for. |
