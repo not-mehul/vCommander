@@ -4,7 +4,7 @@ from pathlib import Path
 import flet as ft
 
 # App Info
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 GITHUB_REPO = "not-mehul/vCommander"
 
 _INTERNAL_MARKER = Path(__file__).parent / "assets" / "kits.internal.csv"
@@ -105,6 +105,7 @@ ESS_GUEST_ADDRESS = (
     "US",
 )
 ESS_PARTITION_NAME = "VCE Partition"
+ESS_VISITOR_ACCESS_NAME = "VCE Instructor Visitor Access"
 
 VSS_SITE_NAME = "HQ"
 VSS_BULLET_NAME = "HQ Bullet"
@@ -204,10 +205,9 @@ TEMPLATE_DISPLAY_NAMES = {
 # Access Control and Alarms sub-categories are grouped in the SELECT UI
 # via CATEGORY_GROUPS below; that grouping is independent of scan order.
 ASSET_CATEGORIES = [
-    # Access devices that have to be scanned before Cameras for dedup.
     "Doors",
-    "Access Station Pro",
     # Devices
+    "Access Station Pro",
     "Intercoms",
     "Desk Stations",
     "Sensors",
@@ -215,14 +215,14 @@ ASSET_CATEGORIES = [
     "Command Connectors",
     "Guest Sites",
     "Mailroom Sites",
-    # Rest of Access Control (grouped in UI with Doors / ASP above)
+    # Access Control
     "Access Controllers",
     "Floors",
     "Buildings",
     "Visitor Access",
     "Access Levels",
     "Access Groups",
-    # Alarms (grouped)
+    # Alarms
     "Keypads",
     "Expanders",
     "Wireless Contact Sensors",

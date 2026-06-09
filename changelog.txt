@@ -11,29 +11,20 @@ v3.1
 - (Bug fix) Added LPR camera door linking to the commission tool
 
 v3.2
-- Alarms now creates a response, setting it to Self-monitored mode.
-- AI powered search and certain additional analytics also toggled on by default
-- Alarms Specialist Commission will now allow toggling face analytics, with the default toggled to True.
-- General Keycode is set up for Alarm Specialist - 123456
-- (Improvement) Decommission tool overhaul: deletes the full asset set in an
-  explicit dependency order (devices, then Access Control, then Alarms),
-  with Access Control and Alarms grouped under collapsible parent checkboxes
-- (Improvement) Decommission now shows serial numbers alongside object ids
-  in the asset list, CSV export, and progress rows
-- (Improvement) Each deletion writes a detailed system message to api_calls.log
-- (Improvement) Decommission now deletes Access Station Pro devices (after
-  doors, before access controllers)
-- (Improvement) Wired alarm inputs now cover all subtypes (contact, glass
-  break, motion, generic, panic, water leak) for create/list/delete
-- (Bug fix) Session timeout is now a fixed 30-minute window from login that
-  no longer resets when moving between tools, and is enforced by an app-level
-  watchdog even while inside a tool or when the window is in the background
+- (New feature) Decommission tool deletes granular assets and entities: Access Groups, Access Levels, Doors, Floors, Buildings, Visitor access, Alarm Systems, Alarm Partitions, Alarm Guards, Alarm Wired Inputs/Outputs
+- (New feature) Decommission tool CSV export shows the serial numbers alongside object ids wherever present.
+- (New feature) Decommission tool now lists and deletes Access Station Pro devices
+- (Bug fix) Alarms now creates a response, setting it to Self-monitored mode.
+- (Bug fix) Decommission tool now deletes Alarm Input/Output devices.
+- (Bug fix) AI powered search and certain additional analytics also toggled on by default
+- (Bug fix) Alarms Specialist Commission will now allow toggling face analytics, with the default toggled to True.
+- (Bug fix) Alarms Specialist creates a General Keycode for the Instructor - 123456
+- (Bug fix) Session timeout is now a fixed 30-minute window from login.
 
 
 --- NEWS ---
 - When the Alarm is triggered, you will not be able to delete an Alarm Site. It needs to be resolved to delete an alarm site.
 
 --- TODO ---
-- Access Levels + Access Groups are not deleted
+# BUG REPORTED TO ENG
 - Command Connector does not get cleanly deleted
-- Time out does not work accurately when the window is not focus

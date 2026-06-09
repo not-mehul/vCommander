@@ -42,6 +42,7 @@ from constants import (
     ESS_PANEL_NAME,
     ESS_PARTITION_NAME,
     ESS_SITE_NAME,
+    ESS_VISITOR_ACCESS_NAME,
     FIELD_SPACING,
     HQ_TIMEZONE,
     PAGE_PADDING,
@@ -514,6 +515,15 @@ class CommissionView(ft.View):
                 site_id,
             )
             track(ok)
+
+            # ok, _ = await step(
+            #     "Creating Visitor Access",
+            #     client.create_visitor_access,
+            #     site_id,
+            #     ESS_VISITOR_ACCESS_NAME,
+            #     ESS_VISITOR_ACCESS_NAME,
+            # )
+            # track(ok)
 
             if alarm_response_id:
                 ok, _ = await step(
