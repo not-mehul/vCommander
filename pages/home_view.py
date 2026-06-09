@@ -26,7 +26,9 @@ from constants import (
 from utils.session import (
     clear_session,
     get_session_remaining,
+    mark_warning_shown,
     start_session,
+    was_warning_shown,
 )
 from utils.ui_utils import show_alert
 
@@ -37,10 +39,11 @@ class HomeView(ft.View):
         self.push_route = push_route
         self.pop_route = pop_route
         self._timer_task: asyncio.Task | None = None
-        self._warning_shown = False
         self._build_ui()
 
     def _build_ui(self):
+        # Idempotent: only the first Home mount after login starts the
+        # clock; returning here from a tool neither resets nor extends it.
         start_session()
 
         self._timer_text = ft.Text("", size=13, color=TEXT_SECONDARY)
@@ -207,9 +210,9 @@ class HomeView(ft.View):
 
                 if (
                     remaining <= SESSION_WARNING_MINUTES * 60
-                    and not self._warning_shown
+                    and not was_warning_shown()
                 ):
-                    self._warning_shown = True
+                    mark_warning_shown()
                     show_alert(
                         page,
                         "Session Warning",

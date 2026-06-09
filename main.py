@@ -26,6 +26,7 @@ from pages.login_view import LoginView
 from pages.two_factor_view import TwoFactorView
 from pages.users_view import UsersView
 from utils.logger import get_log_path, log_api_call
+from utils.session import clear_session, is_session_expired, session_active
 from utils.version_check import check_for_update
 
 # Maps a route string to the View class that renders it. Adding a new
@@ -38,6 +39,15 @@ ROUTE_MAP = {
     "/users": UsersView,
     "/decommission": DecommissionView,
 }
+
+# Routes reachable without an active session. Navigating to anything else
+# after the session has expired bounces the user back to login.
+_PUBLIC_ROUTES = {"/login", "/2fa"}
+
+# How often the background watchdog re-checks the session clock. Enforcement
+# is independent of any view's own timer, so the timeout still fires while
+# the user is inside a tool or the window is backgrounded.
+_SESSION_WATCHDOG_INTERVAL = 5
 
 
 async def main(page: ft.Page):
@@ -57,13 +67,39 @@ async def main(page: ft.Page):
     history: list[str] = []
 
     def push_route(route: str):
-        """Navigate forward by replacing the current view with `route`."""
+        """Navigate forward by replacing the current view with `route`.
+
+        Lazily enforces the session timeout: if the clock has expired,
+        navigation into any authenticated screen is redirected to login.
+        This catches the case where the window was backgrounded past the
+        limit and the user returns and clicks something.
+        """
+        if route not in _PUBLIC_ROUTES and session_active() and is_session_expired():
+            clear_session()
+            route = "/login"
         history.append(route)
         page.views.clear()
         view_class = ROUTE_MAP[route]
         view = view_class(push_route=push_route, pop_route=pop_route)
         page.views.append(view)
         page.update()
+
+    async def session_watchdog():
+        """App-level timeout enforcement, independent of the active view.
+
+        HomeView's own timer only runs on the home screen; this loop runs
+        for the whole app lifetime so the session still expires while the
+        user is deep inside a tool or the window is in the background.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_SESSION_WATCHDOG_INTERVAL)
+                if session_active() and is_session_expired():
+                    clear_session()
+                    if not history or history[-1] not in _PUBLIC_ROUTES:
+                        push_route("/login")
+        except asyncio.CancelledError:
+            pass
 
     def pop_route():
         """Navigate back to the previous view; no-op at the bottom of the stack."""
@@ -112,6 +148,7 @@ async def main(page: ft.Page):
         show_update_banner(latest, url)
 
     asyncio.create_task(run_version_check())
+    asyncio.create_task(session_watchdog())
 
 
 ft.app(target=main)

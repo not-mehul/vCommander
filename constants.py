@@ -4,7 +4,7 @@ from pathlib import Path
 import flet as ft
 
 # App Info
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 GITHUB_REPO = "not-mehul/vCommander"
 
 _INTERNAL_MARKER = Path(__file__).parent / "assets" / "kits.internal.csv"
@@ -104,6 +104,8 @@ ESS_GUEST_ADDRESS = (
     -122.3210929,
     "US",
 )
+ESS_PARTITION_NAME = "VCE Partition"
+ESS_VISITOR_ACCESS_NAME = "VCE Instructor Visitor Access"
 
 VSS_SITE_NAME = "HQ"
 VSS_BULLET_NAME = "HQ Bullet"
@@ -133,6 +135,8 @@ AS_PANEL_NAME = "HQ Alarm Panel"
 AS_KEYPAD_NAME = "HQ Keypad"
 AS_DOOR_NAME = "HQ Door"
 AS_ACCESS_LEVEL_NAME = "HQ 24/7 Access"
+AS_INSTRUCTOR_KEYCODE_NAME = "VCE Instructor Keycode"
+AS_INSTRUCTOR_KEYCODE = "123456"
 
 AS_BUILDING_NAME = "HQ"
 AS_FLOORS = ["G"]
@@ -179,7 +183,7 @@ TEMPLATE_FIELDS = {
     },
     "AS": {
         "devices": ["Dome", "Access Controller", "Alarm Panel", "Keypad"],
-        "face_analytics": False,
+        "face_analytics": True,
     },
 }
 
@@ -192,41 +196,125 @@ TEMPLATE_DISPLAY_NAMES = {
     "AS": "Alarms Specialist",
 }
 
-# Decommission asset categories (display order)
-# Intercoms must come before Cameras and Access Controllers so that
-# intercom serial numbers can be used to filter duplicates from those lists.
+# Decommission asset categories (scan + display order)
+# Intercoms and Access Station Pros must come before Cameras so their
+# serial numbers can be used to filter duplicates from the camera list
+# (an Access Station Pro is surfaced by both the camera and access-
+# controller endpoints). Doors come even earlier — they reference the
+# Access Station Pro as their access controller.
+# Access Control and Alarms sub-categories are grouped in the SELECT UI
+# via CATEGORY_GROUPS below; that grouping is independent of scan order.
 ASSET_CATEGORIES = [
+    "Doors",
+    # Devices
+    "Access Station Pro",
     "Intercoms",
-    "Cameras",
-    "Sensors",
     "Desk Stations",
-    "Mailroom Sites",
-    "Access Controllers",
+    "Sensors",
+    "Cameras",
     "Command Connectors",
     "Guest Sites",
-    "Command Users",
+    "Mailroom Sites",
+    # Access Control
+    "Access Controllers",
+    "Floors",
+    "Buildings",
+    "Visitor Access",
+    "Access Levels",
+    "Access Groups",
+    # Alarms
+    "Keypads",
+    "Expanders",
+    "Wireless Contact Sensors",
+    "Wireless Panic Buttons",
+    "Wireless Universal Transmitters",
+    "Wired Inputs",
+    "Wired Outputs",
+    "Guards",
+    "Partitions",
+    "Alarm Panels",
+    "Alarm Systems",
     "Alarm Sites",
-    "Alarm Devices",
+    # Users & misc
+    "Command Users",
     "Unassigned Devices",
 ]
 
-# Dependency-aware deletion order
-# Intercoms before Cameras before Access Controllers (intercom deletion must
-# precede the other two to avoid dependency conflicts).
-# Alarm Devices before Alarm Sites; users/sites before hardware.
-# Unassigned Devices are informational only — no delete endpoint exists.
+# Parent groups for the SELECT UI. Each parent renders one collapsible
+# tile with a checkbox that toggles all of its (non-empty) children.
+# Children are listed in their intended deletion sub-order.
+CATEGORY_GROUPS = {
+    "Access Control": [
+        "Doors",
+        "Access Station Pro",
+        "Access Controllers",
+        "Floors",
+        "Buildings",
+        "Visitor Access",
+        "Access Levels",
+        "Access Groups",
+    ],
+    "Alarms": [
+        "Keypads",
+        "Expanders",
+        "Wireless Contact Sensors",
+        "Wireless Panic Buttons",
+        "Wireless Universal Transmitters",
+        "Wired Inputs",
+        "Wired Outputs",
+        "Guards",
+        "Partitions",
+        "Alarm Panels",
+        "Alarm Systems",
+        "Alarm Sites",
+    ],
+}
+
+# Dependency-aware deletion order — edit with care, the sequence matters.
+#   - Command Users first (the running user is excluded at scan time).
+#   - Intercoms, Doors and Access Station Pros before Cameras: intercoms
+#     and ASPs are also surfaced by the camera endpoint, so deleting them
+#     via their proper endpoints first avoids the camera-side delete
+#     failing on a half-gone device. Doors precede ASPs (door references
+#     ASP as its access controller).
+#   - Rest of Access Control: controllers → floors → buildings → visitor
+#     access → levels → groups.
+#   - Alarms: devices before partitions before panel before system before site.
+#   - Unassigned Devices are informational only — no delete endpoint exists,
+#     so they are intentionally absent here.
 DELETION_ORDER = [
     "Command Users",
-    "Sensors",
-    "Desk Stations",
-    "Mailroom Sites",
-    "Guest Sites",
-    "Alarm Devices",
-    "Alarm Sites",
+    # Access devices that must precede Cameras
+    "Doors",
+    "Access Station Pro",
+    # Devices
     "Intercoms",
+    "Desk Stations",
+    "Sensors",
     "Cameras",
     "Command Connectors",
+    "Guest Sites",
+    "Mailroom Sites",
+    # Rest of Access Control
     "Access Controllers",
+    "Floors",
+    "Buildings",
+    "Visitor Access",
+    "Access Levels",
+    "Access Groups",
+    # Alarms
+    "Keypads",
+    "Expanders",
+    "Wireless Contact Sensors",
+    "Wireless Panic Buttons",
+    "Wireless Universal Transmitters",
+    "Wired Inputs",
+    "Wired Outputs",
+    "Guards",
+    "Partitions",
+    "Alarm Panels",
+    "Alarm Systems",
+    "Alarm Sites",
 ]
 
 ROLE_PROPAGATION_SECONDS = 3
@@ -242,28 +330,69 @@ DEFAULT_TIMEOUT = 30
 # When you add a new category, add the entry here AND implement the
 # matching get_<x>() / delete_<x>() on VerkadaInternalAPIClient.
 _INTERNAL_GETTERS = {
-    "Sensors": "get_sensor",
+    # Devices
     "Intercoms": "get_intercom",
     "Desk Stations": "get_desk_station",
-    "Mailroom Sites": "get_mailroom_site",
+    "Sensors": "get_sensor",
     "Command Connectors": "get_connector",
+    "Mailroom Sites": "get_mailroom_site",
+    # Access Control
+    "Doors": "get_door",
+    "Access Station Pro": "get_access_station_pro",
     "Access Controllers": "get_access_controller",
-    "Alarm Devices": "get_alarm_device",
+    "Floors": "get_floor",
+    "Buildings": "get_building",
+    "Visitor Access": "get_visitor_access",
+    "Access Levels": "get_access_level",
+    "Access Groups": "get_access_group",
+    # Alarms (org-wide aggregators — no system/site arg)
+    "Keypads": "get_alarm_keypad_all",
+    "Expanders": "get_alarm_expander_all",
+    "Wireless Contact Sensors": "get_wireless_contact_sensor_all",
+    "Wireless Panic Buttons": "get_wireless_panic_button_all",
+    "Wireless Universal Transmitters": "get_wireless_universal_transmitter_all",
+    "Wired Inputs": "get_wired_input_all",
+    "Wired Outputs": "get_wired_output_all",
+    "Guards": "get_alarm_guard_all",
+    "Partitions": "get_alarm_partition_all",
+    "Alarm Panels": "get_alarm_panel_all",
+    "Alarm Systems": "get_alarm_system",
     "Alarm Sites": "get_alarm_site",
+    # Misc
     "Unassigned Devices": "get_unassigned_device",
 }
 
 _INTERNAL_DELETERS = {
-    "Cameras": "delete_camera",
-    "Sensors": "delete_sensor",
-    "Desk Stations": "delete_desk_station",
-    "Mailroom Sites": "delete_mailroom_site",
-    "Command Connectors": "delete_connector",
-    "Access Controllers": "delete_access_controller",
-    "Guest Sites": "delete_guest_site",
-    "Alarm Devices": "delete_alarm_device",
-    "Alarm Sites": "delete_alarm_site",
+    # Devices
     "Intercoms": "delete_intercom",
+    "Desk Stations": "delete_desk_station",
+    "Sensors": "delete_sensor",
+    "Cameras": "delete_camera",
+    "Command Connectors": "delete_connector",
+    "Guest Sites": "delete_guest_site",
+    "Mailroom Sites": "delete_mailroom_site",
+    # Access Control
+    "Doors": "delete_door",
+    "Access Station Pro": "delete_access_station_pro",
+    "Access Controllers": "delete_access_controller",
+    "Floors": "delete_floor",
+    "Buildings": "delete_building",
+    "Visitor Access": "delete_visitor_access",
+    "Access Levels": "delete_access_level",
+    "Access Groups": "delete_access_group",
+    # Alarms
+    "Keypads": "delete_alarm_keypad",
+    "Expanders": "delete_alarm_expander",
+    "Wireless Contact Sensors": "delete_wireless_contact_sensor",
+    "Wireless Panic Buttons": "delete_wireless_panic_button",
+    "Wireless Universal Transmitters": "delete_wireless_universal_transmitter",
+    "Wired Inputs": "delete_wired_input",
+    "Wired Outputs": "delete_wired_output",
+    "Guards": "delete_alarm_guard",
+    "Partitions": "delete_alarm_partition",
+    "Alarm Panels": "delete_alarm_panel",
+    "Alarm Systems": "delete_alarm_system",
+    "Alarm Sites": "delete_alarm_site",
 }
 
 _EXTERNAL_GETTERS = {

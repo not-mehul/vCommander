@@ -152,7 +152,7 @@ The login screen captures four fields plus an optional 2FA step:
  
 After successful login (and 2FA), you land on the **home screen** with the three tool tiles.
  
-> ⏱ **Session timeout:** You'll be logged out automatically after **30 minutes of inactivity** (configurable in `constants.py` via `SESSION_TIMEOUT_MINUTES`). A warning appears 5 minutes before logout.
+> ⏱ **Session timeout:** You'll be logged out automatically **30 minutes after login** (configurable in `constants.py` via `SESSION_TIMEOUT_MINUTES`). The clock is a fixed window measured from login — moving between tools does not reset or extend it — and it's enforced even while you're inside a tool or the window is in the background. A warning appears 5 minutes before logout.
  
 ### Commission Tool
  
@@ -286,18 +286,19 @@ Camera + access controller + alarm panel + keypad, plus a configured alarm site.
 ## Supported Assets (Decommission)
  
 The Decommission tool can delete:
- 
-- Cameras
-- Command Connectors
-- Access Controllers
-- Environmental Sensors
+
 - Intercoms
 - Desk Stations
-- Mailroom Sites
+- Environmental Sensors
+- Cameras
+- Command Connectors
 - Guest Sites
-- Alarm Sites & Alarm Systems
-- Alarm Devices
+- Mailroom Sites
+- **Access Control:** Doors, Access Station Pro, Access Controllers, Floors, Buildings, Visitor Access, Access Levels, Access Groups
+- **Alarms:** Keypads, Expanders, Wireless Contact Sensors, Wireless Panic Buttons, Wireless Universal Transmitters, Wired Inputs, Wired Outputs, Guards, Partitions, Panel, System, Site
 - Users (Admins / Members)
+
+The Access Control and Alarms categories are grouped under collapsible parent tiles in the selection step — the parent checkbox toggles all of its children at once. Each asset row shows its name, serial number (where the device has one), and object id, and the same detail is written per-deletion to `api_calls.log`.
 > ℹ️ **Read-only category:** "Unassigned Devices" appears in the inventory but cannot be deleted — Verkada does not expose a delete endpoint for those.
 
 See the [Per-Template Walkthroughs](#per-template-walkthroughs) section above for examples of what a successful decommission summary looks like for each template.
@@ -332,7 +333,7 @@ Everything user-tunable lives at the top of [`constants.py`](constants.py):
 | `GITHUB_REPO` | `not-mehul/vcommander` | Repo polled for the auto-update banner. |
 | `DEV_SKIP_LOGIN` | `False` | Set `True` to bypass auth and land on Home (dev only). |
 | `MIN_WIDTH` / `MIN_HEIGHT` | 1100 × 800 | Window minimum size. |
-| `SESSION_TIMEOUT_MINUTES` | `30` | Idle time before auto-logout. |
+| `SESSION_TIMEOUT_MINUTES` | `30` | Minutes after login before auto-logout (fixed window, not reset by navigation). |
 | `SESSION_WARNING_MINUTES` | `5` | When to show the "session ending" warning. |
 | `ESS_*` / `VSSL_*` / `AS_*` … | HQ data | Default site/building/address constants per template. |
 | `TEMPLATE_FIELDS` | — | Add/remove devices that a template asks for. |
@@ -394,18 +395,19 @@ The Decommission tool uses a **hybrid architecture** — combining the internal 
 ### Deletion Order
  
 To prevent dependency errors, the Decommission tool deletes assets in this fixed order (configurable via `DELETION_ORDER` in `constants.py`):
- 
-1. **Users** (deleted first to prevent interference)
-2. Sensors
-3. Intercoms
-4. Desk Stations
-5. Mailroom Sites
-6. Guest Sites
-7. Access Controllers
-8. Cameras
-9. Command Connector
-10. Alarm Devices
-11. **Alarm Sites** (includes Alarm Systems, last because they own children)
+
+1. **Users** (deleted first to prevent interference; the user running the tool is excluded)
+2. Intercoms
+3. Desk Stations
+4. Sensors
+5. Cameras
+6. Command Connectors
+7. Guest Sites
+8. Mailroom Sites
+9. **Access Control:** Doors → Access Station Pro → Access Controllers → Floors → Buildings → Visitor Access → Access Levels → Access Groups
+10. **Alarms:** Keypads → Expanders → Wireless Contact Sensors → Wireless Panic Buttons → Wireless Universal Transmitters → Wired Inputs → Wired Outputs → Guards → Partitions → Panel → System → Site
+
+Intercoms are deleted before Cameras and Access Controllers (paired-device dependency); within Access Control, doors come before the controllers/floors/buildings that own them; within Alarms, devices come before partitions, then panel, then system, then site.
 > ⚠️ Editing `DELETION_ORDER` carelessly will produce foreign-key-style API errors mid-run. If you add a new asset type, slot it where its dependencies are already gone.
 
 ## Troubleshooting & FAQ

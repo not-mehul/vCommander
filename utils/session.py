@@ -1,9 +1,14 @@
 """Process-wide session state.
 
 Holds the authenticated internal/external API clients and the session
-start time so any view can reach them without prop-drilling. The
-SESSION_TIMEOUT_MINUTES window is enforced cooperatively by HomeView's
-timer; when it expires the user is bounced back to the login screen.
+start time so any view can reach them without prop-drilling.
+
+The SESSION_TIMEOUT_MINUTES window is an absolute limit measured from
+login — it is deliberately NOT reset by navigating between tools. The
+clock is started once (start_session is idempotent) and enforced both
+by an app-level watchdog (main.py) and lazily on navigation, so the
+timeout still fires while the user is inside a tool or the window is
+backgrounded.
 """
 
 import time
@@ -15,6 +20,7 @@ from constants import SESSION_TIMEOUT_MINUTES
 _internal_client: VerkadaInternalAPIClient | None = None
 _external_client: VerkadaExternalAPIClient | None = None
 _session_start: float | None = None
+_warning_shown: bool = False
 
 
 def set_internal_client(client: VerkadaInternalAPIClient) -> None:
@@ -44,9 +50,22 @@ def get_external_client() -> VerkadaExternalAPIClient:
 
 
 def start_session():
-    """Mark the session start time as 'now' (called after successful login)."""
-    global _session_start
-    _session_start = time.time()
+    """Start the session clock if it isn't already running.
+
+    Idempotent: callers fire this whenever an authenticated screen mounts,
+    but only the first call after a login (or re-login) sets the clock.
+    Navigating between tools therefore neither resets nor extends the
+    timeout — clear_session() is the only thing that stops it.
+    """
+    global _session_start, _warning_shown
+    if _session_start is None:
+        _session_start = time.time()
+        _warning_shown = False
+
+
+def session_active() -> bool:
+    """True once the session clock is running (i.e. the user is logged in)."""
+    return _session_start is not None
 
 
 def get_session_remaining() -> float:
@@ -63,9 +82,21 @@ def is_session_expired() -> bool:
     return get_session_remaining() <= 0
 
 
+def mark_warning_shown() -> None:
+    """Record that the pre-expiry warning has been shown for this session."""
+    global _warning_shown
+    _warning_shown = True
+
+
+def was_warning_shown() -> bool:
+    """True if the pre-expiry warning has already fired this session."""
+    return _warning_shown
+
+
 def clear_session():
     """Drop the cached clients and start time. Called on logout/timeout."""
-    global _internal_client, _external_client, _session_start
+    global _internal_client, _external_client, _session_start, _warning_shown
     _internal_client = None
     _external_client = None
     _session_start = None
+    _warning_shown = False

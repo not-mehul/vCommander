@@ -9,6 +9,7 @@ is rendered in the live progress panel on the right."""
 
 import asyncio
 import csv
+import functools
 import os
 
 import flet as ft
@@ -39,7 +40,9 @@ from constants import (
     ESS_FLOORS,
     ESS_GUEST_ADDRESS,
     ESS_PANEL_NAME,
+    ESS_PARTITION_NAME,
     ESS_SITE_NAME,
+    ESS_VISITOR_ACCESS_NAME,
     FIELD_SPACING,
     HQ_TIMEZONE,
     PAGE_PADDING,
@@ -488,7 +491,11 @@ class CommissionView(ft.View):
             )
             track(ok)
 
-        ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
+        ok, _ = await step(
+            "Enabling org features",
+            client.enable_org_features,
+            self.face_analytics_switch.value,
+        )
         track(ok)
 
         if self.face_analytics_switch.value and camera_id:
@@ -500,7 +507,7 @@ class CommissionView(ft.View):
             track(ok)
 
         if site_id:
-            ok, _ = await step(
+            ok, alarm_response_id = await step(
                 "Creating alarm site",
                 client.create_alarm_site,
                 "Verkada",
@@ -508,6 +515,24 @@ class CommissionView(ft.View):
                 site_id,
             )
             track(ok)
+
+            # ok, _ = await step(
+            #     "Creating Visitor Access",
+            #     client.create_visitor_access,
+            #     site_id,
+            #     ESS_VISITOR_ACCESS_NAME,
+            #     ESS_VISITOR_ACCESS_NAME,
+            # )
+            # track(ok)
+
+            if alarm_response_id:
+                ok, _ = await step(
+                    "Setting response to Self-Monitored",
+                    client.set_alarm_self_monitored,
+                    site_id,
+                    alarm_response_id,
+                )
+                track(ok)
 
             ok, _ = await step(
                 "Creating guest site",
@@ -634,19 +659,25 @@ class CommissionView(ft.View):
             )
             track(ok)
             if access_controller_id:
+                # LPR door: created with the LPR config up front (v2 has no
+                # retroactive flag-flip), then the camera is paired below.
                 ok, door_id = await step(
                     "Creating door",
-                    client.create_door,
-                    access_controller_id,
-                    VSS_DOOR_NAME,
-                    floor_id,
+                    functools.partial(
+                        client.create_door,
+                        access_controller_id,
+                        VSS_DOOR_NAME,
+                        floor_id,
+                        lpr=True,
+                    ),
                 )
                 track(ok)
 
-        ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
-        track(ok)
-
-        ok, _ = await step("Enabling LPR analytics", client.enable_lpr_mode)
+        ok, _ = await step(
+            "Enabling org features",
+            client.enable_org_features,
+            self.face_analytics_switch.value,
+        )
         track(ok)
 
         if self.face_analytics_switch.value and ptz_id:
@@ -668,7 +699,7 @@ class CommissionView(ft.View):
         if door_id and bullet_id:
             ok, _ = await step(
                 "Linking LPR camera to door",
-                client.enable_lpr_door,
+                client.pair_lpr_camera,
                 door_id,
                 bullet_id,
             )
@@ -758,10 +789,11 @@ class CommissionView(ft.View):
                 )
                 track(ok)
 
-        ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
-        track(ok)
-
-        ok, _ = await step("Enabling LPR analytics", client.enable_lpr_mode)
+        ok, _ = await step(
+            "Enabling org features",
+            client.enable_org_features,
+            self.face_analytics_switch.value,
+        )
         track(ok)
 
         if self.face_analytics_switch.value and (dome_id or fisheye_id):
@@ -878,7 +910,11 @@ class CommissionView(ft.View):
             )
             track(ok)
 
-        ok, _ = await step("Enabling org analytics", client.enable_org_analytics)
+        ok, _ = await step(
+            "Enabling org features",
+            client.enable_org_features,
+            self.face_analytics_switch.value,
+        )
         track(ok)
 
         if self.face_analytics_switch.value and dome_id:
@@ -890,7 +926,7 @@ class CommissionView(ft.View):
             track(ok)
 
         if site_id:
-            ok, _ = await step(
+            ok, alarm_response_id = await step(
                 "Creating alarm site",
                 client.create_alarm_site,
                 "Verkada",
@@ -898,6 +934,15 @@ class CommissionView(ft.View):
                 site_id,
             )
             track(ok)
+
+            if alarm_response_id:
+                ok, _ = await step(
+                    "Setting response to Self-Monitored",
+                    client.set_alarm_self_monitored,
+                    site_id,
+                    alarm_response_id,
+                )
+                track(ok)
 
         if panel_id and keypad_id and site_id:
             # Alarm panels and keypads attach to an alarm system, which
@@ -926,6 +971,13 @@ class CommissionView(ft.View):
                     AS_KEYPAD_NAME,
                     alarm_system_id,
                     keypad_serial,
+                )
+                track(ok)
+
+                ok, _ = await step(
+                    "Setting up general keycode",
+                    client.set_alarm_keycode,
+                    alarm_system_id,
                 )
                 track(ok)
 
