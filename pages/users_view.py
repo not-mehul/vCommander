@@ -33,7 +33,7 @@ from constants import (
 from utils.db import load_import_settings, save_import_settings
 from utils.executor import _executor
 from utils.session import get_external_client, get_internal_client, set_external_client
-from utils.ui_utils import set_button_loading, show_alert
+from utils.ui_utils import set_button_loading, show_alert, show_toast
 
 _STEP_LABELS = ["API Key", "Site & Date", "Review", "Invite"]
 
@@ -269,10 +269,10 @@ class UsersView(ft.View):
         api_key = _strip(self._api_key_field.value)
         org = _strip(self._import_org_field.value)
         if not api_key or not org:
-            show_alert(
+            show_toast(
                 e.page,
-                "Validation Error",
                 "Please fill in both API key and org short name.",
+                kind="warning",
             )
             return
 
@@ -374,7 +374,7 @@ class UsersView(ft.View):
     async def _on_load_participants(self, e):
         site_id = self._site_dropdown.value
         if not site_id:
-            show_alert(e.page, "Validation Error", "Please select a site.")
+            show_toast(e.page, "Please select a site.", kind="warning")
             return
 
         set_button_loading(self._step2_next_btn, True, "Loading")
@@ -506,8 +506,8 @@ class UsersView(ft.View):
     async def _on_invite_all(self, e):
         rows = self._participants_column.controls
         if not rows:
-            show_alert(
-                e.page, "No Participants", "Add at least one participant to invite."
+            show_toast(
+                e.page, "Add at least one participant to invite.", kind="warning"
             )
             return
 
@@ -655,10 +655,11 @@ class UsersView(ft.View):
             await ft.Clipboard().set(text)
 
         e.page.run_task(_copy)
-
-        if isinstance(self._copy_btn.content, ft.Text):
-            self._copy_btn.content.value = "Copied!"
-            e.page.update()
+        show_toast(
+            e.page,
+            f"Copied {len(sorted_records)} invited participants to clipboard.",
+            kind="success",
+        )
 
     # ------------------------------------------------------------------
     # Navigation

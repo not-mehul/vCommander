@@ -21,7 +21,7 @@ from constants import (
 )
 from utils.executor import _executor
 from utils.session import get_internal_client
-from utils.ui_utils import set_button_loading, show_alert
+from utils.ui_utils import set_button_loading, show_alert, show_toast
 
 
 def _strip(value: str | None) -> str:
@@ -105,10 +105,10 @@ class TwoFactorView(ft.View):
     async def _on_verify(self, e):
         code = _strip(self.code_field.value)
         if not code.isdigit() or len(code) != 6:
-            show_alert(
+            show_toast(
                 e.page,
-                "Validation Error",
                 "Verification code must be exactly 6 digits.",
+                kind="warning",
             )
             return
 

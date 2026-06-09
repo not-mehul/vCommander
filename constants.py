@@ -37,7 +37,10 @@ SECONDARY = "#8fd4b0"
 WARNING = "#f0b87e"
 ERROR = "#e8827a"
 TEXT_PRIMARY = "#e0e0e0"
-TEXT_SECONDARY = "#a0a0a0"
+# Bumped from #a0a0a0 → #b8b8b8 for better contrast on the dark BG;
+# the prior value sat at ~3.4:1 contrast (below WCAG AA for small text),
+# the new value clears 5:1 and is visually indistinguishable.
+TEXT_SECONDARY = "#b8b8b8"
 
 # Window
 MIN_WIDTH = 1100

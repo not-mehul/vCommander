@@ -153,6 +153,10 @@ The login screen captures four fields plus an optional 2FA step:
 After successful login (and 2FA), you land on the **home screen** with the three tool tiles.
  
 > ⏱ **Session timeout:** You'll be logged out automatically **30 minutes after login** (configurable in `constants.py` via `SESSION_TIMEOUT_MINUTES`). The clock is a fixed window measured from login — moving between tools does not reset or extend it — and it's enforced even while you're inside a tool or the window is in the background. A warning appears 5 minutes before logout.
+
+> ⌨ **Keyboard shortcuts:** `Esc` backs out of the current screen; **Cmd/Ctrl-K** jumps to Home; **Cmd/Ctrl-,** logs out. `Enter` submits the active form (login, 2FA).
+
+> 🛑 **Cancel a long run:** Commission and Decommission both expose a **Cancel** button while a run is in progress. Cancellation is cooperative — the in-flight API call is allowed to complete (so no device is ever left half-deleted), and the next step is skipped. Decommission then shows a summary of what was done vs. what was skipped.
  
 ### Commission Tool
  

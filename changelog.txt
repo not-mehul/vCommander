@@ -21,6 +21,25 @@ v3.2
 - (Bug fix) Alarms Specialist creates a General Keycode for the Instructor - 123456
 - (Bug fix) Session timeout is now a fixed 30-minute window from login.
 
+v3.3
+- (UI) Decommission progress collapses to one row per category with a live
+  "n / m deleted" counter; per-item detail is one click away
+- (UI) Decommission and Commission both support Cancel: the in-flight item
+  completes, the rest of the run is skipped, and the summary shows where
+  it stopped
+- (UI) Decommission SELECT gains a Select-all / Select-none top bar, live
+  "(N selected / M total)" chips on every group and category header, a
+  search filter (name or serial), and a Show-items toggle that defaults to
+  the compact one-line-per-category layout
+- (UI) Non-fatal alerts (export complete, validation hints, copy success)
+  are now non-blocking bottom-center toasts instead of modal dialogs
+- (UI) Login form now uses two columns (email|password, org|region+shard)
+  and submits on Enter from any field
+- (UI) Global keyboard shortcuts: Esc backs out, Cmd/Ctrl-K jumps to Home,
+  Cmd/Ctrl-, logs out
+- (UI) TEXT_SECONDARY contrast bumped from #a0a0a0 to #b8b8b8 (~5:1
+  contrast over the dark background, passes WCAG AA for small body text)
+
 
 --- NEWS ---
 - When the Alarm is triggered, you will not be able to delete an Alarm Site. It needs to be resolved to delete an alarm site.
