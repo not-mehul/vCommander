@@ -662,6 +662,27 @@ ENDPOINTS: dict[str, Endpoint] = {
         },
         response={},
     ),
+    "user.hard_delete": Endpoint(
+        method="POST",
+        subdomain="vprovision",
+        path="core/v1/org/{org_id}/user:hardDelete",
+        payload={
+            "organizationId": "<org_id>",
+            "callingUserId": "<user_id>",
+            "userIds": [
+                "<deleted_user_id>",
+            ],
+            "deleteAllSoftDeleted": False,
+        },
+        response={
+            "userInfo": {
+                "<deleted_user_id>": {
+                    "email": "<deleted_user_email>",
+                    "name": "<deleted_user_name>",
+                },
+            }
+        },
+    ),
     "user.add_license_plate": Endpoint(
         method="POST",
         subdomain=api_region,
