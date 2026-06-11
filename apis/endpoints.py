@@ -598,6 +598,20 @@ ENDPOINTS: dict[str, Endpoint] = {
             ]
         },
     ),
+    "site.rename": Endpoint(
+        method="POST",
+        subdomain="vprovision",
+        path="org/camera_group/modify",
+        payload={"cameraGroupId": "<site_id>", "name": "<site_name>"},
+        response={
+            "cameraGroups": [
+                {
+                    "name": "<site_name>",
+                    "organizationId": "<org_id>",
+                }
+            ],
+        },
+    ),
     "site.delete": Endpoint(
         method="POST",
         subdomain="vprovision",
@@ -1350,6 +1364,110 @@ ENDPOINTS: dict[str, Endpoint] = {
                 }
             ]
         },
+    ),
+    "scenario.create": Endpoint(
+        method="POST",
+        subdomain="vcerberus",
+        path="access/v2/user/lockdowns",
+        payload={
+            "name": "<scenario_name>",
+            "sites": ["<site_id>"],
+            "doorConfigurations": [],
+            "userGroupsWithDoorAccess": [],
+            "userGroupsWithEnableAccess": ["<access_group_id>"],
+            "userGroupsWithDisableAccess": ["<access_group_id>"],
+            "message": "<scenario_message>",
+            # Scenario Types: "EVACUATE" || "SHELTER" || "LOCKDOWN" || "SECURE" || "HOLD">
+            "scenarioType": "<scenario_type>",
+        },
+        response={
+            "lockdowns": [
+                {
+                    "lockdownId": "<scenario_id>",
+                    "message": "",
+                    "name": "<scenario_name>",
+                    "organizationId": "<org_id>",
+                    "scenarioType": "<scenario_type>",
+                }
+            ]
+        },
+    ),
+    "scenario.list": Endpoint(
+        method="GET",
+        subdomain=api_region,
+        path="organizations/{org_id}/lockdowns",
+        payload={},
+        response={
+            "lockdowns": [
+                {
+                    "lockdownId": "<scenario_id>",
+                    "message": "<scenario_message>",
+                    "name": "<scenario_name>",
+                    "organizationId": "<org_id>",
+                    "scenarioType": "LOCKDOWN",
+                },
+            ]
+        },
+    ),
+    "scenario.delete": Endpoint(
+        method="DELETE",
+        subdomain="vcerberus",
+        path="access/v2/user/lockdowns/<scenario_id>",
+        payload={},
+        response={},
+    ),
+    "schedule.create": Endpoint(
+        method="PUT",
+        subdomain=api_region,
+        path="organizations/{org_id}/schedules",
+        payload={
+            "sitesEnabled": True,
+            "schedules": [
+                {
+                    "doors": [],
+                    "events": [],
+                    "name": "<schedule_name>",
+                    "type": "DOOR",
+                    "priority": "SCHEDULE",
+                    "defaultDoorLockState": "ACCESS_CONTROL",
+                }
+            ],
+        },
+        response={},
+    ),
+    "schedule.list": Endpoint(
+        method="GET",
+        subdomain=api_region,
+        path="organizations/{org_id}/schedules",
+        payload={},
+        response={
+            "schedules": [
+                {
+                    "name": "<schedule_name>",
+                    "organizationId": "<org_id>",
+                    "priority": "SCHEDULE",
+                    "scheduleId": "<schedule_id>",
+                },
+            ]
+        },
+    ),
+    "schedule.delete": Endpoint(
+        method="PUT",
+        subdomain="vcerberus",
+        path="organizations/{org_id}/schedules",
+        payload={
+            "sitesEnabled": True,
+            "schedules": [
+                {
+                    "deleted": True,
+                    "name": "<schedule_name>",
+                    "organizationId": "<org_id>",
+                    "priority": "SCHEDULE",
+                    "scheduleId": "<schedule_id>",
+                },
+            ],
+        },
+        response={},
     ),
     # ── Workplace ────────────────────────────────────────────────────
     "guest.create": Endpoint(
