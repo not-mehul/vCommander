@@ -1,6 +1,6 @@
 import flet as ft
 
-from constants import BG, TEXT_PRIMARY
+from constants import BG, ERROR, SECONDARY, TEXT_PRIMARY, WARNING
 
 
 def set_button_loading(
@@ -31,6 +31,47 @@ def set_button_loading(
         page = getattr(btn, "page", None)
         if page:
             page.update()
+
+
+_TOAST_BG = {
+    "info": None,        # default Flet SnackBar background
+    "success": SECONDARY,
+    "warning": WARNING,
+    "error": ERROR,
+}
+
+
+def show_toast(
+    page: ft.Page,
+    message: str,
+    *,
+    kind: str = "info",
+    duration_ms: int = 3000,
+):
+    """Show a non-blocking bottom-center toast (Flet SnackBar).
+
+    Use for outcomes the user doesn't need to acknowledge — exports
+    completed, items copied, validation hints. Reserve `show_alert` for
+    blocking confirmations and fatal errors the user must dismiss.
+
+    `kind` selects the accent color (info / success / warning / error).
+    """
+    bgcolor = _TOAST_BG.get(kind)
+    snack = ft.SnackBar(
+        content=ft.Text(message, color=TEXT_PRIMARY),
+        bgcolor=bgcolor,
+        duration=duration_ms,
+        behavior=ft.SnackBarBehavior.FLOATING,
+        show_close_icon=True,
+    )
+    # Newer Flet exposes `page.show_snack_bar`/`page.open()`; fall back to
+    # the overlay-append pattern for older runtimes.
+    if hasattr(page, "open"):
+        page.open(snack)
+    else:
+        page.overlay.append(snack)
+        snack.open = True
+        page.update()
 
 
 def show_alert(page: ft.Page, title: str, message: str):

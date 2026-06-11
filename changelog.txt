@@ -11,9 +11,12 @@ v3.1
 - (Bug fix) Added LPR camera door linking to the commission tool
 
 v3.2
-- (New feature) Decommission tool deletes granular assets and entities: Access Groups, Access Levels, Doors, Floors, Buildings, Visitor access, Alarm Systems, Alarm Partitions, Alarm Guards, Alarm Wired Inputs/Outputs
+- (New feature) Decommission tool deletes granular assets and entities: Access Groups, Access Levels, Schedules, Scenarios, Doors, Floors, Buildings, Visitor access, Alarm Systems, Alarm Partitions, Alarm Guards, Alarm Wired Inputs/Outputs
 - (New feature) Decommission tool CSV export shows the serial numbers alongside object ids wherever present.
-- (New feature) Decommission tool now lists and deletes Access Station Pro devices
+- (New feature) Decommission tool now lists and deletes Access Station Pro devices and Sites (renamed if unable to delete)
+- (New feature) Decommission progress is now collapsed into product categories.
+- (New feature) Commission & Decommission Tool contain an option to cancel commissioning/decommissioning process.
+- (New feature) Global keyboard shortcuts: Esc backs out, Cmd/Ctrl-K jumps to Home, Cmd/Ctrl-, logs out
 - (Bug fix) Alarms now creates a response, setting it to Self-monitored mode.
 - (Bug fix) Decommission tool now deletes Alarm Input/Output devices.
 - (Bug fix) AI powered search and certain additional analytics also toggled on by default
@@ -21,10 +24,10 @@ v3.2
 - (Bug fix) Alarms Specialist creates a General Keycode for the Instructor - 123456
 - (Bug fix) Session timeout is now a fixed 30-minute window from login.
 
-
 --- NEWS ---
 - When the Alarm is triggered, you will not be able to delete an Alarm Site. It needs to be resolved to delete an alarm site.
 
 --- TODO ---
 # BUG REPORTED TO ENG
 - Command Connector does not get cleanly deleted
+- Access Users are not deleted, only core users are deleted

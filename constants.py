@@ -37,7 +37,10 @@ SECONDARY = "#8fd4b0"
 WARNING = "#f0b87e"
 ERROR = "#e8827a"
 TEXT_PRIMARY = "#e0e0e0"
-TEXT_SECONDARY = "#a0a0a0"
+# Bumped from #a0a0a0 → #b8b8b8 for better contrast on the dark BG;
+# the prior value sat at ~3.4:1 contrast (below WCAG AA for small text),
+# the new value clears 5:1 and is visually indistinguishable.
+TEXT_SECONDARY = "#b8b8b8"
 
 # Window
 MIN_WIDTH = 1100
@@ -220,8 +223,10 @@ ASSET_CATEGORIES = [
     "Floors",
     "Buildings",
     "Visitor Access",
+    "Schedules",
     "Access Levels",
     "Access Groups",
+    "Scenarios",
     # Alarms
     "Keypads",
     "Expanders",
@@ -235,6 +240,8 @@ ASSET_CATEGORIES = [
     "Alarm Panels",
     "Alarm Systems",
     "Alarm Sites",
+    # Sites (camera groups) go last — everything above lives inside one.
+    "Sites",
     # Users & misc
     "Command Users",
     "Unassigned Devices",
@@ -251,8 +258,10 @@ CATEGORY_GROUPS = {
         "Floors",
         "Buildings",
         "Visitor Access",
+        "Schedules",
         "Access Levels",
         "Access Groups",
+        "Scenarios",
     ],
     "Alarms": [
         "Keypads",
@@ -278,8 +287,13 @@ CATEGORY_GROUPS = {
 #     failing on a half-gone device. Doors precede ASPs (door references
 #     ASP as its access controller).
 #   - Rest of Access Control: controllers → floors → buildings → visitor
-#     access → levels → groups.
+#     access → schedules → levels → groups → scenarios. Schedules must
+#     precede Access Levels (same backing endpoint, different object);
+#     Scenarios close out the Access Control segment.
 #   - Alarms: devices before partitions before panel before system before site.
+#   - Sites (camera groups) are deleted last — every other asset lives
+#     inside one. If a site delete fails, the decommission tool falls
+#     back to renaming it ("<name>-<mm/dd/yy>") to free the name.
 #   - Unassigned Devices are informational only — no delete endpoint exists,
 #     so they are intentionally absent here.
 DELETION_ORDER = [
@@ -300,8 +314,10 @@ DELETION_ORDER = [
     "Floors",
     "Buildings",
     "Visitor Access",
+    "Schedules",
     "Access Levels",
     "Access Groups",
+    "Scenarios",
     # Alarms
     "Keypads",
     "Expanders",
@@ -315,6 +331,8 @@ DELETION_ORDER = [
     "Alarm Panels",
     "Alarm Systems",
     "Alarm Sites",
+    # Sites last of all
+    "Sites",
 ]
 
 ROLE_PROPAGATION_SECONDS = 3
@@ -343,8 +361,12 @@ _INTERNAL_GETTERS = {
     "Floors": "get_floor",
     "Buildings": "get_building",
     "Visitor Access": "get_visitor_access",
+    "Schedules": "get_schedule",
     "Access Levels": "get_access_level",
     "Access Groups": "get_access_group",
+    "Scenarios": "get_scenario",
+    # Sites (camera groups)
+    "Sites": "get_site",
     # Alarms (org-wide aggregators — no system/site arg)
     "Keypads": "get_alarm_keypad_all",
     "Expanders": "get_alarm_expander_all",
@@ -378,8 +400,13 @@ _INTERNAL_DELETERS = {
     "Floors": "delete_floor",
     "Buildings": "delete_building",
     "Visitor Access": "delete_visitor_access",
+    "Schedules": "delete_schedule",
     "Access Levels": "delete_access_level",
     "Access Groups": "delete_access_group",
+    "Scenarios": "delete_scenario",
+    # Sites (camera groups) — _delete_one falls back to rename_site
+    # ("<name>-<mm/dd/yy>") when the delete is rejected.
+    "Sites": "delete_site",
     # Alarms
     "Keypads": "delete_alarm_keypad",
     "Expanders": "delete_alarm_expander",

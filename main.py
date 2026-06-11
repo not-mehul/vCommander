@@ -147,6 +147,35 @@ async def main(page: ft.Page):
         latest, url = result
         show_update_banner(latest, url)
 
+    def on_key(e: ft.KeyboardEvent):
+        """Global shortcuts.
+
+        Esc          → back (pop_route), no-op on /login / /2fa.
+        Cmd/Ctrl-K   → jump to Home when an authenticated session is active.
+        Cmd/Ctrl-,   → trigger logout (and bounce to /login).
+
+        Per-screen TextField submissions stay handled by `on_submit` on
+        the form's last field, so Enter on a focused field still fires
+        the primary action without going through this dispatcher.
+        """
+        ctrl_or_meta = e.ctrl or e.meta
+        if e.key == "Escape":
+            current = history[-1] if history else None
+            if current not in _PUBLIC_ROUTES:
+                pop_route()
+            return
+        if ctrl_or_meta and e.key.upper() == "K":
+            if session_active() and (not history or history[-1] != "/home"):
+                push_route("/home")
+            return
+        if ctrl_or_meta and e.key == ",":
+            if session_active():
+                clear_session()
+                push_route("/login")
+            return
+
+    page.on_keyboard_event = on_key
+
     asyncio.create_task(run_version_check())
     asyncio.create_task(session_watchdog())
 

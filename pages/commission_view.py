@@ -70,9 +70,10 @@ from constants import (
     VSS_SITE_NAME,
     WARNING,
 )
+from utils.cancellation import CancellationToken
 from utils.executor import _executor
 from utils.session import get_internal_client, set_external_client
-from utils.ui_utils import set_button_loading, show_alert
+from utils.ui_utils import set_button_loading, show_alert, show_toast
 
 _ASSETS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets"
@@ -88,6 +89,9 @@ class CommissionView(ft.View):
         self.pop_route = pop_route
         self._kits: dict[str, dict[str, str]] = {}
         self._device_fields: dict[str, ft.TextField] = {}
+        # Cooperative cancel for the commission step loop. Checked
+        # between steps; the in-flight step is allowed to complete.
+        self._cancel_token: CancellationToken | None = None
         self._load_kits()
         self._build_ui()
 
@@ -166,6 +170,23 @@ class CommissionView(ft.View):
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
             height=45,
             on_click=self._on_commission,
+            expand=True,
+        )
+        # Cancel sits next to the primary button; hidden until the run
+        # starts, re-hidden when it finishes.
+        self.cancel_btn = ft.OutlinedButton(
+            content=ft.Text("Cancel", color=ERROR, weight=ft.FontWeight.W_500),
+            style=ft.ButtonStyle(
+                side=ft.BorderSide(1, ERROR),
+                shape=ft.RoundedRectangleBorder(radius=8),
+            ),
+            height=45,
+            on_click=self._on_cancel,
+            visible=False,
+        )
+        self._button_row = ft.Row(
+            [self.commission_btn, self.cancel_btn],
+            spacing=10,
         )
 
         self._progress_column = ft.Column(spacing=8, visible=False)
@@ -192,7 +213,7 @@ class CommissionView(ft.View):
                 self._users_column,
                 add_user_btn,
                 ft.Container(height=8),
-                self.commission_btn,
+                self._button_row,
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             spacing=FIELD_SPACING,
@@ -356,16 +377,16 @@ class CommissionView(ft.View):
         """
         code = self.template_dropdown.value
         if not code or code not in TEMPLATE_FIELDS:
-            show_alert(e.page, "Validation Error", "Please select a template.")
+            show_toast(e.page, "Please select a template.", kind="warning")
             return False, None
 
         config = TEMPLATE_FIELDS[code]
         for device_type in config["devices"]:
             if not self._device_serial(device_type):
-                show_alert(
+                show_toast(
                     e.page,
-                    "Validation Error",
                     f"Please enter the {device_type} serial number.",
+                    kind="warning",
                 )
                 return False, None
 
@@ -383,6 +404,12 @@ class CommissionView(ft.View):
         set_button_loading(self.commission_btn, True, "Commissioning")
         self._progress_column.controls.clear()
         self._progress_column.visible = True
+        # Reset / arm cancellation, surface the Cancel button.
+        self._cancel_token = CancellationToken()
+        self.cancel_btn.visible = True
+        self.cancel_btn.disabled = False
+        if isinstance(self.cancel_btn.content, ft.Text):
+            self.cancel_btn.content.value = "Cancel"
         e.page.update()
         await asyncio.sleep(0)
 
@@ -1024,24 +1051,35 @@ class CommissionView(ft.View):
         page.update()
 
     def _render_summary(self, page, all_success: bool) -> None:
-        """Hide the form, show a final status row plus a 'Return to Home' button."""
-        status_color = SECONDARY if all_success else WARNING
+        """Hide the form, show a final status row plus a 'Return to Home' button.
+
+        Branches on the cancel token so a user-aborted run shows a clear
+        "Cancelled" header instead of the success/partial-success line.
+        """
+        cancelled = bool(self._cancel_token and self._cancel_token.is_cancelled)
+        if cancelled:
+            status_color = WARNING
+            icon_name = ft.Icons.CANCEL
+            message = "Commission cancelled."
+        elif all_success:
+            status_color = SECONDARY
+            icon_name = ft.Icons.CHECK_CIRCLE
+            message = "Commission complete!"
+        else:
+            status_color = WARNING
+            icon_name = ft.Icons.WARNING
+            message = "Commission completed with some errors"
+
+        # Hide the Cancel control now that the run is over.
+        self.cancel_btn.visible = False
+
         self._form_section.visible = False
         self._progress_column.controls.append(ft.Container(height=8))
         self._progress_column.controls.append(
             ft.Row(
                 [
-                    ft.Icon(
-                        ft.Icons.CHECK_CIRCLE if all_success else ft.Icons.WARNING,
-                        color=status_color,
-                    ),
-                    ft.Text(
-                        "Commission complete!"
-                        if all_success
-                        else "Commission completed with some errors",
-                        color=status_color,
-                        weight=ft.FontWeight.W_600,
-                    ),
+                    ft.Icon(icon_name, color=status_color),
+                    ft.Text(message, color=status_color, weight=ft.FontWeight.W_600),
                 ]
             )
         )
@@ -1058,6 +1096,23 @@ class CommissionView(ft.View):
         )
         page.update()
 
+    def _on_cancel(self, e):
+        """Cancel button: trip the token and disable further clicks.
+
+        The in-flight API call is allowed to finish; the next step sees
+        the token and renders as 'skipped (cancelled)'.
+        """
+        if self._cancel_token is None:
+            return
+        self._cancel_token.cancel()
+        self.cancel_btn.disabled = True
+        if isinstance(self.cancel_btn.content, ft.Text):
+            self.cancel_btn.content.value = "Cancelling..."
+        self._progress_note(
+            e.page,
+            "Cancelling — the current step will finish, then commission will stop.",
+        )
+
     async def _run_step(self, page, loop, label: str, fn, *args) -> tuple[bool, object]:
         """
         Run a single commissioning step in the executor with UI feedback.
@@ -1067,8 +1122,26 @@ class CommissionView(ft.View):
         thread executor), then swaps the spinner for a check or error icon.
 
         Returns (ok, result). On failure result is None and the exception
-        text is shown in the row.
+        text is shown in the row. When the cancel token has been tripped,
+        the step is skipped (renders as a grey "cancelled" row) and
+        returns (False, None) so the flow records it but moves on.
         """
+        if self._cancel_token and self._cancel_token.is_cancelled:
+            cancelled_row = ft.Row(
+                [
+                    ft.Icon(ft.Icons.CANCEL, color=WARNING, size=18),
+                    ft.Text(
+                        f"{label} — skipped (cancelled)",
+                        color=WARNING,
+                        size=13,
+                    ),
+                ],
+                spacing=10,
+            )
+            self._progress_column.controls.append(cancelled_row)
+            page.update()
+            return False, None
+
         step_icon = ft.ProgressRing(
             width=16, height=16, stroke_width=2, color=TEXT_SECONDARY
         )

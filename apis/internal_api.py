@@ -959,6 +959,19 @@ class VerkadaInternalAPIClient:
             oid=site_id,
         )
 
+    def rename_site(self, site_id: str, new_name: str) -> None:
+        """Renames a site (camera group).
+
+        Used as the decommission fallback when site deletion fails —
+        renaming frees the original name for future commissioning runs.
+        """
+        self._request(
+            "site.rename",
+            json={"cameraGroupId": site_id, "name": new_name},
+            error_context=f"Failed to rename site '{site_id}' to '{new_name}'",
+            log_request=f'{{"cameraGroupId": "{site_id}", "name": "{new_name}"}}',
+        )
+
     # ------------------------------------------------------------------
     # Camera
     # ------------------------------------------------------------------
@@ -1252,10 +1265,18 @@ class VerkadaInternalAPIClient:
         )
 
     def get_access_level(self) -> list[dict[str, Any]]:
+        """
+        Lists access levels. Door schedules come back from the SAME
+        endpoint (organizations/{org_id}/schedules) but are a different
+        object — they can't be deleted through access_level.delete — so
+        filter them out by their type marker (schedules are type DOOR,
+        access levels type USER). get_schedule() returns the other half.
+        """
         return self._fetch_list(
             "access_level.list",
             response_key="schedules",
             path_params={"org_id": self.org_id},
+            filter_func=lambda x: x.get("type") != "DOOR",
             mapping_func=lambda x: {
                 "id": x["scheduleId"],
                 "name": x.get("name"),
@@ -1268,6 +1289,70 @@ class VerkadaInternalAPIClient:
             "access_level.delete",
             path_params={"schedule_id": schedule_id},
             oid=schedule_id,
+        )
+
+    def get_schedule(self) -> list[dict[str, Any]]:
+        """
+        Lists door schedules — the type=DOOR half of the shared
+        organizations/{org_id}/schedules listing (see get_access_level).
+        `priority` is surfaced because schedule.delete requires it.
+        """
+        return self._fetch_list(
+            "schedule.list",
+            response_key="schedules",
+            path_params={"org_id": self.org_id},
+            filter_func=lambda x: x.get("type") == "DOOR",
+            mapping_func=lambda x: {
+                "id": x["scheduleId"],
+                "name": x.get("name"),
+                "priority": x.get("priority", "SCHEDULE"),
+            },
+        )
+
+    def delete_schedule(
+        self, schedule_id: str, name: str, priority: str = "SCHEDULE"
+    ) -> None:
+        """
+        Deletes a door schedule. The endpoint is an upsert-style PUT —
+        deletion is flagged with deleted=True on the schedule object,
+        which is why name and priority must accompany the id.
+        """
+        self._delete(
+            "schedule.delete",
+            path_params={"org_id": self.org_id},
+            json={
+                "sitesEnabled": True,
+                "schedules": [
+                    {
+                        "deleted": True,
+                        "name": name,
+                        "organizationId": self.org_id,
+                        "priority": priority,
+                        "scheduleId": schedule_id,
+                    }
+                ],
+            },
+            oid=schedule_id,
+        )
+
+    def get_scenario(self) -> list[dict[str, Any]]:
+        """Lists access scenarios (lockdowns: EVACUATE/SHELTER/etc.)."""
+        return self._fetch_list(
+            "scenario.list",
+            response_key="lockdowns",
+            path_params={"org_id": self.org_id},
+            mapping_func=lambda x: {
+                "id": x["lockdownId"],
+                "name": x.get("name"),
+                "type": x.get("scenarioType"),
+            },
+        )
+
+    def delete_scenario(self, scenario_id: str) -> None:
+        self._delete(
+            "scenario.delete",
+            path_params={"scenario_id": scenario_id},
+            oid=scenario_id,
         )
 
     def create_access_group(self, group_name: str) -> str:

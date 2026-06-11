@@ -26,7 +26,7 @@ from constants import (
 from utils.db import load_credentials, save_credentials
 from utils.executor import _executor
 from utils.session import set_internal_client
-from utils.ui_utils import set_button_loading, show_alert
+from utils.ui_utils import set_button_loading, show_alert, show_toast
 
 
 def _strip(value: str | None) -> str:
@@ -90,6 +90,7 @@ class LoginView(ft.View):
             value=creds.get("password", ""),
             password=True,
             can_reveal_password=True,
+            on_submit=self._on_login,
         )
         self.org_field = _make_text_field(
             "Org Short Name",
@@ -115,8 +116,42 @@ class LoginView(ft.View):
             on_click=self._on_login,
         )
 
+        # Two-column form: email | password on the first row, then
+        # org-short-name on the left of the second row with region+shard
+        # on the right. Fills the available width better than the prior
+        # single-column 450-wide card on a 1100-wide window.
+        row_spacing = FIELD_SPACING
+        form_grid = ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Container(content=self.email_field, expand=1),
+                        ft.Container(content=self.password_field, expand=1),
+                    ],
+                    spacing=row_spacing,
+                ),
+                ft.Row(
+                    [
+                        ft.Container(content=self.org_field, expand=1),
+                        ft.Container(
+                            content=ft.Row(
+                                [
+                                    ft.Container(content=self.region_dropdown, expand=1),
+                                    ft.Container(content=self.shard_dropdown, expand=1),
+                                ],
+                                spacing=row_spacing,
+                            ),
+                            expand=1,
+                        ),
+                    ],
+                    spacing=row_spacing,
+                ),
+            ],
+            spacing=row_spacing,
+        )
+
         card = ft.Container(
-            width=450,
+            width=720,
             bgcolor=SURFACE,
             border_radius=12,
             border=ft.border.all(1, BORDER),
@@ -129,21 +164,9 @@ class LoginView(ft.View):
                     ),
                     ft.Text(f"v{APP_VERSION}", size=12, color=TEXT_SECONDARY),
                     ft.Container(height=FIELD_SPACING),
-                    self.email_field,
-                    ft.Container(height=FIELD_SPACING),
-                    self.password_field,
-                    ft.Container(height=FIELD_SPACING),
-                    self.org_field,
-                    ft.Container(height=FIELD_SPACING),
-                    ft.Row(
-                        [
-                            ft.Container(content=self.region_dropdown, expand=1),
-                            ft.Container(content=self.shard_dropdown, expand=1),
-                        ],
-                        spacing=FIELD_SPACING,
-                    ),
+                    form_grid,
                     ft.Container(height=FIELD_SPACING + 5),
-                    ft.Container(content=self.login_btn, expand=False),
+                    self.login_btn,
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 scroll=ft.ScrollMode.ADAPTIVE,
@@ -166,10 +189,10 @@ class LoginView(ft.View):
         shard = self.shard_dropdown.value or "prod1"
 
         if not email or not password or not org:
-            show_alert(
+            show_toast(
                 e.page,
-                "Validation Error",
                 "Please fill in email, password, and org short name.",
+                kind="warning",
             )
             return
 
