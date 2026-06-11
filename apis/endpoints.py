@@ -1412,7 +1412,9 @@ ENDPOINTS: dict[str, Endpoint] = {
     "scenario.delete": Endpoint(
         method="DELETE",
         subdomain="vcerberus",
-        path="access/v2/user/lockdowns/<scenario_id>",
+        # NOTE: curly braces — resolve() substitutes {placeholders} via
+        # str.format; angle brackets would be sent literally.
+        path="access/v2/user/lockdowns/{scenario_id}",
         payload={},
         response={},
     ),

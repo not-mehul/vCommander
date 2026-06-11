@@ -298,8 +298,9 @@ The Decommission tool can delete:
 - Command Connectors
 - Guest Sites
 - Mailroom Sites
-- **Access Control:** Doors, Access Station Pro, Access Controllers, Floors, Buildings, Visitor Access, Access Levels, Access Groups
+- **Access Control:** Doors, Access Station Pro, Access Controllers, Floors, Buildings, Visitor Access, Schedules, Access Levels, Access Groups, Scenarios
 - **Alarms:** Keypads, Expanders, Wireless Contact Sensors, Wireless Panic Buttons, Wireless Universal Transmitters, Wired Inputs, Wired Outputs, Guards, Partitions, Panel, System, Site
+- Sites (camera groups — deleted last; if a site refuses deletion it is renamed `<name>-<mm/dd/yy>` so the name is freed for reuse)
 - Users (Admins / Members)
 
 The Access Control and Alarms categories are grouped under collapsible parent tiles in the selection step — the parent checkbox toggles all of its children at once. Each asset row shows its name, serial number (where the device has one), and object id, and the same detail is written per-deletion to `api_calls.log`.
@@ -408,10 +409,11 @@ To prevent dependency errors, the Decommission tool deletes assets in this fixed
 6. Command Connectors
 7. Guest Sites
 8. Mailroom Sites
-9. **Access Control:** Doors → Access Station Pro → Access Controllers → Floors → Buildings → Visitor Access → Access Levels → Access Groups
+9. **Access Control:** Doors → Access Station Pro → Access Controllers → Floors → Buildings → Visitor Access → Schedules → Access Levels → Access Groups → Scenarios
 10. **Alarms:** Keypads → Expanders → Wireless Contact Sensors → Wireless Panic Buttons → Wireless Universal Transmitters → Wired Inputs → Wired Outputs → Guards → Partitions → Panel → System → Site
+11. **Sites** (camera groups — last of all, since every other asset lives inside one; a site that refuses deletion is renamed `<name>-<mm/dd/yy>` instead)
 
-Intercoms are deleted before Cameras and Access Controllers (paired-device dependency); within Access Control, doors come before the controllers/floors/buildings that own them; within Alarms, devices come before partitions, then panel, then system, then site.
+Intercoms are deleted before Cameras and Access Controllers (paired-device dependency); within Access Control, doors come before the controllers/floors/buildings that own them, and door Schedules come right before Access Levels (both are served by the same backing endpoint but are different objects with different delete paths); within Alarms, devices come before partitions, then panel, then system, then site.
 > ⚠️ Editing `DELETION_ORDER` carelessly will produce foreign-key-style API errors mid-run. If you add a new asset type, slot it where its dependencies are already gone.
 
 ## Troubleshooting & FAQ

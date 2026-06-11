@@ -17,6 +17,14 @@ v3.2
 - (New feature) Decommission progress is now collapsed into product categories.
 - (New feature) Commission & Decommission Tool contain an option to cancel commissioning/decommissioning process.
 - (New feature) Global keyboard shortcuts: Esc backs out, Cmd/Ctrl-K jumps to Home, Cmd/Ctrl-, logs out
+- (New feature) Decommission tool lists and deletes Scenarios (lockdowns) at the
+  end of the Access Control segment
+- (New feature) Decommission tool lists and deletes door Schedules right before
+  Access Levels; schedules no longer falsely appear under Access Levels (both
+  are served by the same endpoint, split by their type marker)
+- (New feature) Decommission tool deletes Sites (camera groups) last of all;
+  a site that refuses deletion is renamed "<name>-<mm/dd/yy>" so the name is
+  freed for future commissioning
 - (Bug fix) Alarms now creates a response, setting it to Self-monitored mode.
 - (Bug fix) Decommission tool now deletes Alarm Input/Output devices.
 - (Bug fix) AI powered search and certain additional analytics also toggled on by default

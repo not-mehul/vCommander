@@ -1102,15 +1102,26 @@ class DecommissionView(ft.View):
 
         try:
             if category in _INTERNAL_DELETERS:
-                # Most deleters take a single id. Alarm Sites needs two —
-                # delete_alarm_site takes (alarm_site_id, site_id) — so
-                # special-case it to keep the rest of the client API uniform.
-                # item["id"] from get_alarm_site is the responseSite.id
-                # (alarm_site_id), which the body's responseSiteId expects.
+                # Most deleters take a single id. Two need extra fields, so
+                # special-case them to keep the rest of the client API uniform:
+                #   - delete_alarm_site takes (alarm_site_id, site_id);
+                #     item["id"] from get_alarm_site is the responseSite.id
+                #     (alarm_site_id), which the body's responseSiteId expects.
+                #   - delete_schedule takes (schedule_id, name, priority) —
+                #     the endpoint is an upsert-style PUT and the whole
+                #     schedule object must accompany the deleted=True flag.
                 deleter = getattr(int_client, _INTERNAL_DELETERS[category])
                 if category == "Alarm Sites":
                     await loop.run_in_executor(
                         _executor, deleter, item.get("id"), item.get("site_id")
+                    )
+                elif category == "Schedules":
+                    await loop.run_in_executor(
+                        _executor,
+                        deleter,
+                        item_id,
+                        item.get("name") or "",
+                        item.get("priority") or "SCHEDULE",
                     )
                 else:
                     await loop.run_in_executor(_executor, deleter, item_id)
@@ -1133,6 +1144,35 @@ class DecommissionView(ft.View):
             log_system(f"{category}: deleted {descriptor}")
             return True
         except Exception as ex:
+            # Sites get a second chance: a site that refuses deletion is
+            # renamed "<name>-<mm/dd/yy>" so its original name is freed
+            # for future commissioning runs.
+            if category == "Sites":
+                renamed_to = await self._rename_site_fallback(
+                    loop, int_client, item_id, item_name
+                )
+                if renamed_to:
+                    step_row.controls[0] = ft.Icon(
+                        ft.Icons.WARNING, color=WARNING, size=16
+                    )
+                    step_text.value = (
+                        f"  Could not delete {row_label} — renamed to "
+                        f"'{renamed_to}'"
+                    )
+                    step_text.color = WARNING
+                    if cat_row is not None:
+                        cat_row["success"] += 1
+                        cat_row["counter"].value = (
+                            f"{cat_row['success']} / {cat_row['total']}"
+                        )
+                    page.update()
+                    log_system(
+                        f"{category}: could not delete {descriptor} ({ex}) — "
+                        f"renamed to '{renamed_to}'",
+                        level="WARN",
+                    )
+                    return True
+
             step_row.controls[0] = ft.Icon(ft.Icons.ERROR, color=ERROR, size=16)
             step_text.value = f"  Failed: {row_label} — {ex}"
             step_text.color = ERROR
@@ -1143,6 +1183,33 @@ class DecommissionView(ft.View):
                 f"{category}: FAILED to delete {descriptor} — {ex}", level="ERROR"
             )
             return False
+
+    async def _rename_site_fallback(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        int_client,
+        site_id: str,
+        site_name: str,
+    ) -> str | None:
+        """Rename a site that refused deletion to '<name>-<mm/dd/yy>'.
+
+        Returns the new name on success, None if the rename also failed
+        (caller then reports the original delete failure).
+        """
+        stamp = datetime.datetime.now().strftime("%m/%d/%y")
+        new_name = f"{site_name}-{stamp}"
+        try:
+            await loop.run_in_executor(
+                _executor, int_client.rename_site, site_id, new_name
+            )
+            return new_name
+        except Exception as rename_ex:
+            log_system(
+                f"Sites: rename fallback for '{site_name}' ({site_id}) "
+                f"also failed — {rename_ex}",
+                level="ERROR",
+            )
+            return None
 
     # ------------------------------------------------------------------
     # COMPLETE state
