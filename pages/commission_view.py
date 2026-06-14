@@ -73,7 +73,7 @@ from constants import (
 from utils.cancellation import CancellationToken
 from utils.executor import _executor
 from utils.session import get_internal_client, set_external_client
-from utils.ui_utils import set_button_loading, show_alert, show_toast
+from utils.ui_utils import set_button_loading, show_toast
 
 _ASSETS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets"

@@ -287,9 +287,13 @@ CATEGORY_GROUPS = {
 #     failing on a half-gone device. Doors precede ASPs (door references
 #     ASP as its access controller).
 #   - Rest of Access Control: controllers → floors → buildings → visitor
-#     access → schedules → levels → groups → scenarios. Schedules must
-#     precede Access Levels (same backing endpoint, different object);
-#     Scenarios close out the Access Control segment.
+#     access → schedules → levels → scenarios → groups. Schedules must
+#     precede Access Levels (same backing endpoint, different object).
+#     Scenarios (lockdowns) hold release-group references, so they must
+#     be deleted BEFORE Access Groups — otherwise the server rejects
+#     the group delete with "Cannot delete only release group for
+#     lockdown". Visually, Scenarios still render at the end of the
+#     Access Control group via CATEGORY_GROUPS.
 #   - Alarms: devices before partitions before panel before system before site.
 #   - Sites (camera groups) are deleted last — every other asset lives
 #     inside one. If a site delete fails, the decommission tool falls
@@ -316,8 +320,12 @@ DELETION_ORDER = [
     "Visitor Access",
     "Schedules",
     "Access Levels",
-    "Access Groups",
+    # Scenarios before Access Groups: a lockdown holds a release-group
+    # ref on a user group; deleting the group first 403s with
+    # "Cannot delete only release group for lockdown". CATEGORY_GROUPS
+    # keeps Scenarios visually at the end of the Access Control tile.
     "Scenarios",
+    "Access Groups",
     # Alarms
     "Keypads",
     "Expanders",
