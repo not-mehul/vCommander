@@ -189,6 +189,12 @@ class HomeView(ft.View):
 
         Every page-touching call is guarded by an `if not page` bail so the
         timer can't push routes or show alerts after the view has unmounted.
+        The `page.update()` call is additionally wrapped because the Flet
+        session can be torn down between the `page is None` check and the
+        actual call (race during navigation away from Home), surfacing as
+        "An attempt to fetch destroyed session" — when that happens the
+        new view is already mounted and owns its own timer, so we just
+        bail silently.
         """
         try:
             while True:
@@ -219,7 +225,10 @@ class HomeView(ft.View):
                         f"Your session expires in {SESSION_WARNING_MINUTES} minutes.",
                     )
 
-                page.update()
+                try:
+                    page.update()
+                except Exception:
+                    return
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
             pass

@@ -1457,6 +1457,9 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="PUT",
         subdomain="vcerberus",
         path="organizations/{org_id}/schedules",
+        # Upsert-style PUT: the whole schedule object must accompany
+        # the deleted=True flag. `type` and `events` are required by
+        # the server even on delete (empty events array is accepted).
         payload={
             "sitesEnabled": True,
             "schedules": [
@@ -1466,6 +1469,8 @@ ENDPOINTS: dict[str, Endpoint] = {
                     "organizationId": "<org_id>",
                     "priority": "SCHEDULE",
                     "scheduleId": "<schedule_id>",
+                    "type": "DOOR",
+                    "events": [],
                 },
             ],
         },

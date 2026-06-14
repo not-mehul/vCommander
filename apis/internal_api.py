@@ -1266,17 +1266,17 @@ class VerkadaInternalAPIClient:
 
     def get_access_level(self) -> list[dict[str, Any]]:
         """
-        Lists access levels. Door schedules come back from the SAME
-        endpoint (organizations/{org_id}/schedules) but are a different
-        object — they can't be deleted through access_level.delete — so
-        filter them out by their type marker (schedules are type DOOR,
-        access levels type USER). get_schedule() returns the other half.
+        Lists access levels. Door schedules (type DOOR) and supervisor
+        schedules (other types) come back from the SAME endpoint
+        (organizations/{org_id}/schedules) but cannot be deleted through
+        access_level.delete — only type USER is accepted. Include
+        untyped items so legacy access levels still surface.
         """
         return self._fetch_list(
             "access_level.list",
             response_key="schedules",
             path_params={"org_id": self.org_id},
-            filter_func=lambda x: x.get("type") != "DOOR",
+            filter_func=lambda x: x.get("type") in (None, "USER"),
             mapping_func=lambda x: {
                 "id": x["scheduleId"],
                 "name": x.get("name"),
@@ -1295,7 +1295,8 @@ class VerkadaInternalAPIClient:
         """
         Lists door schedules — the type=DOOR half of the shared
         organizations/{org_id}/schedules listing (see get_access_level).
-        `priority` is surfaced because schedule.delete requires it.
+        `priority` and `type` are surfaced because schedule.delete
+        requires them (along with `events`) in the body.
         """
         return self._fetch_list(
             "schedule.list",
@@ -1306,16 +1307,23 @@ class VerkadaInternalAPIClient:
                 "id": x["scheduleId"],
                 "name": x.get("name"),
                 "priority": x.get("priority", "SCHEDULE"),
+                "type": x.get("type", "DOOR"),
             },
         )
 
     def delete_schedule(
-        self, schedule_id: str, name: str, priority: str = "SCHEDULE"
+        self,
+        schedule_id: str,
+        name: str,
+        priority: str = "SCHEDULE",
+        schedule_type: str = "DOOR",
     ) -> None:
         """
         Deletes a door schedule. The endpoint is an upsert-style PUT —
-        deletion is flagged with deleted=True on the schedule object,
-        which is why name and priority must accompany the id.
+        deletion is flagged with deleted=True on the schedule object, so
+        the whole object (name / type / priority / events) must
+        accompany the id. Empty events array is accepted (matches the
+        create payload contract).
         """
         self._delete(
             "schedule.delete",
@@ -1329,6 +1337,8 @@ class VerkadaInternalAPIClient:
                         "organizationId": self.org_id,
                         "priority": priority,
                         "scheduleId": schedule_id,
+                        "type": schedule_type,
+                        "events": [],
                     }
                 ],
             },

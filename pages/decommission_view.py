@@ -1122,6 +1122,7 @@ class DecommissionView(ft.View):
                         item_id,
                         item.get("name") or "",
                         item.get("priority") or "SCHEDULE",
+                        item.get("type") or "DOOR",
                     )
                 else:
                     await loop.run_in_executor(_executor, deleter, item_id)
