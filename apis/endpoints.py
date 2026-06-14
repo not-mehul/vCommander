@@ -1441,6 +1441,12 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="GET",
         subdomain=api_region,
         path="organizations/{org_id}/schedules",
+        # Shared with access_level.list. `type` distinguishes the rows:
+        #   DOOR       → door schedule (this category)
+        #   SUPERVISOR → supervisor half of a door schedule; linked via
+        #                the door schedule's supervisorScheduleId and its
+        #                own doorScheduleId back-pointer
+        #   USER       → access level (see access_level.list)
         payload={},
         response={
             "schedules": [
@@ -1449,6 +1455,9 @@ ENDPOINTS: dict[str, Endpoint] = {
                     "organizationId": "<org_id>",
                     "priority": "SCHEDULE",
                     "scheduleId": "<schedule_id>",
+                    "type": "DOOR",
+                    "supervisorScheduleId": "<supervisor_schedule_id>",
+                    "events": ["<full event objects>"],
                 },
             ]
         },
@@ -1457,22 +1466,15 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="PUT",
         subdomain="vcerberus",
         path="organizations/{org_id}/schedules",
-        # Upsert-style PUT: the whole schedule object must accompany
-        # the deleted=True flag. `type` and `events` are required by
-        # the server even on delete (empty events array is accepted).
+        # Upsert-style PUT: each schedule object from schedule.list must
+        # be echoed back VERBATIM (full events array, type, ids, …) with
+        # deleted=True — a trimmed body is rejected with "Missing data
+        # for required field". A door schedule that has a paired
+        # supervisor schedule must send BOTH objects in the schedules
+        # array. See VerkadaInternalAPIClient.delete_schedule.
         payload={
             "sitesEnabled": True,
-            "schedules": [
-                {
-                    "deleted": True,
-                    "name": "<schedule_name>",
-                    "organizationId": "<org_id>",
-                    "priority": "SCHEDULE",
-                    "scheduleId": "<schedule_id>",
-                    "type": "DOOR",
-                    "events": [],
-                },
-            ],
+            "schedules": ["<full schedule object>", "...deleted: True"],
         },
         response={},
     ),

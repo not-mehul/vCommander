@@ -1293,56 +1293,73 @@ class VerkadaInternalAPIClient:
 
     def get_schedule(self) -> list[dict[str, Any]]:
         """
-        Lists door schedules — the type=DOOR half of the shared
-        organizations/{org_id}/schedules listing (see get_access_level).
-        `priority` and `type` are surfaced because schedule.delete
-        requires them (along with `events`) in the body.
-        """
-        return self._fetch_list(
-            "schedule.list",
-            response_key="schedules",
-            path_params={"org_id": self.org_id},
-            filter_func=lambda x: x.get("type") == "DOOR",
-            mapping_func=lambda x: {
-                "id": x["scheduleId"],
-                "name": x.get("name"),
-                "priority": x.get("priority", "SCHEDULE"),
-                "type": x.get("type", "DOOR"),
-            },
-        )
+        Lists door schedules (type DOOR) from the shared
+        organizations/{org_id}/schedules listing (access levels, type
+        USER, come from get_access_level via the same endpoint).
 
-    def delete_schedule(
-        self,
-        schedule_id: str,
-        name: str,
-        priority: str = "SCHEDULE",
-        schedule_type: str = "DOOR",
-    ) -> None:
+        schedule.delete is an upsert-style PUT that echoes the entire
+        schedule object back with deleted=True, so each result carries
+        the full raw object(s) needed to delete it in `delete_objects`:
+        the DOOR schedule plus its paired SUPERVISOR schedule (when
+        supervisorScheduleId is set) — the two must be deleted together
+        in one call or the server rejects it. Supervisor schedules are
+        never surfaced on their own; they belong to a door schedule.
         """
-        Deletes a door schedule. The endpoint is an upsert-style PUT —
-        deletion is flagged with deleted=True on the schedule object, so
-        the whole object (name / type / priority / events) must
-        accompany the id. Empty events array is accepted (matches the
-        create payload contract).
+        data, status = self._request(
+            "schedule.list",
+            path_params={"org_id": self.org_id},
+            error_context="Failed to fetch from schedule.list",
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+            auto_log=False,
+        )
+        raw = data.get("schedules", [])
+        by_id = {s.get("scheduleId"): s for s in raw}
+
+        results: list[dict[str, Any]] = []
+        for sched in raw:
+            if sched.get("type") != "DOOR":
+                continue
+            delete_objects = [sched]
+            sup_id = sched.get("supervisorScheduleId")
+            if sup_id and sup_id in by_id:
+                delete_objects.append(by_id[sup_id])
+            results.append(
+                {
+                    "id": sched.get("scheduleId"),
+                    "name": sched.get("name"),
+                    # Full raw object(s) echoed back on delete; consumed
+                    # by delete_schedule. Not shown in the UI.
+                    "delete_objects": delete_objects,
+                }
+            )
+        self._log(
+            "schedule.list",
+            status,
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+            log_response=f'{{"count": {len(results)}}}',
+        )
+        return results
+
+    def delete_schedule(self, delete_objects: list[dict[str, Any]]) -> None:
         """
+        Deletes door schedule(s) via the upsert-style PUT. The endpoint
+        requires the FULL schedule object echoed back verbatim with
+        deleted=True (events, type, ids, timestamps, …) — a minimal body
+        is rejected with "Missing data for required field". A door
+        schedule that has a paired supervisor schedule must include BOTH
+        objects in the same call. `delete_objects` comes straight from
+        get_schedule's `delete_objects`.
+        """
+        if not delete_objects:
+            raise ValueError(
+                "delete_schedule requires at least one schedule object"
+            )
+        payload = [{**obj, "deleted": True} for obj in delete_objects]
         self._delete(
             "schedule.delete",
             path_params={"org_id": self.org_id},
-            json={
-                "sitesEnabled": True,
-                "schedules": [
-                    {
-                        "deleted": True,
-                        "name": name,
-                        "organizationId": self.org_id,
-                        "priority": priority,
-                        "scheduleId": schedule_id,
-                        "type": schedule_type,
-                        "events": [],
-                    }
-                ],
-            },
-            oid=schedule_id,
+            json={"sitesEnabled": True, "schedules": payload},
+            oid=delete_objects[0].get("scheduleId", ""),
         )
 
     def get_scenario(self) -> list[dict[str, Any]]:
