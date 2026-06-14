@@ -1335,6 +1335,9 @@ class VerkadaInternalAPIClient:
         self._log(
             "schedule.list",
             status,
+            # path_params are required: schedule.list's path has an
+            # {org_id} placeholder that _log -> resolve must substitute.
+            path_params={"org_id": self.org_id},
             log_request=f'{{"organizationId": "{self.org_id}"}}',
             log_response=f'{{"count": {len(results)}}}',
         )
