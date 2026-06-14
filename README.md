@@ -409,7 +409,7 @@ To prevent dependency errors, the Decommission tool deletes assets in this fixed
 6. Command Connectors
 7. Guest Sites
 8. Mailroom Sites
-9. **Access Control:** Doors → Access Station Pro → Access Controllers → Floors → Buildings → Visitor Access → Schedules → Access Levels → Access Groups → Scenarios
+9. **Access Control:** Doors → Access Station Pro → Access Controllers → Floors → Buildings → Visitor Access → Schedules → Access Levels → Scenarios → Access Groups
 10. **Alarms:** Keypads → Expanders → Wireless Contact Sensors → Wireless Panic Buttons → Wireless Universal Transmitters → Wired Inputs → Wired Outputs → Guards → Partitions → Panel → System → Site
 11. **Sites** (camera groups — last of all, since every other asset lives inside one; a site that refuses deletion is renamed `<name>-<mm/dd/yy>` instead)
 

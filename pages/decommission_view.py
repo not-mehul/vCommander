@@ -1102,26 +1102,25 @@ class DecommissionView(ft.View):
 
         try:
             if category in _INTERNAL_DELETERS:
-                # Most deleters take a single id. Two need extra fields, so
+                # Most deleters take a single id. Two need extra data, so
                 # special-case them to keep the rest of the client API uniform:
                 #   - delete_alarm_site takes (alarm_site_id, site_id);
                 #     item["id"] from get_alarm_site is the responseSite.id
                 #     (alarm_site_id), which the body's responseSiteId expects.
-                #   - delete_schedule takes (schedule_id, name, priority) —
-                #     the endpoint is an upsert-style PUT and the whole
-                #     schedule object must accompany the deleted=True flag.
+                #   - delete_schedule takes the full raw schedule object(s)
+                #     (an upsert PUT echoes them back with deleted=True),
+                #     bundled by get_schedule into item["delete_objects"].
                 deleter = getattr(int_client, _INTERNAL_DELETERS[category])
                 if category == "Alarm Sites":
                     await loop.run_in_executor(
                         _executor, deleter, item.get("id"), item.get("site_id")
                     )
                 elif category == "Schedules":
+                    # delete_schedule echoes the full raw object(s) back
+                    # with deleted=True; get_schedule stashed them (plus
+                    # any paired supervisor schedule) on the item.
                     await loop.run_in_executor(
-                        _executor,
-                        deleter,
-                        item_id,
-                        item.get("name") or "",
-                        item.get("priority") or "SCHEDULE",
+                        _executor, deleter, item.get("delete_objects") or []
                     )
                 else:
                     await loop.run_in_executor(_executor, deleter, item_id)
