@@ -1,6 +1,6 @@
 import pytest
 
-from utils.validation import format_serial, is_valid_serial
+from utils.validation import format_serial, is_valid_email, is_valid_serial
 
 
 @pytest.mark.parametrize(
@@ -31,3 +31,19 @@ def test_format_serial(raw, expected):
 )
 def test_is_valid_serial(value, ok):
     assert is_valid_serial(value) is ok
+
+
+@pytest.mark.parametrize(
+    ("value", "ok"),
+    [
+        ("trainee+1@verkada.com", True),
+        (" a@b.co ", True),
+        ("no-at-sign.com", False),
+        ("missing@tld", False),
+        ("two@@x.com", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_valid_email(value, ok):
+    assert is_valid_email(value) is ok

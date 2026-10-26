@@ -27,14 +27,18 @@ from components import (
     Stepper,
     StepRow,
     banner,
+    card,
     danger_button,
+    ghost_button,
     primary_button,
     run_step,
+    scroll_area,
     secondary_button,
     section_header,
     set_button_loading,
     stat_row,
     status_row,
+    text_field,
 )
 from constants import (
     _EXTERNAL_DELETERS,
@@ -42,9 +46,7 @@ from constants import (
     _INTERNAL_DELETERS,
     _INTERNAL_GETTERS,
     ASSET_CATEGORIES,
-    BORDER,
     CARD_PADDING,
-    CARD_SHADOW,
     CATEGORY_GROUPS,
     DELETION_ORDER,
     ERROR,
@@ -54,7 +56,6 @@ from constants import (
     PRIMARY,
     READ_ONLY_CATEGORIES,
     SECONDARY,
-    SURFACE,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     WARNING,
@@ -102,6 +103,21 @@ def _item_descriptor(item: dict, *, include_id: bool = True) -> str:
     return "  ·  ".join(parts)
 
 
+def _expansion_tile(**kwargs) -> ft.ExpansionTile:
+    """ExpansionTile without Material's default top/bottom divider lines.
+
+    Nested tiles otherwise stack those dividers into doubled rules.
+    """
+    shape = ft.RoundedRectangleBorder(radius=theme.RADIUS_MD)
+    return ft.ExpansionTile(
+        shape=shape,
+        collapsed_shape=shape,
+        icon_color=theme.TEXT_SECONDARY,
+        collapsed_icon_color=theme.TEXT_SECONDARY,
+        **kwargs,
+    )
+
+
 class _ScanCancelled(Exception):
     """Raised inside the scan loop when the user abandons the scan."""
 
@@ -132,6 +148,8 @@ class DecommissionView(ToolView):
             push_route,
             route="/decommission",
             title="Decommission Organization",
+            subtitle="Scan an org, choose what to remove, and delete it in a "
+            "dependency-safe order.",
         )
         self._state = SCAN
         self._assets: dict[str, list[dict]] = {}
@@ -173,31 +191,25 @@ class DecommissionView(ToolView):
         self._stepper = Stepper(_DECOMMISSION_STEPS, current=0)
         self._content_area = ft.Column(
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-            scroll=ft.ScrollMode.ADAPTIVE,
-            expand=True,
             spacing=FIELD_SPACING,
         )
 
-        card = ft.Container(
-            bgcolor=SURFACE,
-            border_radius=theme.RADIUS_LG,
-            border=ft.Border.all(1, BORDER),
-            shadow=CARD_SHADOW,
-            padding=ft.Padding.all(CARD_PADDING),
-            content=ft.Column(
-                [
-                    ft.Container(
-                        content=self._stepper,
-                        padding=ft.Padding.only(bottom=FIELD_SPACING),
-                    ),
-                    self._content_area,
-                ],
+        self.mount(
+            card(
+                ft.Column(
+                    [
+                        ft.Container(
+                            content=self._stepper,
+                            padding=ft.Padding.only(bottom=FIELD_SPACING),
+                        ),
+                        scroll_area(self._content_area),
+                    ],
+                    expand=True,
+                ),
+                padding=CARD_PADDING,
                 expand=True,
-            ),
-            expand=True,
+            )
         )
-
-        self.mount(card)
 
         self._render_state()
 
@@ -290,7 +302,7 @@ class DecommissionView(ToolView):
         # permission-elevation phase, then hidden when the scan loop starts.
         # Lives in the same Column as the scan button so the page composition
         # doesn't shift when prep starts.
-        self._prep_progress = ft.Column(spacing=8, visible=False)
+        self._prep_progress = ft.Column(spacing=8, visible=False, width=440)
         # Determinate progress + live status for the per-category scan loop.
         self._scan_progress = ProgressHeader(determinate=True)
         self._scan_progress_box = ft.Container(
@@ -315,7 +327,17 @@ class DecommissionView(ToolView):
                         color=TEXT_SECONDARY,
                         text_align=ft.TextAlign.CENTER,
                     ),
-                    ft.Container(height=20),
+                    ft.Container(height=12),
+                    ft.Container(
+                        width=560,
+                        content=banner(
+                            "Scanning creates a temporary API key and turns on "
+                            "Global Site Admin so every site's assets are "
+                            "visible. Both are undone when you finish or leave.",
+                            kind="info",
+                        ),
+                    ),
+                    ft.Container(height=12),
                     self._scan_btn,
                     ft.Container(height=15),
                     self._prep_progress,
@@ -571,17 +593,19 @@ class DecommissionView(ToolView):
 
     def _render_review(self):
         rows = []
+        empty: list[str] = []
         total = 0
         truncated = False
         for category in ASSET_CATEGORIES:
             count = len(self._assets.get(category, []))
             total += count
             truncated |= self._may_be_truncated(category, count)
+            if count == 0:
+                empty.append(category)
+                continue
             label = (
                 f"{category} (read-only)" if category in READ_ONLY_CATEGORIES else category
             )
-            # stat_row mutes zero counts and accents the non-zero ones so the
-            # categories that actually have assets stand out in the long list.
             rows.append(stat_row(label, self._count_label(category), accent=PRIMARY))
 
         if total == 0:
@@ -626,13 +650,23 @@ class DecommissionView(ToolView):
         controls = [
             section_header(
                 "Assets Found",
-                f"{total}{'+' if truncated else ''} total assets discovered "
-                f"across {len(ASSET_CATEGORIES)} categories.",
+                f"{total}{'+' if truncated else ''} assets in "
+                f"{len(rows)} of {len(ASSET_CATEGORIES)} categories.",
             ),
             ft.Container(height=10),
             ft.Column(rows, spacing=8),
-            ft.Container(height=15),
         ]
+        if empty:
+            # The empty categories are listed in one muted line rather than
+            # as dozens of zero rows that push the next step off-screen.
+            controls.append(
+                ft.Text(
+                    "Nothing found in: " + ", ".join(empty) + ".",
+                    size=theme.FONT_CAPTION,
+                    color=theme.TEXT_MUTED,
+                )
+            )
+        controls.append(ft.Container(height=15))
         if truncated:
             controls += [
                 banner(
@@ -657,16 +691,13 @@ class DecommissionView(ToolView):
 
     def _render_select(self):
         if self._search_field is None:
-            self._search_field = ft.TextField(
-                hint_text="Search by name, serial or id",
+            self._search_field = text_field(
+                hint="Search by name, serial or id",
                 value=self._search_query,
                 prefix_icon=ft.Icons.SEARCH,
-                border_color=BORDER,
-                focused_border_color=PRIMARY,
-                color=TEXT_PRIMARY,
-                content_padding=ft.Padding.symmetric(horizontal=10, vertical=8),
                 on_change=self._on_search_change,
                 expand=True,
+                compact=True,
             )
             self._show_items_switch = ft.Switch(
                 value=self._show_items,
@@ -677,16 +708,11 @@ class DecommissionView(ToolView):
         self._tiles_column = ft.Column(self._build_tiles(), spacing=4)
         self._refresh_selection_hint()
 
-        export_btn = ft.OutlinedButton(
-            content=ft.Text(
-                "Export Asset List (CSV)", color=PRIMARY, weight=ft.FontWeight.W_500
-            ),
-            style=ft.ButtonStyle(
-                side=ft.BorderSide(1, PRIMARY),
-                shape=ft.RoundedRectangleBorder(radius=theme.RADIUS_MD),
-            ),
-            height=42,
+        export_btn = secondary_button(
+            "Export asset list (CSV)",
             on_click=self._export_assets_csv,
+            icon=ft.Icons.DOWNLOAD,
+            tone="accent",
         )
         top_bar = ft.Row(
             [
@@ -719,9 +745,17 @@ class DecommissionView(ToolView):
             ft.Container(height=6),
             self._tiles_column,
             ft.Container(height=15),
-            export_btn,
-            ft.Container(height=8),
-            primary_button("Review Selection", on_click=self._on_review_selection),
+            ft.Row(
+                [
+                    export_btn,
+                    primary_button(
+                        "Review Selection",
+                        on_click=self._on_review_selection,
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+            ),
         ]
 
     def _build_tiles(self) -> list[ft.Control]:
@@ -831,7 +865,7 @@ class DecommissionView(ToolView):
                     size=12,
                 )
             ]
-        return ft.ExpansionTile(
+        return _expansion_tile(
             title=ft.Row([cb, title]),
             controls=[
                 ft.Container(
@@ -866,7 +900,7 @@ class DecommissionView(ToolView):
         title = ft.Text("", color=TEXT_PRIMARY, weight=ft.FontWeight.W_600)
         self._group_titles[group] = title
 
-        return ft.ExpansionTile(
+        return _expansion_tile(
             title=ft.Row([parent_cb, title]),
             controls=[
                 ft.Container(
@@ -1064,16 +1098,11 @@ class DecommissionView(ToolView):
         confirm_btn = danger_button(
             f"Delete {count_text} {noun.capitalize()}", on_click=self._on_delete
         )
-        back_btn = ft.TextButton(
-            content=ft.Row(
-                [
-                    ft.Icon(ft.Icons.ARROW_BACK, size=16, color=TEXT_SECONDARY),
-                    ft.Text("Back", color=TEXT_SECONDARY),
-                ],
-                spacing=4,
-                tight=True,
-            ),
+        back_btn = ghost_button(
+            "Back",
             on_click=self._back_to_select,
+            color=TEXT_SECONDARY,
+            icon=ft.Icons.ARROW_BACK,
         )
 
         controls = [
@@ -1173,7 +1202,7 @@ class DecommissionView(ToolView):
             size=13,
         )
         items_column = ft.Column(spacing=4)
-        tile = ft.ExpansionTile(
+        tile = _expansion_tile(
             title=ft.Row(
                 [icon, title, ft.Container(expand=True), counter],
                 spacing=10,
@@ -1255,14 +1284,8 @@ class DecommissionView(ToolView):
             color=TEXT_SECONDARY,
             size=13,
         )
-        self._cancel_btn = ft.OutlinedButton(
-            content=ft.Text("Cancel", color=ERROR, weight=ft.FontWeight.W_500),
-            style=ft.ButtonStyle(
-                side=ft.BorderSide(1, ERROR),
-                shape=ft.RoundedRectangleBorder(radius=theme.RADIUS_MD),
-            ),
-            height=40,
-            on_click=self._on_cancel,
+        self._cancel_btn = secondary_button(
+            "Cancel", on_click=self._on_cancel, tone="danger", icon=ft.Icons.STOP
         )
 
         self._content_area.controls = [
@@ -1289,8 +1312,7 @@ class DecommissionView(ToolView):
             return
         self._cancel_token.cancel()
         self._cancel_btn.disabled = True
-        if isinstance(self._cancel_btn.content, ft.Text):
-            self._cancel_btn.content.value = "Cancelling..."
+        self._cancel_btn.content.controls[1].value = "Cancelling..."
         self._processing_status.value = (
             "Cancelling — finishing the current item, then stopping."
         )
@@ -1605,10 +1627,27 @@ class DecommissionView(ToolView):
                     f"{remaining} could not be removed."
                 )
 
+        actions = ft.Row(
+            [
+                secondary_button(
+                    "Copy report", on_click=self._on_copy_report, icon=ft.Icons.COPY
+                ),
+                secondary_button(
+                    "Export report (CSV)",
+                    on_click=self._on_export_report,
+                    icon=ft.Icons.DOWNLOAD,
+                ),
+                primary_button(
+                    "Return to Home", on_click=lambda _: self.push_route("/home")
+                ),
+            ],
+            spacing=10,
+        )
         controls: list[ft.Control] = [
             section_header(title),
             ft.Container(height=10),
             banner(subtitle, kind=report_kind),
+            actions,
         ]
         if failures:
             controls.append(ft.Container(height=8))
@@ -1627,27 +1666,6 @@ class DecommissionView(ToolView):
         controls.append(ft.Container(height=12))
         controls.append(section_header("All categories"))
         controls.append(ft.Column(rows, spacing=8))
-        controls.append(ft.Container(height=20))
-        controls.append(
-            ft.Row(
-                [
-                    secondary_button(
-                        "Copy log", on_click=self._on_copy_report, height=42
-                    ),
-                    secondary_button(
-                        "Export report (CSV)",
-                        on_click=self._on_export_report,
-                        height=42,
-                    ),
-                    secondary_button(
-                        "Return to Home",
-                        on_click=lambda _: self.push_route("/home"),
-                        height=42,
-                    ),
-                ],
-                spacing=10,
-            )
-        )
         self._content_area.controls = controls
 
     # ------------------------------------------------------------------

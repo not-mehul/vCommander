@@ -21,6 +21,7 @@ import contextlib
 import flet as ft
 
 import theme
+from components.buttons import secondary_button
 from constants import APP_VERSION, SESSION_WARNING_MINUTES
 from utils.db import load_credentials
 from utils.session import (
@@ -254,24 +255,11 @@ class AppShell(ft.View):
                     ),
                 ),
                 ft.Container(height=theme.SPACE_SM),
-                ft.OutlinedButton(
-                    content=ft.Row(
-                        [
-                            ft.Icon(
-                                ft.Icons.LOGOUT_ROUNDED,
-                                size=16,
-                                color=theme.TEXT_SECONDARY,
-                            ),
-                            ft.Text("Logout", color=theme.TEXT_SECONDARY),
-                        ],
-                        spacing=theme.SPACE_SM,
-                        alignment=ft.MainAxisAlignment.CENTER,
-                    ),
-                    style=ft.ButtonStyle(
-                        side=ft.BorderSide(1, theme.BORDER),
-                        shape=ft.RoundedRectangleBorder(radius=theme.RADIUS_MD),
-                    ),
+                secondary_button(
+                    "Logout",
                     on_click=self._on_logout,
+                    icon=ft.Icons.LOGOUT_ROUNDED,
+                    height=40,
                 ),
             ],
             spacing=0,

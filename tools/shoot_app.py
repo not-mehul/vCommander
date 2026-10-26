@@ -13,32 +13,27 @@ headless browser.
 
 import contextlib
 import os
+import sys
 
-import flet as ft
+# Runnable as `python tools/shoot_app.py` from anywhere: put the repo root
+# (not tools/) on the import path.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import constants
-import theme
-from constants import TEMPLATE_FIELDS
-from pages import app_shell
-from pages import (
-    commission_view as cv,
+import flet as ft  # noqa: E402
+
+import constants  # noqa: E402
+import theme  # noqa: E402
+from constants import TEMPLATE_FIELDS  # noqa: E402
+from pages import (  # noqa: E402
+    app_shell,
 )
-from pages import (
-    decommission_view as dv,
-)
-from pages import (
-    home_view as hv,
-)
-from pages import (
-    login_view as lv,
-)
-from pages import (
-    two_factor_view as tv,
-)
-from pages import (
-    users_view as uv,
-)
-from utils import session
+from pages import commission_view as cv  # noqa: E402
+from pages import decommission_view as dv  # noqa: E402
+from pages import home_view as hv  # noqa: E402
+from pages import login_view as lv  # noqa: E402
+from pages import two_factor_view as tv  # noqa: E402
+from pages import users_view as uv  # noqa: E402
+from utils import session  # noqa: E402
 
 VIEW = os.environ.get("SHOT_VIEW", "login")
 STATE = os.environ.get("SHOT_STATE", "")
@@ -136,6 +131,13 @@ def _drive(page, view, key, state):
             elif state == "select":
                 view._state = dv.SELECT
                 view._render_state()
+            elif state == "select-items":
+                view._show_items = True
+                view._search_query = "camera 1"
+                view._selected["Cameras"] = {1}
+                view._state = dv.SELECT
+                view._render_state()
+                view._search_field.value = "camera 1"
             elif state == "confirm":
                 view._selected = {
                     "Cameras": {0, 1, 2}, "Doors": {0, 1}, "Command Users": {0}
@@ -203,4 +205,10 @@ def main(page: ft.Page):
     page.update()
 
 
-ft.run(main, port=PORT, web_renderer=ft.WebRenderer.CANVAS_KIT, no_cdn=True)
+ft.run(
+    main,
+    port=PORT,
+    view=ft.AppView.WEB_BROWSER,
+    web_renderer=ft.WebRenderer.CANVAS_KIT,
+    no_cdn=True,
+)

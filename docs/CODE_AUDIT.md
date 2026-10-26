@@ -27,7 +27,7 @@ When this audit was written there were no tests, no CI and no
 
 | Item | Status |
 |---|---|
-| H1 flet 1.0 crash | **Mitigated:** `requirements.txt` pins `flet>=0.85,<0.86` (needed for CI). Migrating `ElevatedButton` → `ft.Button` is still open. |
+| H1 flet 1.0 crash | **Fixed:** migrated to flet 1.0.5 (`flet>=1.0.5,<1.1`): `ElevatedButton` → `ft.Button`, input borders moved to the `border=` API (the old properties are removed in 1.3). `tests/test_flet_api.py` guards both, and flet deprecation warnings fail the test suite. |
 | H2 duplicate POSTs | **Fixed:** POST retries only on connection errors and 429 (`apis/http.py`); covered by `tests/test_http.py`. |
 | H3 runs in background | **Fixed:** run registry in `utils/session.py`; `main.py` guards navigation, Esc, theme switch, Cmd-K and logout; logout/expiry cancel the run. |
 | H4 API key leak | **Fixed (deletion):** commission and decommission delete their temporary key whenever the flow ends. The key is still written to the log, by request. |
@@ -48,10 +48,11 @@ When this audit was written there were no tests, no CI and no
 | I3 one step runner | **Done:** `components.progress.StepRow` / `run_step`. |
 | Section 6 docs | **Done:** README updated. |
 
-I2 (run-lifecycle owner) was done as part of H3, and I4 partly (all filled
-buttons now use the components). Still open: M6, M8, M10, M11, M14, the
-security items in section 3 (apart from API-key deletion), the rest of I4,
-and I5–I11.
+I2 (run-lifecycle owner) was done as part of H3. I4 is done: every text
+field, dropdown and button goes through `components/`. M8 is partly done:
+supporting-user rows are validated before Review (dependent steps are still
+not gated). Still open: M6, the rest of M8, M10, M11, M14, the security
+items in section 3 (apart from API-key deletion), and I5–I11.
 
 ---
 

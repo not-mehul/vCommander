@@ -136,3 +136,36 @@ def test_second_run_is_refused_while_one_is_registered(view, page, monkeypatch):
     _run(view, page, client, monkeypatch)
     assert client.calls == []
     assert view._form_section.visible
+
+
+def _add_user(view, page, first="", last="", email=""):
+    view._add_user_row(Event(page))
+    fields = view._user_rows()[-1]
+    for field, value in zip(fields, (first, last, email), strict=True):
+        field.value = value
+    return fields
+
+
+def test_partial_supporting_user_blocks_review(view, page):
+    _fill(view, page, "ACSE")
+    fields = _add_user(view, page, first="Ada", email="ada@x.com")
+    view._on_review(Event(page))
+    assert view._stepper._current == 0  # still on Configure
+    assert [f.error for f in fields] == [None, "Required", None]
+
+
+def test_invalid_supporting_user_email_blocks_review(view, page):
+    _fill(view, page, "ACSE")
+    fields = _add_user(view, page, "Ada", "Lovelace", "ada-at-x.com")
+    view._on_review(Event(page))
+    assert fields[2].error == "Enter a valid email"
+    assert view._stepper._current == 0
+
+
+def test_review_counts_exactly_who_will_be_invited(view, page):
+    _fill(view, page, "ACSE")
+    _add_user(view, page, "Ada", "Lovelace", "ada@x.com")
+    _add_user(view, page)  # empty rows are ignored
+    view._on_review(Event(page))
+    assert view._stepper._current == 1
+    assert view._collect_supporting_users() == [("Ada", "Lovelace", "ada@x.com")]

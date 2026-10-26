@@ -18,7 +18,7 @@ import flet as ft
 import theme
 from apis.internal_api import MFARequiredError, VerkadaInternalAPIClient
 from components import dropdown, primary_button, set_button_loading, text_field
-from constants import API_REGIONS, APP_VERSION, FIELD_SPACING
+from constants import API_REGION_LABELS, API_REGIONS, APP_VERSION, FIELD_SPACING
 from utils.db import load_credentials, save_credentials
 from utils.executor import _executor
 from utils.session import set_internal_client
@@ -57,7 +57,7 @@ class LoginView(ft.View):
         )
         self.region_dropdown = dropdown(
             "API Region",
-            [ft.dropdown.Option(r) for r in API_REGIONS],
+            [ft.dropdown.Option(key=r, text=API_REGION_LABELS[r]) for r in API_REGIONS],
             value=creds.get("api_region") or "api",
         )
         self.shard_dropdown = dropdown(
@@ -130,15 +130,26 @@ class LoginView(ft.View):
             padding=ft.Padding.all(theme.SPACE_2XL),
             content=ft.Column(
                 [
-                    ft.Text(
-                        "vCommander",
-                        size=theme.FONT_DISPLAY,
-                        color=theme.ACCENT,
-                        weight=theme.WEIGHT_BOLD,
+                    ft.Row(
+                        [
+                            ft.Text(
+                                "vCommander",
+                                size=theme.FONT_DISPLAY,
+                                color=theme.ACCENT,
+                                weight=theme.WEIGHT_BOLD,
+                            ),
+                            ft.Text(
+                                f"v{APP_VERSION}",
+                                size=theme.FONT_CAPTION,
+                                color=theme.TEXT_MUTED,
+                            ),
+                        ],
+                        spacing=theme.SPACE_SM,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
                     ),
                     ft.Text(
-                        f"v{APP_VERSION}",
-                        size=theme.FONT_CAPTION,
+                        "Sign in with your Verkada Command org admin account.",
+                        size=theme.FONT_BODY,
                         color=theme.TEXT_SECONDARY,
                     ),
                     ft.Container(height=FIELD_SPACING),

@@ -13,29 +13,33 @@ from datetime import datetime, timedelta
 
 import flet as ft
 
+import theme
 from apis.external_api import VerkadaExternalAPIClient
 from components import (
+    ProgressHeader,
     Stepper,
     StepRow,
+    banner,
+    card,
     dropdown,
+    ghost_button,
     primary_button,
     run_step,
+    scroll_area,
     secondary_button,
     section_header,
     set_button_loading,
     text_field,
 )
 from constants import (
+    API_REGION_LABELS,
     API_REGIONS,
     BORDER,
     CARD_PADDING,
-    CARD_SHADOW,
     COMMAND_GROUP_NAME,
     ERROR,
     FIELD_SPACING,
     PRIMARY,
-    SECONDARY,
-    SURFACE,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     WARNING,
@@ -53,6 +57,7 @@ from utils.session import (
     set_external_client,
 )
 from utils.ui_utils import show_alert, show_toast
+from utils.validation import is_valid_email
 
 _STEP_LABELS = ["API Key", "Site & Date", "Review", "Invite"]
 
@@ -68,6 +73,8 @@ class UsersView(ToolView):
             push_route,
             route="/users",
             title="User Management",
+            subtitle="Invite guest-visit participants from another org into "
+            "this one.",
         )
         self._current_step = 0
         self._sites: list[dict] = []
@@ -91,25 +98,21 @@ class UsersView(ToolView):
         for i, step in enumerate(self._steps):
             step.visible = i == 0
 
-        card_content: list[ft.Control] = [self._step_indicators]
-        card_content.extend(self._steps)
-
-        card = ft.Container(
-            bgcolor=SURFACE,
-            border_radius=12,
-            border=ft.Border.all(1, BORDER),
-            shadow=CARD_SHADOW,
-            padding=ft.Padding.all(CARD_PADDING),
-            content=ft.Column(
-                card_content,
-                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-                scroll=ft.ScrollMode.ADAPTIVE,
-                spacing=FIELD_SPACING,
-            ),
-            expand=True,
+        steps = ft.Column(
+            self._steps,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            spacing=FIELD_SPACING,
         )
-
-        self.mount(card)
+        self.mount(
+            card(
+                ft.Column(
+                    [self._step_indicators, scroll_area(steps)],
+                    expand=True,
+                ),
+                padding=CARD_PADDING,
+                expand=True,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Step indicator strip
@@ -156,7 +159,7 @@ class UsersView(ToolView):
         # session logged in to, since participants may come from anywhere.
         self._import_region_dropdown = dropdown(
             "API Region (External)",
-            [ft.dropdown.Option(r) for r in API_REGIONS],
+            [ft.dropdown.Option(key=r, text=API_REGION_LABELS[r]) for r in API_REGIONS],
             value=(settings or {}).get("api_region")
             or defaults.get("api_region", "api"),
         )
@@ -166,7 +169,8 @@ class UsersView(ToolView):
             [
                 section_header(
                     "External Organization",
-                    "Enter the API key and org short name for the external organization.",
+                    "The org your participants visited as guests. Use a public "
+                    "API key from that org's Command settings.",
                 ),
                 ft.Container(height=10),
                 self._api_key_field,
@@ -226,48 +230,47 @@ class UsersView(ToolView):
     # ------------------------------------------------------------------
 
     def _build_step_2(self) -> ft.Column:
-        self._site_dropdown = ft.Dropdown(
-            label="Site",
-            options=[],
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-        )
-
-        self._date_label = ft.Text(
-            f"Date: {self._selected_date.strftime('%B %d, %Y')}",
-            color=TEXT_PRIMARY,
-            size=14,
-        )
-        self._date_btn = ft.OutlinedButton(
-            content=self._date_label,
-            style=ft.ButtonStyle(
-                side=ft.BorderSide(1, BORDER),
-                shape=ft.RoundedRectangleBorder(radius=8),
-            ),
-            height=50,
+        self._site_dropdown = dropdown("Guest site", [])
+        self._date_btn = secondary_button(
+            self._date_text(),
             on_click=self._open_date_picker,
+            icon=ft.Icons.CALENDAR_MONTH,
+            height=52,
+            width=240,
         )
-
         self._step2_next_btn = primary_button(
-            "Load Participants", on_click=self._on_load_participants
+            "Load Participants", on_click=self._on_load_participants, expand=True
         )
 
         return ft.Column(
             [
                 section_header(
                     "Select Site & Date",
-                    "Choose the site and date to load guest visits.",
+                    "Participants are the guests who visited this site on "
+                    "this day.",
                 ),
                 ft.Container(height=10),
-                self._site_dropdown,
-                ft.Container(height=FIELD_SPACING),
-                self._date_btn,
+                ft.Row(
+                    [self._site_dropdown, self._date_btn],
+                    spacing=FIELD_SPACING,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
                 ft.Container(height=FIELD_SPACING + 5),
-                self._step2_next_btn,
+                ft.Row([self._back_button(0), self._step2_next_btn], spacing=10),
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+
+    def _date_text(self) -> str:
+        return self._selected_date.strftime("%B %d, %Y")
+
+    def _back_button(self, to_step: int) -> ft.Control:
+        """Step back without losing what was loaded (Esc leaves the tool)."""
+        return ghost_button(
+            "Back",
+            on_click=lambda e: self._go_to_step(to_step, e.page),
+            color=TEXT_SECONDARY,
+            icon=ft.Icons.ARROW_BACK,
         )
 
     def _open_date_picker(self, e):
@@ -287,9 +290,7 @@ class UsersView(ToolView):
     def _on_date_change(self, e):
         if e.control.value:
             self._selected_date = e.control.value
-            self._date_label.value = (
-                f"Date: {self._selected_date.strftime('%B %d, %Y')}"
-            )
+            self._date_btn.content.controls[1].value = self._date_text()
             e.page.update()
 
     async def _on_load_participants(self, e):
@@ -329,11 +330,18 @@ class UsersView(ToolView):
         self._participant_count_text = ft.Text(
             "0 participants", size=13, color=TEXT_SECONDARY
         )
-        add_btn = ft.TextButton(
-            content=ft.Text("+ Add Participant", color=PRIMARY),
-            on_click=self._add_participant_row,
+        add_btn = ft.Row(
+            [
+                ghost_button(
+                    "Add participant",
+                    on_click=self._add_participant_row,
+                    icon=ft.Icons.PERSON_ADD_ALT_1,
+                )
+            ]
         )
-        self._invite_btn = primary_button("Invite All", on_click=self._on_invite_all)
+        self._invite_btn = primary_button(
+            "Invite All", on_click=self._on_invite_all, expand=True
+        )
 
         # Gates the group step in _run_invites. On by default: the common
         # case is that every invited participant belongs in the group.
@@ -370,7 +378,7 @@ class UsersView(ToolView):
                 ft.Container(height=10),
                 self._add_to_group_switch,
                 ft.Container(height=10),
-                self._invite_btn,
+                ft.Row([self._back_button(1), self._invite_btn], spacing=10),
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
@@ -397,16 +405,12 @@ class UsersView(ToolView):
     def _create_participant_row(
         self, first: str = "", last: str = "", email: str = ""
     ) -> ft.Row:
-        compact_padding = ft.Padding.symmetric(horizontal=10, vertical=8)
-
         def _participant_field(value: str, expand: int) -> ft.TextField:
-            return ft.TextField(
-                value=value,
-                border_color=BORDER,
-                focused_border_color=PRIMARY,
-                color=TEXT_PRIMARY,
-                content_padding=compact_padding,
+            return text_field(
+                value=value or "",
                 expand=expand,
+                compact=True,
+                on_change=self._clear_field_error,
             )
 
         first_f = _participant_field(first, expand=1)
@@ -418,10 +422,29 @@ class UsersView(ToolView):
             icon=ft.Icons.DELETE_OUTLINE,
             icon_color=ERROR,
             icon_size=18,
+            tooltip="Remove",
             on_click=lambda _, r=row: self._remove_participant_row(r),
         )
         row.controls = [first_f, last_f, email_f, delete_btn]
         return row
+
+    @staticmethod
+    def _clear_field_error(e) -> None:
+        if e.control.error:
+            e.control.error = None
+            e.page.update()
+
+    def _validate_emails(self) -> bool:
+        """Mark malformed emails; rows with no email are skipped as before."""
+        ok = True
+        for row in self._participants_column.controls:
+            fields = [c for c in row.controls if isinstance(c, ft.TextField)]
+            if len(fields) == 3:
+                email = _strip(fields[2].value)
+                if email and not is_valid_email(email):
+                    fields[2].error = "Enter a valid email"
+                    ok = False
+        return ok
 
     def _add_participant_row(self, e):
         self._participants_column.controls.append(self._create_participant_row())
@@ -442,6 +465,14 @@ class UsersView(ToolView):
             show_toast(
                 e.page, "Add at least one participant to invite.", kind="warning"
             )
+            return
+        if not self._validate_emails():
+            show_toast(
+                e.page,
+                "Fix the highlighted emails, or remove those rows.",
+                kind="warning",
+            )
+            e.page.update()
             return
 
         token = CancellationToken()
@@ -465,6 +496,8 @@ class UsersView(ToolView):
 
     def _build_step_4(self) -> ft.Column:
         self._invite_progress = ft.Column(spacing=8)
+        self._invite_header = ProgressHeader(determinate=True)
+        self._invite_result = ft.Container(visible=False)
         # Holds (first, last, email) tuples for participants that were
         # successfully invited. Populated by _run_invites; consumed by
         # _on_copy_invited.
@@ -481,6 +514,8 @@ class UsersView(ToolView):
             [
                 section_header("Inviting Participants"),
                 ft.Container(height=10),
+                self._invite_header,
+                self._invite_result,
                 self._invite_progress,
                 ft.Container(height=15),
                 ft.Row(
@@ -495,23 +530,20 @@ class UsersView(ToolView):
     async def _run_invites(self, page, token: CancellationToken):
         client = get_internal_client()
         success_count = 0
-        total = 0
         self._invited_records = []
         invited_user_ids: list[str] = []
 
-        for control in self._participants_column.controls:
-            if not isinstance(control, ft.Row):
-                continue  # only ft.Row instances are added by _create_participant_row
-            row: ft.Row = control
+        # Participants with an email, in list order (rows without one are
+        # skipped, as before). Collected first so progress has a total.
+        people = []
+        for row in self._participants_column.controls:
             fields = [c for c in row.controls if isinstance(c, ft.TextField)]
-            if len(fields) < 3:
-                continue
-            first = _strip(fields[0].value)
-            last = _strip(fields[1].value)
-            email_val = _strip(fields[2].value)
-            if not email_val:
-                continue
-            total += 1
+            if len(fields) == 3 and _strip(fields[2].value):
+                people.append(tuple(_strip(f.value) for f in fields))
+        total = len(people)
+        self._invite_header.set_progress(0, total)
+
+        for done, (first, last, email_val) in enumerate(people, start=1):
             if token.is_cancelled:
                 row = StepRow(email_val)
                 row.skip(f"Skipped {email_val} (cancelled)")
@@ -526,6 +558,10 @@ class UsersView(ToolView):
                 self._invited_records.append((first, last, email_val))
                 if user_id:
                     invited_user_ids.append(user_id)
+            self._invite_header.set_progress(
+                done, total, failed=done - success_count
+            )
+            page.update()
 
         # Group membership runs once for the whole batch — add_users_to_group
         # takes the id list, so one call covers everyone invited this run.
@@ -552,18 +588,23 @@ class UsersView(ToolView):
                 )
 
         if total == 0:
-            summary = "No participants with an email were invited."
-            color = WARNING
+            summary, kind = "No participants with an email were invited.", "warning"
+        elif token.is_cancelled:
+            summary = f"Stopped: {success_count}/{total} invited before cancelling."
+            kind = "warning"
+        elif success_count == total:
+            summary, kind = f"All {total} participants invited.", "success"
         else:
-            summary = f"Complete: {success_count}/{total} invited successfully"
-            color = SECONDARY if success_count == total else ERROR
-
-        self._invite_progress.controls.append(
-            ft.Container(
-                content=ft.Text(summary, color=color, weight=ft.FontWeight.W_600),
-                padding=ft.Padding.only(top=10),
+            summary = (
+                f"{success_count}/{total} invited — "
+                f"{total - success_count} could not be invited."
             )
+            kind = "warning"
+        self._invite_header.complete(
+            color=theme.SUCCESS if kind == "success" else theme.WARNING
         )
+        self._invite_result.content = banner(summary, kind=kind)
+        self._invite_result.visible = True
         self._copy_btn.visible = bool(self._invited_records)
         self._done_btn.visible = True
         page.update()

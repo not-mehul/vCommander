@@ -132,3 +132,22 @@ def banner(message: str, *, kind: str = "info") -> ft.Container:
         ),
     )
 
+
+
+def scroll_area(content: ft.Control, *, expand=True) -> ft.Column:
+    """A vertically scrolling region whose scrollbar never covers content.
+
+    flet draws the scrollbar on top of a scrolling Column's children, so
+    right-aligned values (counts, chevrons) ended up underneath it. The
+    content is inset by a gutter the width of the scrollbar.
+    """
+    return ft.Column(
+        [
+            ft.Container(
+                content=content, padding=ft.Padding.only(right=theme.SPACE_LG)
+            )
+        ],
+        scroll=ft.ScrollMode.AUTO,
+        expand=expand,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+    )

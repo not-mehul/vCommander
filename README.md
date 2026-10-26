@@ -110,6 +110,7 @@ If you want to run vCommander from source, modify it, or build your own packaged
  
 - **Python 3.10+** (the codebase uses PEP 604 `X | None` typing).
 - **OS:** macOS, Windows, or Linux. Flet runs as a native desktop window.
+- **Flet 1.0.x** — pinned in `requirements.txt` (`flet>=1.0.5,<1.1`). On first launch Flet downloads its desktop runtime if it isn't installed yet.
 - **A Verkada Command account** with **Org Admin** rights on the target org.
 - **Network access** to `*.command.verkada.com` and `api.verkada.com` (or `api.eu.verkada.com` / `api.au.verkada.com` depending on region).
 
@@ -198,7 +199,7 @@ Bulk-invites users to your current org by pulling them from another org's **gues
  
 1. **Connect to a source org** — enter its short name, its **API region**, and a Verkada **public-API key** (generate one in the source org's Command settings). The source org's region can differ from the org you're logged in to.
 2. **Pick a site and a date** — vCommander fetches the guest-visit participants who checked in at that site on that day.
-3. **Review the list** — you can edit names and emails inline, or remove rows you don't want to invite.
+3. **Review the list** — you can edit names and emails inline, or remove rows you don't want to invite. Malformed emails are flagged before anything is sent. Use **Back** on steps 2 and 3 to change the site/date or the source org without starting over.
 4. **Send invites** — invitations are sent against the org you're logged into, and (unless you turn it off in step 3) everyone invited is added to the **All Participants** group. A copy-able summary at the end breaks down successful vs. failed invites.
 
 <p align="center">
@@ -427,7 +428,19 @@ ruff check .
 pytest
 ```
 
-The suite runs without network access or a display (views are driven with a stub page and fake API clients) and stores its data in a temporary directory. GitHub Actions runs the same commands on Python 3.10 and 3.13 for every push and pull request.
+The suite runs without network access or a display (views are driven with a stub page and fake API clients) and stores its data in a temporary directory. GitHub Actions runs the same commands on Python 3.10 and 3.13 for every push and pull request. Flet deprecation warnings fail the suite (see `pyproject.toml`), so an API that a newer Flet is about to remove shows up in CI before it can break the app.
+
+### Previewing screens
+
+`tools/shoot_app.py` serves a single screen, in a chosen state and theme, to a browser — handy for reviewing UI changes without logging in:
+
+```bash
+pip install "flet-web>=1.0.5,<1.1"
+SHOT_VIEW=decommission SHOT_STATE=select SHOT_THEME=light SHOT_PORT=8700 python tools/shoot_app.py
+# then open http://127.0.0.1:8700
+```
+
+`SHOT_VIEW` is one of `login`, `twofa`, `home`, `commission`, `decommission`, `users`; see the script for each view's states.
  
 ### API Clients
  

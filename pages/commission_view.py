@@ -26,13 +26,17 @@ from components import (
     Stepper,
     StepRow,
     banner,
+    card,
+    dropdown,
     ghost_button,
     primary_button,
     run_step,
+    scroll_area,
     secondary_button,
     section_header,
     stat_row,
     status_row,
+    text_field,
 )
 from constants import (
     ACSL_ACCESS_STATION_PRO_DOOR_NAME,
@@ -58,7 +62,6 @@ from constants import (
     BORDER,
     BUILDING_PROVISION_SECONDS,
     CARD_PADDING,
-    CARD_SHADOW,
     ERROR,
     ESS_ACCESS_STATION_PRO_DOOR_NAME,
     ESS_ACCESS_STATION_PRO_NAME,
@@ -76,7 +79,6 @@ from constants import (
     PRIMARY,
     ROLE_PROPAGATION_SECONDS,
     SECONDARY,
-    SURFACE,
     TEMPLATE_DISPLAY_NAMES,
     TEMPLATE_FIELDS,
     TEXT_PRIMARY,
@@ -109,6 +111,7 @@ from utils.validation import (
     SERIAL_DISPLAY_LEN,
     SERIAL_PLACEHOLDER,
     format_serial,
+    is_valid_email,
     is_valid_serial,
 )
 
@@ -125,6 +128,8 @@ class CommissionView(ToolView):
             push_route,
             route="/commission",
             title="Commission Organization",
+            subtitle="Build a training org from a template, then invite "
+            "supporting users.",
         )
         self._kits: dict[str, dict[str, str]] = {}
         self._device_fields: dict[str, ft.TextField] = {}
@@ -168,32 +173,19 @@ class CommissionView(ToolView):
             ft.dropdown.Option(key=code, text=TEMPLATE_DISPLAY_NAMES[code])
             for code in TEMPLATE_FIELDS
         ]
-        self.template_dropdown = ft.Dropdown(
-            label="Template",
-            options=template_options,
-            expand=1,
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            on_select=self._on_template_change,
+        self.template_dropdown = dropdown(
+            "Template", template_options, on_select=self._on_template_change
         )
 
-        kit_options = [ft.dropdown.Option("")] + [
-            ft.dropdown.Option(k) for k in self._kits
-        ]
-        self.kit_dropdown = ft.Dropdown(
-            label="Kit",
-            options=kit_options,
-            expand=1,
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            on_select=self._on_kit_change,
-        )
+        kit_options = [
+            ft.dropdown.Option(key="", text="No kit — enter serials manually")
+        ] + [ft.dropdown.Option(k) for k in self._kits]
+        self.kit_dropdown = dropdown("Kit", kit_options, on_select=self._on_kit_change)
 
-        self._devices_column = ft.Column(spacing=FIELD_SPACING)
+        self._devices_column = ft.Column(
+            [self._devices_hint("Choose a template to see the devices it needs.")],
+            spacing=FIELD_SPACING,
+        )
 
         self.face_analytics_switch = ft.Switch(
             label=" Face Analytics",
@@ -204,9 +196,14 @@ class CommissionView(ToolView):
         )
 
         self._users_column = ft.Column(spacing=10)
-        add_user_btn = ft.TextButton(
-            content=ft.Text("+ Add Supporting User", color=PRIMARY),
-            on_click=self._add_user_row,
+        add_user_btn = ft.Row(
+            [
+                ghost_button(
+                    "Add supporting user",
+                    on_click=self._add_user_row,
+                    icon=ft.Icons.PERSON_ADD_ALT_1,
+                )
+            ]
         )
 
         # Configure-step primary action advances to the Review summary
@@ -216,16 +213,10 @@ class CommissionView(ToolView):
         )
         # Cancel is shown during the Run step (next to the live progress),
         # hidden otherwise.
-        self.cancel_btn = ft.OutlinedButton(
-            content=ft.Text("Cancel", color=ERROR, weight=ft.FontWeight.W_500),
-            style=ft.ButtonStyle(
-                side=ft.BorderSide(1, ERROR),
-                shape=ft.RoundedRectangleBorder(radius=8),
-            ),
-            height=45,
-            on_click=self._on_cancel,
-            visible=False,
+        self.cancel_btn = secondary_button(
+            "Cancel", on_click=self._on_cancel, tone="danger"
         )
+        self.cancel_btn.visible = False
         self._button_row = ft.Row([self.commission_btn], spacing=10)
 
         self._progress_column = ft.Column(spacing=8, visible=False)
@@ -240,11 +231,9 @@ class CommissionView(ToolView):
                 self._devices_column,
                 self.face_analytics_switch,
                 ft.Divider(color=BORDER, height=1),
-                ft.Text(
-                    "Supporting Users",
-                    size=14,
-                    color=TEXT_SECONDARY,
-                    weight=ft.FontWeight.W_500,
+                section_header(
+                    "Supporting users",
+                    "Optional. Invited as Org Admins once the org is set up.",
                 ),
                 self._users_column,
                 add_user_btn,
@@ -278,43 +267,40 @@ class CommissionView(ToolView):
             spacing=FIELD_SPACING,
         )
 
-        form_card = ft.Container(
-            bgcolor=SURFACE,
-            border_radius=12,
-            border=ft.Border.all(1, BORDER),
-            shadow=CARD_SHADOW,
-            padding=ft.Padding.all(CARD_PADDING),
-            content=ft.Column(
-                [
-                    ft.Container(
-                        content=self._stepper,
-                        padding=ft.Padding.only(bottom=FIELD_SPACING),
-                    ),
-                    self._form_section,
-                    self._review_section,
-                    self._run_section,
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-                scroll=ft.ScrollMode.ADAPTIVE,
-                spacing=FIELD_SPACING,
-            ),
-            expand=True,
+        sections = ft.Column(
+            [self._form_section, self._review_section, self._run_section],
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            spacing=FIELD_SPACING,
+        )
+        self.mount(
+            card(
+                ft.Column(
+                    [
+                        ft.Container(
+                            content=self._stepper,
+                            padding=ft.Padding.only(bottom=FIELD_SPACING),
+                        ),
+                        scroll_area(sections),
+                    ],
+                    expand=True,
+                ),
+                padding=CARD_PADDING,
+                expand=True,
+            )
         )
 
-        self.mount(form_card)
+    @staticmethod
+    def _devices_hint(text: str) -> ft.Control:
+        return ft.Text(text, size=theme.FONT_CAPTION, color=theme.TEXT_MUTED)
 
     def _make_device_field(self, device_type: str, expand=None) -> ft.TextField:
         # License Plate holds a plate string rather than a device serial, so
         # it keeps a plain free-text field — no mask, no length cap.
         is_serial = device_type != LICENSE_PLATE_FIELD
-        field = ft.TextField(
-            label=f"{device_type} S/N" if is_serial else device_type,
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
+        field = text_field(
+            f"{device_type} S/N" if is_serial else device_type,
             expand=expand,
-            hint_text=SERIAL_PLACEHOLDER if is_serial else None,
+            hint=SERIAL_PLACEHOLDER if is_serial else None,
             max_length=SERIAL_DISPLAY_LEN if is_serial else None,
             on_change=self._on_serial_change if is_serial else None,
         )
@@ -340,7 +326,9 @@ class CommissionView(ToolView):
     def _on_template_change(self, e):
         code = self.template_dropdown.value
         if not code or code not in TEMPLATE_FIELDS:
-            self._devices_column.controls.clear()
+            self._devices_column.controls = [
+                self._devices_hint("Choose a template to see the devices it needs.")
+            ]
             self.face_analytics_switch.visible = False
             e.page.update()
             return
@@ -355,7 +343,9 @@ class CommissionView(ToolView):
                 self._make_device_field(d, expand=1) for d in pair
             ]
             rows.append(ft.Row(row_fields, spacing=FIELD_SPACING))
-        self._devices_column.controls = rows
+        self._devices_column.controls = rows or [
+            self._devices_hint("This template doesn't claim any devices.")
+        ]
         self.face_analytics_switch.visible = config["face_analytics"]
         self.face_analytics_switch.value = config["face_analytics"]
 
@@ -389,39 +379,31 @@ class CommissionView(ToolView):
         e.page.update()
 
     def _create_user_row(self) -> ft.Row:
-        first = ft.TextField(
-            label="First Name",
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            expand=1,
-        )
-        last = ft.TextField(
-            label="Last Name",
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            expand=1,
-        )
-        email = ft.TextField(
-            label="Email",
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            expand=2,
-        )
+        def field(label: str, expand: int) -> ft.TextField:
+            return text_field(
+                label, expand=expand, compact=True, on_change=self._clear_field_error
+            )
 
         row = ft.Row(spacing=10)
         delete_btn = ft.IconButton(
             icon=ft.Icons.DELETE_OUTLINE,
             icon_color=ERROR,
+            tooltip="Remove",
             on_click=lambda _, r=row: self._remove_user_row(r),
         )
-        row.controls = [first, last, email, delete_btn]
+        row.controls = [
+            field("First name", 1),
+            field("Last name", 1),
+            field("Email", 2),
+            delete_btn,
+        ]
         return row
+
+    @staticmethod
+    def _clear_field_error(e) -> None:
+        if e.control.error:
+            e.control.error = None
+            e.page.update()
 
     def _remove_user_row(self, row):
         if row in self._users_column.controls:
@@ -473,22 +455,61 @@ class CommissionView(ToolView):
                 )
                 return False, None
 
+        if not self._validate_supporting_users():
+            show_toast(
+                e.page,
+                "Fix the highlighted supporting users, or remove those rows.",
+                kind="warning",
+            )
+            e.page.update()
+            return False, None
+
         return True, code
+
+    def _user_rows(self) -> list[list[ft.TextField]]:
+        """[first, last, email] fields for each supporting-user row."""
+        rows = []
+        for row in self._users_column.controls:
+            fields = [c for c in row.controls if isinstance(c, ft.TextField)]
+            if len(fields) == 3:
+                rows.append(fields)
+        return rows
+
+    def _validate_supporting_users(self) -> bool:
+        """Flag rows that are partly filled or have a malformed email.
+
+        Fully empty rows are ignored. Anything else must be complete, so the
+        Review count always matches who is actually invited.
+        """
+        ok = True
+        for fields in self._user_rows():
+            values = [(f.value or "").strip() for f in fields]
+            if not any(values):
+                continue
+            for f, v in zip(fields, values, strict=True):
+                if not v:
+                    f.error = "Required"
+                    ok = False
+            email = fields[2]
+            if values[2] and not is_valid_email(values[2]):
+                email.error = "Enter a valid email"
+                ok = False
+        return ok
 
     # ------------------------------------------------------------------
     # Review step
     # ------------------------------------------------------------------
 
     def _collect_supporting_users(self) -> list[tuple[str, str, str]]:
-        """Pull (first, last, email) tuples from the non-empty user rows."""
+        """(first, last, email) for each complete supporting-user row.
+
+        Same rule as the invite step, so Review shows exactly who is invited.
+        """
         users: list[tuple[str, str, str]] = []
-        for row in self._users_column.controls:
-            if isinstance(row, ft.Row) and len(row.controls) >= 3:
-                first = (row.controls[0].value or "").strip()
-                last = (row.controls[1].value or "").strip()
-                email = (row.controls[2].value or "").strip()
-                if first or last or email:
-                    users.append((first, last, email))
+        for fields in self._user_rows():
+            first, last, email = ((f.value or "").strip() for f in fields)
+            if first and last and email:
+                users.append((first, last, email))
         return users
 
     def _on_review(self, e):
@@ -1324,23 +1345,12 @@ class CommissionView(ToolView):
     # ------------------------------------------------------------------
 
     async def _invite_supporting_users(self, step, client, role: str) -> None:
-        """Walk the user rows and invite each one with non-empty fields."""
-        for control in self._users_column.controls:
-            if not isinstance(control, ft.Row):
-                continue  # only ft.Row instances are added by _create_user_row
-            row: ft.Row = control
-            fields = [c for c in row.controls if isinstance(c, ft.TextField)]
-            if len(fields) < 3:
-                continue
-            first = (fields[0].value or "").strip()
-            last = (fields[1].value or "").strip()
-            email_val = (fields[2].value or "").strip()
-            if not (first and last and email_val):
-                continue
-            _ = await step(
+        """Invite every complete supporting-user row (validated on Review)."""
+        for first, last, email in self._collect_supporting_users():
+            await step(
                 f"Adding user {first} {last}",
                 client.invite_user,
-                email_val,
+                email,
                 first,
                 last,
                 role,

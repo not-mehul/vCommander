@@ -70,6 +70,7 @@ SEARCH_DURATION = 7
 # API calls go to https://<region>.verkada.com; region-scoped internal
 # endpoints go to https://<region>.command.verkada.com.
 API_REGIONS = ("api", "api.eu", "api.au")
+API_REGION_LABELS = {"api": "US (api)", "api.eu": "EU (api.eu)", "api.au": "AU (api.au)"}
 
 # Page size for the internal list endpoints that only return one page
 # (visitors, visits, archives, incidents). See PAGED_CATEGORIES.

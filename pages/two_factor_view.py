@@ -8,17 +8,13 @@ import asyncio
 
 import flet as ft
 
-from components import primary_button, set_button_loading
-from constants import (
-    BG,
-    BORDER,
-    CARD_PADDING,
-    CARD_SHADOW,
-    FIELD_SPACING,
-    PRIMARY,
-    SURFACE,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
+import theme
+from components import (
+    card,
+    ghost_button,
+    primary_button,
+    set_button_loading,
+    text_field,
 )
 from utils.executor import _executor
 from utils.session import get_internal_client
@@ -32,7 +28,7 @@ def _strip(value: str | None) -> str:
 
 class TwoFactorView(ft.View):
     def __init__(self, push_route, **kwargs):
-        super().__init__(route="/2fa", bgcolor=BG, padding=0, **kwargs)
+        super().__init__(route="/2fa", bgcolor=theme.BG, padding=0, **kwargs)
         self.push_route = push_route
         self._build_ui()
 
@@ -58,78 +54,75 @@ class TwoFactorView(ft.View):
     def _build_ui(self):
         subtitle, sms_enabled = self._mfa_prompt()
 
-        self.code_field = ft.TextField(
-            label="Verification Code",
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
+        self.code_field = text_field(
+            "Verification code",
             text_align=ft.TextAlign.CENTER,
+            text_size=theme.FONT_TITLE,
             keyboard_type=ft.KeyboardType.NUMBER,
             max_length=6,
             input_filter=ft.NumbersOnlyInputFilter(),
             on_submit=self._on_verify,
             autofocus=True,
         )
-
-        self.verify_btn = primary_button("Verify", on_click=self._on_verify, height=45)
+        self.verify_btn = primary_button("Verify", on_click=self._on_verify)
 
         # Resend is only meaningful for SMS — an authenticator app generates
         # its own rolling code, so there's nothing for us to re-dispatch.
         self.resend_btn = (
-            ft.TextButton(
-                content=ft.Text("Resend code", color=TEXT_SECONDARY, size=13),
-                on_click=self._on_resend,
-            )
+            ghost_button("Resend code", on_click=self._on_resend, icon=ft.Icons.SMS)
             if sms_enabled
             else None
         )
-
-        column_controls = [
-            ft.Text(
-                "Two-Factor Authentication",
-                size=22,
-                color=PRIMARY,
-                weight=ft.FontWeight.BOLD,
-            ),
-            ft.Text(subtitle, size=13, color=TEXT_SECONDARY),
-            ft.Container(height=FIELD_SPACING + 5),
-            self.code_field,
-            ft.Container(height=FIELD_SPACING + 5),
-            ft.Container(content=self.verify_btn, expand=False),
+        links = [
+            ghost_button(
+                "Back to login",
+                on_click=lambda _: self.push_route("/login"),
+                color=theme.TEXT_SECONDARY,
+                icon=ft.Icons.ARROW_BACK,
+            )
         ]
         if self.resend_btn is not None:
-            column_controls.append(self.resend_btn)
-        column_controls.extend(
-            [
-                ft.Container(height=10),
-                ft.TextButton(
-                    content=ft.Text("Back to Login", color=TEXT_SECONDARY, size=13),
-                    on_click=lambda _: self.push_route("/login"),
-                ),
-            ]
-        )
+            links.append(self.resend_btn)
 
-        card = ft.Container(
-            width=400,
-            bgcolor=SURFACE,
-            border_radius=12,
-            border=ft.Border.all(1, BORDER),
-            shadow=CARD_SHADOW,
-            padding=ft.Padding.all(CARD_PADDING + 10),
-            content=ft.Column(
-                column_controls,
+        panel = card(
+            ft.Column(
+                [
+                    ft.Column(
+                        [
+                            ft.Icon(
+                                ft.Icons.LOCK_OUTLINE, size=32, color=theme.ACCENT
+                            ),
+                            ft.Text(
+                                "Two-Factor Authentication",
+                                size=theme.FONT_TITLE,
+                                color=theme.TEXT_PRIMARY,
+                                weight=theme.WEIGHT_SEMIBOLD,
+                            ),
+                            ft.Text(
+                                subtitle,
+                                size=theme.FONT_BODY,
+                                color=theme.TEXT_SECONDARY,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=theme.SPACE_SM,
+                    ),
+                    ft.Container(height=theme.SPACE_SM),
+                    self.code_field,
+                    self.verify_btn,
+                    ft.Row(links, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ],
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                spacing=theme.SPACE_MD,
                 tight=True,
             ),
+            padding=theme.SPACE_2XL,
         )
+        panel.width = 420
 
         self.controls = [
-            ft.Container(
-                content=card,
-                alignment=ft.Alignment.CENTER,
-                expand=True,
-            )
+            ft.Container(content=panel, alignment=ft.Alignment.CENTER, expand=True)
         ]
 
     async def _on_verify(self, e):
