@@ -20,8 +20,38 @@ Findings marked **(verified)** were reproduced, not just read:
 | Contrast | WCAG relative-luminance ratios for the button/text color pairs actually used. |
 | Static analysis | `vulture` (filtered against the string-dispatch maps), `ruff` (extended rule set), `bandit`. |
 
-There are **no tests, no CI, and no `pyproject.toml`** in the repo, so none of
-this is currently guarded against regression.
+When this audit was written there were no tests, no CI and no
+`pyproject.toml`; see the status section below.
+
+## Status after the follow-up fix
+
+| Item | Status |
+|---|---|
+| H1 flet 1.0 crash | **Mitigated:** `requirements.txt` pins `flet>=0.85,<0.86` (needed for CI). Migrating `ElevatedButton` → `ft.Button` is still open. |
+| H2 duplicate POSTs | **Fixed:** POST retries only on connection errors and 429 (`apis/http.py`); covered by `tests/test_http.py`. |
+| H3 runs in background | **Fixed:** run registry in `utils/session.py`; `main.py` guards navigation, Esc, theme switch, Cmd-K and logout; logout/expiry cancel the run. |
+| H4 API key leak | **Fixed (deletion):** commission and decommission delete their temporary key whenever the flow ends. The key is still written to the log, by request. |
+| H5 incomplete deletes | **Fixed:** public API follows `next_page_token`; Visits/Visitors/Archives/Incidents are re-listed and drained when a whole category is deleted. The internal `get_user`/`get_camera` 1000-item caps remain, but neither is used by any flow. |
+| H6 commission hang | **Fixed:** key/client creation are reported steps; any error ends in a report. |
+| H7 region ignored | **Fixed:** login region reaches both clients; region-scoped internal endpoints use `https://<region>.command.verkada.com`; Users tool has its own region. The EU/AU internal hostnames follow the registry's existing `api_region` design and have not been verified against a live EU/AU org. |
+| M1 wrong report | **Fixed:** outcome derived from step counters; `track()` removed. |
+| M2 count mismatch | **Fixed:** read-only categories (`READ_ONLY_CATEGORIES`) are never selectable or counted. |
+| M3 search vs delete | **Fixed:** item-level selection; Select all/none scope to search matches. |
+| M4 light-mode colors | **Fixed:** colors resolved at draw time; toasts use a neutral surface. |
+| M5 unreadable buttons | **Fixed:** shared components everywhere; `danger_button` text also corrected (was 2.66:1 in dark mode). |
+| M7 scan changes org | **Fixed per owner decision:** Global Site Admin is turned back off on every exit; Access System/User Admin stay granted. |
+| M9 password trimmed | **Fixed.** |
+| M12 wrong version | **Fixed:** `APP_VERSION = "3.5"`. |
+| M13 search focus | **Fixed:** search field is reused across re-renders. |
+| Section 4a dead code | **Removed**, except `image_url` (kept as API output), `assets/templates.csv` and `docs/REDESIGN_PLAN.md` (non-code). Section 4b API methods/endpoints kept, by request. |
+| I1 tests + CI | **Done:** `tests/` (pytest), `.github/workflows/ci.yml`, ruff config in `pyproject.toml`. |
+| I3 one step runner | **Done:** `components.progress.StepRow` / `run_step`. |
+| Section 6 docs | **Done:** README updated. |
+
+I2 (run-lifecycle owner) was done as part of H3, and I4 partly (all filled
+buttons now use the components). Still open: M6, M8, M10, M11, M14, the
+security items in section 3 (apart from API-key deletion), the rest of I4,
+and I5–I11.
 
 ---
 
