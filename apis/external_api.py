@@ -7,7 +7,7 @@ from apis.http import build_session
 from utils.logger import log_api_call
 
 # The public API lives at https://<region>.verkada.com, where region is the
-# label for the org's shard region ("api" for US, "api.eu", "api.au"; see
+# label for the org's shard ("api", "api.oh", "api.eu", "api.au"; see
 # OrgShard.public_api_region). Only well-formed host labels are accepted.
 _REGION = re.compile(r"^api(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
 

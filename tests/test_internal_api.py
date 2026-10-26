@@ -128,13 +128,20 @@ def test_validate_rejects_unusable_hosts(field, value):
 
 
 @pytest.mark.parametrize(
-    ("region", "label"),
-    [("US", "api"), ("EU", "api.eu"), ("AU", "api.au"), ("us", "api"), ("", "api")],
+    ("name", "region", "label"),
+    [
+        ("prod1", "US", "api"),
+        ("prod-us-ohio", "US", "api.oh"),  # US, but its own public API
+        ("prod2", "EU", "api.eu"),
+        ("prod-ap-syd", "AU", "api.au"),
+        ("new-shard", "eu", "api.eu"),  # unknown shard: fall back to region
+        ("new-shard", "", "api"),
+    ],
 )
-def test_public_api_host_follows_the_shard_region(region, label):
+def test_public_api_host_follows_the_shard(name, region, label):
     # Command's shard table sets public_api_endpoint to "apiadmin" (the key
     # admin service) on every shard; it must never become the public host.
-    shard = OrgShard("x", "x.verkada.com", public_api_endpoint="apiadmin",
+    shard = OrgShard(name, "x.verkada.com", public_api_endpoint="apiadmin",
                      readable_name=region)
     assert shard.public_api_region == label
 
@@ -145,7 +152,7 @@ def test_validate_accepts_the_apiadmin_label():
     session = _Session({"validate_short_name": _Resp(live)})
     shard = validate_org_short_name("sss-alpha", session)
     assert shard.public_api_endpoint == "apiadmin"
-    assert shard.public_api_region == "api"
+    assert shard.public_api_region == "api.oh"
 
 
 def test_validate_uses_the_global_domain():
@@ -226,7 +233,7 @@ def test_login_resolves_the_shard_then_logs_in_there():
     assert login_url == "https://vprovision.prod-us-ohio.verkada.com/__v/sss-alpha/user/login"
     assert payload["shard"] == "prod-us-ohio"
     assert client.shard == OHIO
-    assert client.public_api_region == "api"
+    assert client.public_api_region == "api.oh"
 
 
 def test_mfa_sms_goes_to_the_shard_auth_host():

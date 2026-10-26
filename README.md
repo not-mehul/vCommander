@@ -111,7 +111,7 @@ If you want to run vCommander from source, modify it, or build your own packaged
 - **OS:** macOS, Windows, or Linux. Flet runs as a native desktop window.
 - **Flet 1.0.x** — pinned in `requirements.txt` (`flet>=1.0.5,<1.1`). On first launch Flet downloads its desktop runtime if it isn't installed yet.
 - **A Verkada Command account** with **Org Admin** rights on the target org.
-- **Network access** to `vglobal.global-prod.verkada.com` (org lookup), your org's shard hosts (`*.command.verkada.com`, `*.prod-us-ohio.verkada.com`, … — see [Shards](#shards-and-regions)) and the public API (`api.verkada.com`, or the regional host your org uses).
+- **Network access** to `vglobal.global-prod.verkada.com` (org lookup), your org's shard hosts (`*.command.verkada.com`, `*.prod-us-ohio.verkada.com`, … — see [Shards](#shards-and-regions)) and your org's public API host (`api.verkada.com`, `api.oh.verkada.com`, `api.eu.verkada.com` or `api.au.verkada.com`).
 
 ### Install from source
  
@@ -463,7 +463,7 @@ Command orgs are hosted on separate shards (`prod1`, `prod2`, `prod-ap-syd`, `pr
 | `shard.name` | `shard` in the login request | `prod-us-ohio` |
 | `host_metadata.domain` | every internal service: `https://<service>.<domain>` | `vprovision.prod-us-ohio.verkada.com` |
 | `host_metadata.api_gateway_endpoint` | gateway endpoints (registered with subdomain `api`) | `api.prod-us-ohio.verkada.com` |
-| `shard.readable_name` | the public API's region: `US` → `api.verkada.com`, `EU` → `api.eu.verkada.com`, `AU` → `api.au.verkada.com` | `api.verkada.com` |
+| `shard.name` | the public API host: `prod1` → `api.verkada.com`, `prod-us-ohio` → `api.oh.verkada.com`, `prod2` → `api.eu.verkada.com`, `prod-ap-syd` → `api.au.verkada.com` (an unknown shard falls back to its `readable_name` region) | `api.oh.verkada.com` |
 
 `host_metadata.public_api_endpoint` is not the public API's host: Command sets it to `apiadmin` (the API-key service) on every shard, so vCommander ignores it.
 
