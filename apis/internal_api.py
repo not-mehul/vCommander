@@ -1276,6 +1276,24 @@ class VerkadaInternalAPIClient:
         )
         return site_id
 
+    def create_or_reuse_site(self, site_name: str) -> str:
+        """Create a site, or return the id of an existing one with that name.
+
+        Most templates name their site "HQ", so commissioning a second
+        template into the same org would otherwise fail here and leave its
+        devices outside any site (where, with Global Site Admin off, later
+        camera calls are refused with "error authorizing user access").
+        """
+        try:
+            return self.create_site(site_name)
+        except ConnectionError as ex:
+            if "already exists" not in str(ex).lower():
+                raise
+            for site in self.get_site():
+                if site["name"] == site_name:
+                    return site["id"]
+            raise
+
     def get_site(self) -> list[dict[str, Any]]:
         return self._fetch_list(
             "site.list",

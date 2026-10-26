@@ -124,7 +124,7 @@ def test_cancel_skips_remaining_steps_but_still_deletes_the_key(
     monkeypatch.setattr(FakeInternal, "__getattr__", lambda self, n: cancelling(n))
     _run(view, page, client, monkeypatch)
     assert "Commission cancelled" in _banner_text(view)
-    assert "create_site" not in client.calls
+    assert "create_or_reuse_site" not in client.calls
     assert client.calls[-1] == "delete_external_api_key"
 
 

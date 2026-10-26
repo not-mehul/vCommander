@@ -312,3 +312,50 @@ def test_failed_lookup_still_returns_the_key():
     client._request = request
     key = client.create_external_api_key()
     assert (key.key, key.key_id) == ("secret", None)
+
+
+# -- sites -------------------------------------------------------------------
+
+
+def _site_client(create_error=None, sites=()):
+    client = VerkadaInternalAPIClient("me@x.com", "pw", "lab")
+    calls = []
+
+    def create_site(name):
+        calls.append(("create", name))
+        if create_error:
+            raise ConnectionError(create_error)
+        return "new-site"
+
+    client.create_site = create_site
+    client.get_site = lambda: calls.append(("list",)) or list(sites)
+    return client, calls
+
+
+def test_create_or_reuse_site_creates_when_free():
+    client, calls = _site_client()
+    assert client.create_or_reuse_site("HQ") == "new-site"
+    assert calls == [("create", "HQ")]
+
+
+def test_create_or_reuse_site_reuses_a_same_named_site():
+    # Command's reply when a template's "HQ" site is already there.
+    client, _ = _site_client(
+        "Failed to create site 'HQ': A sub-site with the name 'HQ' already "
+        "exists under the same parent site.",
+        sites=[{"id": "other", "name": "Lab"}, {"id": "hq-id", "name": "HQ"}],
+    )
+    assert client.create_or_reuse_site("HQ") == "hq-id"
+
+
+@pytest.mark.parametrize(
+    ("error", "sites"),
+    [
+        ("Failed to create site 'HQ': quota reached", [{"id": "hq", "name": "HQ"}]),
+        ("A sub-site with the name 'HQ' already exists", [{"id": "x", "name": "Lab"}]),
+    ],
+)
+def test_create_or_reuse_site_reraises_other_failures(error, sites):
+    client, _ = _site_client(error, sites)
+    with pytest.raises(ConnectionError):
+        client.create_or_reuse_site("HQ")

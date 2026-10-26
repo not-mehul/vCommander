@@ -731,7 +731,7 @@ class CommissionView(ToolView):
         panel_serial = self._device_serial("Alarm Panel")
         access_station_pro_serial = self._device_serial("Access Station Pro")
 
-        site_id = await step("Creating Site", client.create_site, ESS_SITE_NAME)
+        site_id = await step("Creating Site", client.create_or_reuse_site, ESS_SITE_NAME)
 
         camera_id = await step(
             f"Adding Camera ({dome_serial})",
@@ -862,7 +862,7 @@ class CommissionView(ToolView):
     async def _run_acsl_flow(self, step, page, client) -> None:
         access_station_pro_serial = self._device_serial("Access Station Pro")
 
-        site_id = await step("Creating Site", client.create_site, ACSL_SITE_NAME)
+        site_id = await step("Creating Site", client.create_or_reuse_site, ACSL_SITE_NAME)
 
         access_station_pro_id = await step(
             f"Adding Access Station Pro ({access_station_pro_serial})",
@@ -942,7 +942,7 @@ class CommissionView(ToolView):
         controller_serial = self._device_serial("Access Controller")
         license_plate = self._device_serial("License Plate")
 
-        site_id = await step("Creating Site", client.create_site, VSS_SITE_NAME)
+        site_id = await step("Creating Site", client.create_or_reuse_site, VSS_SITE_NAME)
 
         bullet_id = await step(
             f"Adding Camera ({bullet_serial})",
@@ -1109,7 +1109,7 @@ class CommissionView(ToolView):
         bullet_serial = self._device_serial("Bullet")
 
         site_id = await step(
-            "Creating Site", client.create_site, VSS_EXAM_SITE_NAME
+            "Creating Site", client.create_or_reuse_site, VSS_EXAM_SITE_NAME
         )
 
         dome_id = await step(
@@ -1175,7 +1175,7 @@ class CommissionView(ToolView):
         panel_serial = self._device_serial("Alarm Panel")
         keypad_serial = self._device_serial("Keypad")
 
-        site_id = await step("Creating Site", client.create_site, AS_SITE_NAME)
+        site_id = await step("Creating Site", client.create_or_reuse_site, AS_SITE_NAME)
 
         dome_id = await step(
             f"Adding Camera ({dome_serial})",
