@@ -1,5 +1,9 @@
 # Live checks against a real Command org
 
+For the full endpoint-validation procedure (record the Command web app,
+compare with vCommander, improve), see
+[`docs/LIVE_VALIDATION_RUNBOOK.md`](../../docs/LIVE_VALIDATION_RUNBOOK.md).
+
 Scripts for checking vCommander against a **test** org: the real Commission
 and Decommission flows run headlessly, and a headless browser records which
 API calls the Command web app makes, so they can be compared with

@@ -47,7 +47,7 @@ Paths, payloads, headers and response fields matched on every call made.
 - `login`/`auth.twofactor.sms.new`: the web app used magic-link login
   (`magicToken`, `backendEnvironment`); vCommander uses password login.
 
-**Pending:** record the web app for the remaining endpoints (the session
+**Pending** (procedure: [`LIVE_VALIDATION_RUNBOOK.md`](LIVE_VALIDATION_RUNBOOK.md)): record the web app for the remaining endpoints (the session
 used for this run was revoked when the headless web app logged out; the
 recorder now blocks logout) and drop payload fields the web app doesn't
 send, after checking each live.
