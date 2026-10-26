@@ -1279,9 +1279,11 @@ class VerkadaInternalAPIClient:
     def create_or_reuse_site(self, site_name: str) -> str:
         """Create a site, or return the id of an existing one with that name.
 
-        Most templates name their site "HQ", so commissioning a second
-        template into the same org would otherwise fail here and leave its
-        devices outside any site (where, with Global Site Admin off, later
+        Command never allows two sites with the same name under one parent
+        ("A sub-site with the name 'HQ' already exists under the same parent
+        site."). Most templates name their site "HQ", so commissioning a
+        second template into the same org would otherwise fail here and leave
+        its devices outside any site (where, with Global Site Admin off, later
         camera calls are refused with "error authorizing user access").
         """
         try:
@@ -2169,6 +2171,25 @@ class VerkadaInternalAPIClient:
                 f"Failed to create building '{building_name}': no floorId in response."
             )
         return floor_id
+
+    def create_or_reuse_building(
+        self, building_name: str, address: Address, floors: list
+    ) -> str:
+        """Return a floor id in the org's building of that name, creating the
+        building only when there is none.
+
+        Unlike sites, Command accepts duplicate building names, so a second
+        template run used to add another "HQ" building. The floor named
+        floors[0] is preferred, else the building's first floor.
+        """
+        building_ids = [b["id"] for b in self.get_building() if b["name"] == building_name]
+        if building_ids:
+            existing = [f for f in self.get_floor() if f["building_id"] in building_ids]
+            wanted = floors[0] if floors else None
+            match = next((f for f in existing if f["name"] == wanted), None)
+            if match or existing:
+                return (match or existing[0])["id"]
+        return self.create_building(building_name, address, floors)
 
     def get_building(self) -> list[dict[str, Any]]:
         return self._fetch_list(

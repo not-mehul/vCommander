@@ -131,3 +131,15 @@ def test_token_failures_are_logged_and_name_the_host(resp, reason, monkeypatch):
     (method, endpoint, req, status, summary), = logged
     assert endpoint == "api.eu.verkada.com/token" and reason in summary
     assert req == '{"x-api-key": "***"}'
+
+
+def test_empty_400_is_logged_as_empty(monkeypatch):
+    import apis.external_api as ext
+
+    logged = []
+    monkeypatch.setattr(ext, "log_api_call", lambda *a: logged.append(a))
+    url = "https://api.verkada.com/cameras/v1/devices"
+    client = _client({url: [{"message": "must include cameras"}]})
+    client.session.request = lambda *a, **k: _Resp({"message": "must include cameras"}, 400)
+    assert client.get_cameras() == []
+    assert logged[-1][3] == "empty (HTTP 400)"

@@ -159,7 +159,8 @@ class VerkadaExternalAPIClient:
             and response.status_code == 400
             and empty_on_400_signature in response.text
         ):
-            return {"__status_code__": response.status_code}
+            # Logged as "empty", not as a bare 400 that reads like a failure.
+            return {"__status_code__": f"empty (HTTP {response.status_code})"}
 
         if response.content:
             try:

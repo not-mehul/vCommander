@@ -756,7 +756,7 @@ class CommissionView(ToolView):
 
         floor_id = await step(
             "Creating Building",
-            client.create_building,
+            client.create_or_reuse_building,
             ESS_BUILDING_NAME,
             ESS_ADDRESS,
             ESS_FLOORS,
@@ -873,7 +873,7 @@ class CommissionView(ToolView):
 
         floor_id = await step(
             "Creating Building",
-            client.create_building,
+            client.create_or_reuse_building,
             ACSL_BUILDING_NAME,
             ACSL_ADDRESS,
             ACSL_FLOORS,
@@ -974,7 +974,7 @@ class CommissionView(ToolView):
 
         floor_id = await step(
             "Creating Building",
-            client.create_building,
+            client.create_or_reuse_building,
             VSS_BUILDING_NAME,
             VSS_ADDRESS,
             VSS_FLOORS,
@@ -1207,7 +1207,7 @@ class CommissionView(ToolView):
 
         floor_id = await step(
             "Creating Building",
-            client.create_building,
+            client.create_or_reuse_building,
             AS_BUILDING_NAME,
             AS_ADDRESS,
             AS_FLOORS,

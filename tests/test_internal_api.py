@@ -359,3 +359,42 @@ def test_create_or_reuse_site_reraises_other_failures(error, sites):
     client, _ = _site_client(error, sites)
     with pytest.raises(ConnectionError):
         client.create_or_reuse_site("HQ")
+
+
+# -- buildings ----------------------------------------------------------------
+
+
+def _building_client(buildings=(), floors=()):
+    client = VerkadaInternalAPIClient("me@x.com", "pw", "lab")
+    created = []
+    client.get_building = lambda: list(buildings)
+    client.get_floor = lambda: list(floors)
+    client.create_building = lambda name, addr, fl: created.append(name) or "new-floor"
+    return client, created
+
+
+def test_create_or_reuse_building_creates_when_none_exists():
+    client, created = _building_client(buildings=[{"id": "b1", "name": "Lab"}])
+    assert client.create_or_reuse_building("HQ", None, ["G"]) == "new-floor"
+    assert created == ["HQ"]
+
+
+def test_create_or_reuse_building_reuses_the_named_floor():
+    client, created = _building_client(
+        buildings=[{"id": "b1", "name": "HQ"}],
+        floors=[
+            {"id": "f-other", "name": "1", "building_id": "b1"},
+            {"id": "f-g", "name": "G", "building_id": "b1"},
+            {"id": "f-elsewhere", "name": "G", "building_id": "b9"},
+        ],
+    )
+    assert client.create_or_reuse_building("HQ", None, ["G"]) == "f-g"
+    assert created == []
+
+
+def test_create_or_reuse_building_falls_back_to_any_floor_of_it():
+    client, _ = _building_client(
+        buildings=[{"id": "b1", "name": "HQ"}],
+        floors=[{"id": "f1", "name": "Basement", "building_id": "b1"}],
+    )
+    assert client.create_or_reuse_building("HQ", None, ["G"]) == "f1"
