@@ -63,7 +63,11 @@ class MFARequiredError(Exception):
         self.qr_enabled = qr_enabled
 
 
-api_region = "api"
+# Subdomain marker for region-scoped endpoints. Most internal endpoints live
+# on fixed service subdomains (vprovision, vcerberus, …); the ones registered
+# with REGIONAL_SUBDOMAIN are served from the org's API region instead, so
+# build_url() swaps in the client's region ("api", "api.eu", "api.au").
+REGIONAL_SUBDOMAIN = "api"
 
 _LPR_DOOR_CREATE_CONFIGS = [
     {"paramName": "default-unlock-time", "paramValue": "10"},
@@ -329,10 +333,22 @@ def resolve(endpoint_key: str, path_params: dict | None = None) -> tuple[Endpoin
     return endpoint, formatted
 
 
-def build_url(endpoint: Endpoint, org_short_name: str, formatted_path: str) -> str:
-    """Compose the full request URL from an endpoint and a pre-formatted path."""
+def build_url(
+    endpoint: Endpoint,
+    org_short_name: str,
+    formatted_path: str,
+    region: str = REGIONAL_SUBDOMAIN,
+) -> str:
+    """Compose the full request URL from an endpoint and a pre-formatted path.
+
+    Region-scoped endpoints (subdomain == REGIONAL_SUBDOMAIN) are routed to
+    `region`; every other endpoint keeps its fixed service subdomain.
+    """
+    subdomain = endpoint.subdomain
+    if subdomain == REGIONAL_SUBDOMAIN:
+        subdomain = region
     return (
-        f"https://{endpoint.subdomain}.command.verkada.com/__v/"
+        f"https://{subdomain}.command.verkada.com/__v/"
         f"{org_short_name}/{formatted_path}"
     )
 
@@ -608,7 +624,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "org.allow_face_unlock": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="organization/config/set",
         payload={
             "organizationId": "<org_id>",
@@ -777,7 +793,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "user.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="users/delete",
         payload={
             "organizationId": "<org_id>",
@@ -808,7 +824,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "user.add_license_plate": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="access/v2/user/license_plate",
         payload={
             "userId": "<user_id>",
@@ -1105,7 +1121,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     # ── Intercoms ────────────────────────────────────────────────────
     "intercom.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="vinter/v1/user/organization/{org_id}/device",
         payload={},
         response={
@@ -1120,14 +1136,14 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "intercom.delete": Endpoint(
         method="DELETE",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="vinter/v1/user/async/organization/{org_id}/device/{object_id}",
         payload={"sharding": True},
         response={},
     ),
     "desk_station.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="vinter/v1/user/organization/{org_id}/device",
         payload={},
         response={
@@ -1142,7 +1158,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "desk_station.delete": Endpoint(
         method="DELETE",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="vinter/v1/user/async/organization/{org_id}/device/{object_id}",
         payload={"sharding": True},
         response={},
@@ -1194,7 +1210,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_controller.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="access/v3/user/access_controllers",
         payload={},
         response={
@@ -1238,7 +1254,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_station_pro.door.create": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="door/create",
         payload={
             "name": "<door_name>",
@@ -1266,7 +1282,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_station_pro.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="access/v3/user/access_controllers",
         payload={},
         response={
@@ -1290,7 +1306,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.create": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="door/create",
         payload={
             "name": "<door_name>",
@@ -1313,7 +1329,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="access/v3/user/doors",
         payload={},
         response={
@@ -1329,7 +1345,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="door/delete",
         payload={
             "doorId": "<door_id>",
@@ -1338,7 +1354,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.pair_lpr_camera": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="door/{door_id}/device_io",
         payload={
             "configs": {"lprCameraId": "<camera_id>"},
@@ -1354,7 +1370,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.enable_face_unlock": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="door/config/set",
         payload={
             "doorId": "<door_id>",
@@ -1374,7 +1390,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.mfa.card-code": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="door/config/set",
         payload={
             "doorId": "<door_id>",
@@ -1394,7 +1410,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.mfa.face-card": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="door/config/set",
         payload={
             "doorId": "<door_id>",
@@ -1414,7 +1430,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.mfa.face-code": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="door/config/set",
         payload={
             "doorId": "<door_id>",
@@ -1568,7 +1584,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "visitor.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="users/delete",
         payload={
             "organizationId": "<org_id>",
@@ -1580,7 +1596,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_card.list": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="user/access_card/get",
         payload={
             "organizationId": "<org_id>",
@@ -1614,7 +1630,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_card.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="user/access_card/delete",
         payload={
             "activationState": "active",
@@ -1641,14 +1657,14 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_group.create": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="user_groups/add_group",
         payload={"organizationId": "<org_id>", "groupName": "<access_group_name>"},
         response={"groupId": "<access_group_id>"},
     ),
     "access_group.list": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="user_groups/get",
         payload={"organizationId": "<org_id>"},
         response={
@@ -1661,14 +1677,14 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_group.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="user_groups/remove_group",
         payload={"groupId": "<access_group_id>", "organizationId": "<org_id>"},
         response={},
     ),
     "access_group.add_user": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="user_groups/bulk_add_users",
         payload={
             "userIds": ["<user_id>"],
@@ -1708,7 +1724,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_level.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="organizations/{org_id}/schedules",
         payload={},
         response={
@@ -1731,7 +1747,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "visitor_access_type.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="access/v3/user/visit_types",
         payload={},
         response={
@@ -1746,7 +1762,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "visitor_access_type.delete": Endpoint(
         method="DELETE",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="access/v2/user/visit_types/{visitor_access_type_id}",
         payload={},
         response={
@@ -1759,7 +1775,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     "visit.list": Endpoint(
         method="GET",
         subdomain="vcerberus",
-        path="access/v3/user/visits?page_size=99",
+        path="access/v3/user/visits?page_size={page_size}",
         payload={},
         response={
             "visits": [
@@ -1774,7 +1790,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "visit.delete": Endpoint(
         method="DELETE",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="access/v2/user/visits/{visit_id}",
         payload={},
         response={
@@ -1814,7 +1830,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "scenario.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="organizations/{org_id}/lockdowns",
         payload={},
         response={
@@ -1840,7 +1856,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "schedule.create.mfa": Endpoint(
         method="PUT",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="organizations/{org_id}/schedules",
         payload={
             "sitesEnabled": True,
@@ -1859,7 +1875,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "schedule.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=REGIONAL_SUBDOMAIN,
         path="organizations/{org_id}/schedules",
         # Shared with access_level.list. `type` distinguishes the rows:
         #   DOOR       → door schedule (this category)

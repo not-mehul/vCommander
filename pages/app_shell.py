@@ -8,8 +8,9 @@ swaps only the content host — the sidebar stays put and there's no page-stack
 transition.
 
 Tool screens are lightweight `ToolView`s: they build a body control and expose
-`title`/`subtitle`/`body`; the shell hosts that body. The public screens
-(login, 2FA) remain standalone `ft.View`s with no shell.
+`title`/`subtitle`/`body`; the shell hosts that body and calls the tool's
+`on_leave()` when it is swapped out or the shell is torn down. The public
+screens (login, 2FA) remain standalone `ft.View`s with no shell.
 """
 
 from __future__ import annotations
@@ -30,17 +31,19 @@ from utils.session import (
     start_session,
 )
 
-# Sidebar navigation model: (route, label, icon, brand tint). The brand color
-# is used only as a small icon tint — never as a dominant surface color.
+# Sidebar navigation model: (route, label, icon, brand tint token). The brand
+# color is used only as a small icon tint — never as a dominant surface color.
+# Tints are theme token names, resolved when the item is drawn so a light/dark
+# switch picks up the new palette.
 NAV_ITEMS = [
-    ("/home", "Home", ft.Icons.GRID_VIEW_ROUNDED, theme.ACCENT),
-    ("/commission", "Commission", ft.Icons.BUSINESS_ROUNDED, theme.BRAND_COMMISSION),
-    ("/users", "Users", ft.Icons.PEOPLE_ALT_ROUNDED, theme.BRAND_USERS),
+    ("/home", "Home", ft.Icons.GRID_VIEW_ROUNDED, "ACCENT"),
+    ("/commission", "Commission", ft.Icons.BUSINESS_ROUNDED, "BRAND_COMMISSION"),
+    ("/users", "Users", ft.Icons.PEOPLE_ALT_ROUNDED, "BRAND_USERS"),
     (
         "/decommission",
         "Decommission",
         ft.Icons.DELETE_SWEEP_ROUNDED,
-        theme.BRAND_DECOMMISSION,
+        "BRAND_DECOMMISSION",
     ),
 ]
 
@@ -63,19 +66,20 @@ class ToolView:
     A tool builds its body control and calls `mount(body)`. It is NOT an
     `ft.Control`; the shell hosts `self.body` and sets `self.page` so the
     tool's `getattr(self, "page", ...)` update guards keep working.
+
+    `push_route(route)` navigates (through main's run guard). Override
+    `on_leave()` to release anything the tool holds when it is swapped out.
     """
 
     def __init__(
         self,
         push_route,
-        pop_route,
         *,
         route: str,
         title: str,
         subtitle: str | None = None,
     ):
         self.push_route = push_route
-        self.pop_route = pop_route
         self.route = route
         self.title = title
         self.subtitle = subtitle
@@ -85,14 +89,20 @@ class ToolView:
     def mount(self, body: ft.Control):
         self.body = body
 
+    def on_leave(self) -> None:
+        """Called once when the shell stops hosting this tool."""
+
 
 class AppShell(ft.View):
-    def __init__(self, *, navigate, tool_factory):
+    def __init__(self, *, navigate, tool_factory, logout):
         super().__init__(route="/app", bgcolor=theme.BG, padding=0)
-        # navigate(route): nav clicks, logout, and session expiry route through
-        # this. tool_factory(route) -> ToolView builds the screen to host.
+        # navigate(route): nav clicks and session expiry route through this.
+        # logout(): the guarded logout from main. tool_factory(route) ->
+        # ToolView builds the screen to host.
         self._navigate = navigate
+        self._logout = logout
         self._tool_factory = tool_factory
+        self._tool: ToolView | None = None
         self._active_route: str | None = None
         self._timer_task: asyncio.Task | None = None
 
@@ -124,7 +134,9 @@ class AppShell(ft.View):
     # ------------------------------------------------------------------
     def show(self, route: str):
         """Swap the content area to `route`'s tool (sidebar stays constant)."""
+        self.leave()
         tool = self._tool_factory(route)
+        self._tool = tool
         tool.page = self._get_page()
         self._title_text.value = tool.title
         self._subtitle_text.value = tool.subtitle or ""
@@ -133,6 +145,12 @@ class AppShell(ft.View):
         self._active_route = route
         self._render_nav()
         self._safe_update()
+
+    def leave(self):
+        """Tell the hosted tool it is going away (idempotent)."""
+        tool, self._tool = self._tool, None
+        if tool is not None:
+            tool.on_leave()
 
     # ------------------------------------------------------------------
     # Content area
@@ -296,7 +314,7 @@ class AppShell(ft.View):
             ),
             content=ft.Row(
                 [
-                    ft.Icon(icon, size=20, color=brand),
+                    ft.Icon(icon, size=20, color=getattr(theme, brand)),
                     ft.Text(
                         label,
                         size=16,
@@ -388,6 +406,7 @@ class AppShell(ft.View):
     def will_unmount(self):
         if self._timer_task and not self._timer_task.done():
             self._timer_task.cancel()
+        self.leave()
 
     async def _run_timer(self):
         try:
@@ -429,7 +448,4 @@ class AppShell(ft.View):
             self._safe_update()
 
     def _on_logout(self, e):
-        if self._timer_task and not self._timer_task.done():
-            self._timer_task.cancel()
-        clear_session()
-        self._navigate("/login")
+        self._logout()

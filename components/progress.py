@@ -1,36 +1,47 @@
-"""Run/report progress primitives shared by Commission and Decommission.
+"""Run/report progress primitives shared by Commission, Decommission and Users.
 
 - `ProgressHeader`: a determinate-or-indeterminate bar with a live
   "x / y  ·  n failed" label, shown at the top of a run.
-- `status_row`: one icon+label line with a semantic state.
+- `status_row`: one static icon+label line with a semantic state.
+- `StepRow`: one *live* line — a spinner while its step runs, then a state
+  icon and result text. `run_step` drives one off a blocking API call.
 - `RawLogPanel`: a collapsible "View raw log" disclosure that pulls its
   text lazily (so the log keeps growing during the run).
 
-These replace the flat, unstructured scrolling logs the two tools used to
-render while running.
+Colors are looked up from `theme` when a row is drawn (never cached at
+import), so rows built after a light/dark switch use the new palette.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from typing import Any
 
 import flet as ft
 
 import theme
+from utils.executor import _executor
 
-# state -> (icon, color)
+# state -> (icon, theme color token). Tokens are resolved at draw time.
 _STATUS = {
-    "done": (ft.Icons.CHECK_CIRCLE, theme.SUCCESS),
-    "failed": (ft.Icons.ERROR, theme.DANGER),
-    "cancelled": (ft.Icons.CANCEL, theme.WARNING),
-    "pending": (ft.Icons.SCHEDULE_ROUNDED, theme.TEXT_MUTED),
-    "partial": (ft.Icons.WARNING_AMBER_ROUNDED, theme.WARNING),
+    "done": (ft.Icons.CHECK_CIRCLE, "SUCCESS"),
+    "failed": (ft.Icons.ERROR, "DANGER"),
+    "cancelled": (ft.Icons.CANCEL, "WARNING"),
+    "pending": (ft.Icons.SCHEDULE_ROUNDED, "TEXT_MUTED"),
+    "partial": (ft.Icons.WARNING_AMBER_ROUNDED, "WARNING"),
 }
+
+
+def _status_style(state: str) -> tuple[str, str]:
+    """(icon, color) for `state` in the active palette."""
+    icon, token = _STATUS.get(state, (ft.Icons.CIRCLE, "TEXT_MUTED"))
+    return icon, getattr(theme, token)
 
 
 def status_row(state: str, label: str, *, detail: str | None = None) -> ft.Row:
     """A single icon + label line for a step/category result."""
-    icon_name, color = _STATUS.get(state, (ft.Icons.CIRCLE, theme.TEXT_MUTED))
+    icon_name, color = _status_style(state)
     text = label if not detail else f"{label} — {detail}"
     text_color = color if state in ("failed", "cancelled") else theme.TEXT_SECONDARY
     return ft.Row(
@@ -41,6 +52,89 @@ def status_row(state: str, label: str, *, detail: str | None = None) -> ft.Row:
         spacing=theme.SPACE_SM,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
+
+
+class StepRow(ft.Row):
+    """A live progress line: spinner + label, then a result icon + text.
+
+    `compact=True` is the smaller variant used for per-item rows nested in a
+    category (decommission). Call one of `succeed` / `fail` / `warn` /
+    `skip` to finish the row; the caller owns the following page.update().
+    """
+
+    def __init__(self, label: str, *, compact: bool = False):
+        self._icon_size = 16 if compact else 18
+        self._text = ft.Text(
+            label, color=theme.TEXT_SECONDARY, size=12 if compact else 13
+        )
+        spinner = ft.ProgressRing(
+            width=self._icon_size - 2,
+            height=self._icon_size - 2,
+            stroke_width=2,
+            color=theme.TEXT_SECONDARY,
+        )
+        super().__init__([spinner, self._text], spacing=8 if compact else 10)
+
+    @property
+    def text(self) -> str:
+        return self._text.value
+
+    def _finish(self, state: str, text: str) -> None:
+        icon, color = _status_style(state)
+        self.controls[0] = ft.Icon(icon, color=color, size=self._icon_size)
+        self._text.value = text
+        self._text.color = color
+
+    def succeed(self, text: str) -> None:
+        self._finish("done", text)
+
+    def fail(self, text: str) -> None:
+        self._finish("failed", text)
+
+    def warn(self, text: str) -> None:
+        self._finish("partial", text)
+
+    def skip(self, text: str) -> None:
+        self._finish("cancelled", text)
+
+
+async def run_step(
+    page,
+    column: ft.Column,
+    label: str,
+    fn: Callable[..., Any],
+    *args,
+    success_text: str | None = None,
+    failure_text: str | None = None,
+    compact: bool = False,
+) -> tuple[bool, Any, Exception | None]:
+    """Append a StepRow to `column`, run `fn(*args)` off the UI loop, settle it.
+
+    The row reads "<label>..." while running, then `success_text` (default
+    "<label> — done") or "<failure_text> — <error>" (default
+    "<label> — failed: <error>").
+
+    Returns (ok, result, error): `result` is None and `error` is the raised
+    exception when the call failed. Never raises for a failed call — the
+    caller decides whether a failure stops its flow.
+    """
+    row = StepRow(f"{label}...", compact=compact)
+    column.controls.append(row)
+    page.update()
+    await asyncio.sleep(0)
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(
+            _executor, fn, *args
+        )
+    except Exception as ex:
+        row.fail(
+            f"{failure_text} — {ex}" if failure_text else f"{label} — failed: {ex}"
+        )
+        page.update()
+        return False, None, ex
+    row.succeed(success_text or f"{label} — done")
+    page.update()
+    return True, result, None
 
 
 class ProgressHeader(ft.Container):
@@ -65,6 +159,10 @@ class ProgressHeader(ft.Container):
             "Starting…", size=theme.FONT_CAPTION, color=theme.TEXT_SECONDARY
         )
         self.content = ft.Column([self._label, self._bar], spacing=theme.SPACE_SM)
+
+    @property
+    def label(self) -> str:
+        return self._label.value
 
     def set_progress(
         self,

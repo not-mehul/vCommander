@@ -79,7 +79,9 @@ def danger_button(
 ) -> ft.ElevatedButton:
     """Filled danger button for destructive confirmations."""
     return ft.ElevatedButton(
-        content=ft.Text(label, color="#ffffff", weight=theme.WEIGHT_SEMIBOLD),
+        # ON_ACCENT, not white: white on the dark palette's pastel red is
+        # 2.7:1; ON_ACCENT clears 4.5:1 on DANGER in both themes.
+        content=ft.Text(label, color=theme.ON_ACCENT, weight=theme.WEIGHT_SEMIBOLD),
         bgcolor=theme.DANGER,
         style=ft.ButtonStyle(shape=_shape()),
         height=height,
@@ -152,6 +154,9 @@ def set_button_loading(
         )
         btn.disabled = False
     if auto_update:
-        page = getattr(btn, "page", None)
+        try:
+            page = btn.page
+        except RuntimeError:  # flet raises (not AttributeError) when unmounted
+            page = None
         if page:
             page.update()

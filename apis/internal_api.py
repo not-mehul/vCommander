@@ -1,13 +1,13 @@
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 from requests.exceptions import JSONDecodeError, RequestException
 
 from apis.endpoints import (
+    _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS,
     _DOOR_CREATE_CONFIGS,
     _DOOR_CREATE_IOS,
     _DOOR_EVENT,
-    _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS,
     _LPR_DOOR_CREATE_CONFIGS,
     _MFA_DOOR_EVENT,
     Address,
@@ -20,10 +20,12 @@ from apis.endpoints import (
 from apis.http import build_session
 from constants import (
     API_NAME,
+    API_REGIONS,
     AS_INSTRUCTOR_KEYCODE,
     AS_INSTRUCTOR_KEYCODE_NAME,
     DEFAULT_TIMEOUT,
     DEV_SKIP_LOGIN,
+    INTERNAL_PAGE_SIZE,
     SEARCH_DURATION,
 )
 from utils.logger import log_api_call
@@ -41,6 +43,13 @@ class APIError(ConnectionError):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+
+
+class ExternalApiKey(NamedTuple):
+    """A freshly minted public-API key plus the id needed to delete it."""
+
+    key: str
+    key_id: str | None
 
 
 # Wired-input device `type` strings. All of these are created on a panel
@@ -105,12 +114,24 @@ class VerkadaInternalAPIClient:
     """
 
     def __init__(
-        self, email: str, password: str, org_short_name: str, shard: str = "prod1"
+        self,
+        email: str,
+        password: str,
+        org_short_name: str,
+        shard: str = "prod1",
+        region: str = "api",
     ):
+        if region not in API_REGIONS:
+            raise ValueError(
+                f"Invalid region: {region!r}; expected one of {list(API_REGIONS)}"
+            )
         self.email = email
         self.password = password
         self.org_short_name = org_short_name
         self.shard = shard
+        # API region ("api" / "api.eu" / "api.au"): routes the region-scoped
+        # internal endpoints and is handed to the public-API client.
+        self.region = region
 
         # Persistent session keeps cookies alive across requests; the shared
         # factory adds retry on transient failures + a default timeout.
@@ -126,7 +147,6 @@ class VerkadaInternalAPIClient:
         # can prompt for the right factor (SMS vs authenticator/QR) and
         # offer a resend. None/False until an MFA challenge is seen.
         self.mfa_sms_enabled: bool = False
-        self.mfa_qr_enabled: bool = False
         self.mfa_sms_contact: str | None = None
 
     # ------------------------------------------------------------------
@@ -202,7 +222,7 @@ class VerkadaInternalAPIClient:
     def _login_url(self) -> str:
         """Pre-auth helper: build the login URL from the registry."""
         endpoint, formatted_path = resolve("login")
-        return build_url(endpoint, self.org_short_name, formatted_path)
+        return build_url(endpoint, self.org_short_name, formatted_path, self.region)
 
     def _set_global_site_admin(self, enabled: bool) -> None:
         key = (
@@ -432,7 +452,7 @@ class VerkadaInternalAPIClient:
             raise PermissionError("Not authenticated. Please call login() first.")
 
         endpoint, formatted_path = resolve(endpoint_key, path_params)
-        url = build_url(endpoint, self.org_short_name, formatted_path)
+        url = build_url(endpoint, self.org_short_name, formatted_path, self.region)
 
         try:
             response = self.session.request(
@@ -557,7 +577,7 @@ class VerkadaInternalAPIClient:
         decide whether a send failure should block the 2FA challenge.
         """
         endpoint, formatted_path = resolve("auth.twofactor.sms.new")
-        url = build_url(endpoint, self.org_short_name, formatted_path)
+        url = build_url(endpoint, self.org_short_name, formatted_path, self.region)
         payload = {
             "email": self.email,
             "password": self.password,
@@ -667,7 +687,6 @@ class VerkadaInternalAPIClient:
                     )
 
             self.mfa_sms_enabled = sms_enabled
-            self.mfa_qr_enabled = qr_enabled
             self.mfa_sms_contact = sms_contact
 
             log_api_call("POST", log_label, log_request, f"{status} (MFA)", msg)
@@ -914,10 +933,17 @@ class VerkadaInternalAPIClient:
     # API Keys
     # ------------------------------------------------------------------
 
-    def create_external_api_key(self) -> str:
+    def create_external_api_key(self) -> ExternalApiKey:
         """
         Generates a temporary External API Key (used to initialize the
-        VerkadaExternalAPIClient). Key expires in 1 hour.
+        VerkadaExternalAPIClient). Key expires in 1 hour, but callers should
+        delete it with delete_external_api_key(key_id) once their run ends:
+        an org holds at most 10 keys, so leftovers block the next run.
+
+        Returns:
+            ExternalApiKey(key, key_id). key_id is taken from the create
+            response, falling back to a lookup by the (unique) key name; it
+            is None only if neither source has it.
 
         Raises:
             ConnectionError: If the API key limit (10) is exceeded.
@@ -957,14 +983,26 @@ class VerkadaInternalAPIClient:
             raise
 
         api_key = data.get("apiKey", "")
+        key_id = data.get("apiKeyId")
         self._log(
             "org.api_key.create",
             status,
             path_params={"org_id": self.org_id},
             log_request=log_request,
-            log_response=f'{{"apiKey": "{api_key}"}}',
+            log_response=f'{{"apiKey": "{api_key}", "apiKeyId": "{key_id}"}}',
         )
-        return api_key
+        if not key_id:
+            # Best effort: the key already exists, so a failed lookup must not
+            # fail the create (the caller would then never delete the key).
+            key_name = payload["api_key_name"]
+            try:
+                key_id = next(
+                    (k["id"] for k in self.get_external_api_key() if k["name"] == key_name),
+                    None,
+                )
+            except (ConnectionError, PermissionError, KeyError):
+                key_id = None
+        return ExternalApiKey(api_key, key_id)
 
     def get_external_api_key(self) -> list[dict[str, Any]]:
         return self._fetch_list(
@@ -1834,7 +1872,8 @@ class VerkadaInternalAPIClient:
 
     def get_visitor(self) -> list[dict[str, Any]]:
         """List visitors — access users flagged is_visitor — with granted
-        access. Single page (pageSize 99). Deleted after Visits and before
+        access. One page of INTERNAL_PAGE_SIZE (decommission re-lists until
+        empty, see PAGED_CATEGORIES). Deleted after Visits and before
         Command Users.
         """
         return self._fetch_list(
@@ -1848,7 +1887,7 @@ class VerkadaInternalAPIClient:
                 "status": ["access_granted"],
                 "status_filter_v2": True,
                 "paging": {
-                    "pageSize": 99,
+                    "pageSize": INTERNAL_PAGE_SIZE,
                     "sortOrder": ["first_name:asc", "email:asc"],
                 },
             },
@@ -1864,7 +1903,7 @@ class VerkadaInternalAPIClient:
         )
 
     def get_visit(self) -> list[dict[str, Any]]:
-        """List active visits (single page, page_size 99).
+        """List active visits (one page of INTERNAL_PAGE_SIZE).
 
         Visits reference visitors, so they are deleted first — before
         Visitors and Command Users.
@@ -1872,6 +1911,7 @@ class VerkadaInternalAPIClient:
         return self._fetch_list(
             "visit.list",
             response_key="visits",
+            path_params={"page_size": INTERNAL_PAGE_SIZE},
             mapping_func=lambda v: {"id": v["visitId"], "name": v.get("name")},
         )
 
@@ -1888,7 +1928,7 @@ class VerkadaInternalAPIClient:
 
         The archive.list endpoint filters by footage time. footageTimeMin is
         the start of the window (SEARCH_DURATION days ago) and footageTimeMax
-        is the end (now), both epoch seconds. Single page (pageSize 99).
+        is the end (now), both epoch seconds. One page of INTERNAL_PAGE_SIZE.
         """
         now = int(time.time())
         window_start = now - SEARCH_DURATION * 86400
@@ -1897,7 +1937,7 @@ class VerkadaInternalAPIClient:
             response_key="instant",
             payload={
                 "organizationId": self.org_id,
-                "pageSize": 99,
+                "pageSize": INTERNAL_PAGE_SIZE,
                 "instantLastKey": None,
                 "legacyLastKey": None,
                 "first": True,
@@ -1920,11 +1960,11 @@ class VerkadaInternalAPIClient:
         )
 
     def get_incident(self) -> list[dict[str, Any]]:
-        """List investigation incidents in the org (single page, limit 99)."""
+        """List investigation incidents (one page of INTERNAL_PAGE_SIZE)."""
         return self._fetch_list(
             "incident.list",
             response_key="incidents",
-            payload={"organizationId": self.org_id, "limit": 99},
+            payload={"organizationId": self.org_id, "limit": INTERNAL_PAGE_SIZE},
             mapping_func=lambda x: {
                 "id": x["incidentId"],
                 "name": x.get("name") or x["incidentId"],

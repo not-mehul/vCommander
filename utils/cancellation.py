@@ -23,7 +23,3 @@ class CancellationToken:
 
     def cancel(self) -> None:
         self._cancelled = True
-
-    def reset(self) -> None:
-        """Clear the flag so the token can be reused for a new run."""
-        self._cancelled = False

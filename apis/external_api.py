@@ -3,9 +3,13 @@ from typing import Any
 from requests.exceptions import JSONDecodeError, RequestException
 
 from apis.http import build_session
+from constants import API_REGIONS
 from utils.logger import log_api_call
 
-_VALID_REGIONS = frozenset({"api", "api.eu", "api.au"})
+# Public-API list endpoints page with `page_size` + `page_token`, returning
+# `next_page_token` until the last page. The cap only guards against a
+# server that keeps handing back a token forever.
+_MAX_PAGES = 500
 
 
 class VerkadaExternalAPIClient:
@@ -17,13 +21,14 @@ class VerkadaExternalAPIClient:
     """
 
     def __init__(self, api_key: str, org_short_name: str, region: str = "api"):
+        region = region or "api"
+        if region not in API_REGIONS:
+            raise ValueError(
+                f"Invalid region: {region!r}; expected one of {list(API_REGIONS)}"
+            )
         self.api_key = api_key
         self.org_short_name = org_short_name
-        self.region = region or "api"
-        if region not in _VALID_REGIONS:
-            raise ValueError(
-                f"Invalid region: {region!r}; expected one of {sorted(_VALID_REGIONS)}"
-            )
+        self.region = region
 
         # Session carries retry + a default timeout (see apis/http.py); the
         # missing timeout previously let a stalled token/scan call hang forever.
@@ -187,6 +192,47 @@ class VerkadaExternalAPIClient:
         """Pull the helper-stashed HTTP status code as a string for logging."""
         return str(data.get("__status_code__", ""))
 
+    def _get_all(
+        self,
+        url: str,
+        list_key: str,
+        *,
+        params: dict,
+        error_context: str,
+        empty_on_400_signature: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """
+        GET every page of a public-API list endpoint.
+
+        Follows `next_page_token` (sent back as `page_token`) until the
+        server stops returning one, so orgs larger than one page are listed
+        in full. Endpoints that don't paginate simply return no token and
+        end after the first request.
+
+        Returns:
+            (items, status) — the concatenated `list_key` arrays and the
+            last response's HTTP status (for logging).
+        """
+        items: list[dict[str, Any]] = []
+        seen_tokens: set[str] = set()
+        page_params = dict(params)
+        data: dict = {}
+        for _ in range(_MAX_PAGES):
+            data = self._request(
+                "GET",
+                url,
+                params=page_params,
+                error_context=error_context,
+                empty_on_400_signature=empty_on_400_signature,
+            )
+            items.extend(data.get(list_key) or [])
+            token = data.get("next_page_token")
+            if not token or token in seen_tokens:
+                break
+            seen_tokens.add(token)
+            page_params = {**params, "page_token": token}
+        return items, self._status(data)
+
     # ------------------------------------------------------------------
     # Generic getter
     # ------------------------------------------------------------------
@@ -251,20 +297,20 @@ class VerkadaExternalAPIClient:
                 raise ValueError(f"Unknown external API category: {categories!r}")
 
         url = f"https://{self.region}.verkada.com/{path}"
-        data = self._request(
-            "GET",
+        items, status = self._get_all(
             url,
+            object_type,
             params={"page_size": 200},
             error_context=f"Failed to fetch {categories}",
             empty_on_400_signature=empty_on_400_signature,
         )
 
-        results = [mapping_func(item) for item in data.get(object_type, [])]
+        results = [mapping_func(item) for item in items]
         log_api_call(
             "GET",
             f"{self.region}.verkada.com/{path}",
             "{}",
-            self._status(data),
+            status,
             f'{{"count": {len(results)}}}',
         )
         return results
@@ -336,9 +382,9 @@ class VerkadaExternalAPIClient:
                 first = last = full_name
             return {"first_name": first, "last_name": last, "email": email, "image_url": image_url}
 
-        data = self._request(
-            "GET",
+        visits, status = self._get_all(
             url,
+            "visits",
             params={
                 "site_id": site_id,
                 "start_time": start_time,
@@ -348,12 +394,12 @@ class VerkadaExternalAPIClient:
             error_context=f"Failed to fetch guest visits for site {site_id}",
         )
 
-        results = [_split_name(item) for item in data.get("visits", [])]
+        results = [_split_name(item) for item in visits]
         log_api_call(
             "GET",
             f"{self.region}.verkada.com/guest/v1/visits",
             f'{{"site_id": "{site_id}", "start_time": {start_time}, "end_time": {end_time}}}',
-            self._status(data),
+            status,
             f'{{"count": {len(results)}}}',
         )
         return results
@@ -376,7 +422,7 @@ class VerkadaExternalAPIClient:
             ConnectionError: If the API call fails or the response is missing
                 a group_id.
         """
-        url = "https://api.verkada.com/access/v1/access_groups/group"
+        url = f"https://{self.region}.verkada.com/access/v1/access_groups/group"
         data = self._request(
             "POST",
             url,
@@ -392,7 +438,7 @@ class VerkadaExternalAPIClient:
 
         log_api_call(
             "POST",
-            "api.verkada.com/access/v1/access_groups/group",
+            f"{self.region}.verkada.com/access/v1/access_groups/group",
             f'{{"name": "{group_name}"}}',
             self._status(data),
             f'{{"group_id": "{group_id}"}}',
@@ -414,7 +460,7 @@ class VerkadaExternalAPIClient:
             ConnectionError: If the API call fails or the response contains
                 no successful_adds entry.
         """
-        url = "https://api.verkada.com/access/v1/access_groups/group/user"
+        url = f"https://{self.region}.verkada.com/access/v1/access_groups/group/user"
         data = self._request(
             "PUT",
             url,
@@ -432,7 +478,7 @@ class VerkadaExternalAPIClient:
 
         log_api_call(
             "PUT",
-            "api.verkada.com/access/v1/access_groups/group/user",
+            f"{self.region}.verkada.com/access/v1/access_groups/group/user",
             f'{{"user_id": "{user_id}", "group_id": "{group_id}"}}',
             self._status(data),
             f'{{"successful_adds": ["{adds[0]}"]}}',
@@ -454,7 +500,7 @@ class VerkadaExternalAPIClient:
             ConnectionError: If the API call fails or the response is missing
                 license_plate_number.
         """
-        url = "https://api.verkada.com/access/v1/credentials/license_plate"
+        url = f"https://{self.region}.verkada.com/access/v1/credentials/license_plate"
         data = self._request(
             "POST",
             url,
@@ -472,7 +518,7 @@ class VerkadaExternalAPIClient:
 
         log_api_call(
             "POST",
-            "api.verkada.com/access/v1/credentials/license_plate",
+            f"{self.region}.verkada.com/access/v1/credentials/license_plate",
             f'{{"user_id": "{user_id}", "license_plate_number": "{license_plate}"}}',
             self._status(data),
             f'{{"license_plate_number": "{plate}"}}',

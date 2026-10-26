@@ -8,7 +8,7 @@ import asyncio
 
 import flet as ft
 
-from components import set_button_loading
+from components import primary_button, set_button_loading
 from constants import (
     BG,
     BORDER,
@@ -31,10 +31,9 @@ def _strip(value: str | None) -> str:
 
 
 class TwoFactorView(ft.View):
-    def __init__(self, push_route, pop_route, **kwargs):
+    def __init__(self, push_route, **kwargs):
         super().__init__(route="/2fa", bgcolor=BG, padding=0, **kwargs)
         self.push_route = push_route
-        self.pop_route = pop_route
         self._build_ui()
 
     def _mfa_prompt(self) -> tuple[str, bool]:
@@ -73,13 +72,7 @@ class TwoFactorView(ft.View):
             autofocus=True,
         )
 
-        self.verify_btn = ft.ElevatedButton(
-            content=ft.Text("Verify", color=TEXT_PRIMARY, weight=ft.FontWeight.W_600),
-            bgcolor=PRIMARY,
-            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
-            height=45,
-            on_click=self._on_verify,
-        )
+        self.verify_btn = primary_button("Verify", on_click=self._on_verify, height=45)
 
         # Resend is only meaningful for SMS — an authenticator app generates
         # its own rolling code, so there's nothing for us to re-dispatch.

@@ -1,7 +1,7 @@
 """Users screen — guest invitation workflow.
 
 Four-step wizard:
-  1. Connect to an external Verkada org (org short name + API key).
+  1. Connect to an external Verkada org (org short name, API key, region).
   2. Pick a date range and pull guest participants from that org.
   3. Review/edit the list, optionally trim rows.
   4. Send invites against the currently logged-in (internal) org and
@@ -14,7 +14,19 @@ from datetime import datetime, timedelta
 import flet as ft
 
 from apis.external_api import VerkadaExternalAPIClient
+from components import (
+    Stepper,
+    StepRow,
+    dropdown,
+    primary_button,
+    run_step,
+    secondary_button,
+    section_header,
+    set_button_loading,
+    text_field,
+)
 from constants import (
+    API_REGIONS,
     BORDER,
     CARD_PADDING,
     CARD_SHADOW,
@@ -29,18 +41,17 @@ from constants import (
     WARNING,
     load_internal_invite_defaults,
 )
-from components import (
-    Stepper,
-    primary_button,
-    secondary_button,
-    section_header,
-    set_button_loading,
-    text_field,
-)
 from pages.app_shell import ToolView
+from utils.cancellation import CancellationToken
 from utils.db import load_import_settings, save_import_settings
 from utils.executor import _executor
-from utils.session import get_external_client, get_internal_client, set_external_client
+from utils.session import (
+    begin_run,
+    end_run,
+    get_external_client,
+    get_internal_client,
+    set_external_client,
+)
 from utils.ui_utils import show_alert, show_toast
 
 _STEP_LABELS = ["API Key", "Site & Date", "Review", "Invite"]
@@ -52,10 +63,9 @@ def _strip(value: str | None) -> str:
 
 
 class UsersView(ToolView):
-    def __init__(self, push_route, pop_route):
+    def __init__(self, push_route):
         super().__init__(
             push_route,
-            pop_route,
             route="/users",
             title="User Management",
         )
@@ -142,6 +152,14 @@ class UsersView(ToolView):
             label="Org Short Name (External)",
             value=org_default,
         )
+        # The external org's API region — independent of the region this
+        # session logged in to, since participants may come from anywhere.
+        self._import_region_dropdown = dropdown(
+            "API Region (External)",
+            [ft.dropdown.Option(r) for r in API_REGIONS],
+            value=(settings or {}).get("api_region")
+            or defaults.get("api_region", "api"),
+        )
         self._connect_btn = primary_button("Connect", on_click=self._on_connect)
 
         return ft.Column(
@@ -153,7 +171,13 @@ class UsersView(ToolView):
                 ft.Container(height=10),
                 self._api_key_field,
                 ft.Container(height=FIELD_SPACING),
-                self._import_org_field,
+                ft.Row(
+                    [
+                        ft.Container(content=self._import_org_field, expand=2),
+                        ft.Container(content=self._import_region_dropdown, expand=1),
+                    ],
+                    spacing=FIELD_SPACING,
+                ),
                 ft.Container(height=FIELD_SPACING + 5),
                 self._connect_btn,
             ],
@@ -163,6 +187,7 @@ class UsersView(ToolView):
     async def _on_connect(self, e):
         api_key = _strip(self._api_key_field.value)
         org = _strip(self._import_org_field.value)
+        region = self._import_region_dropdown.value or "api"
         if not api_key or not org:
             show_toast(
                 e.page,
@@ -177,10 +202,10 @@ class UsersView(ToolView):
         try:
             loop = asyncio.get_running_loop()
             client = await loop.run_in_executor(
-                _executor, VerkadaExternalAPIClient, api_key, org
+                _executor, VerkadaExternalAPIClient, api_key, org, region
             )
             set_external_client(client)
-            save_import_settings(org, api_key)
+            save_import_settings(org, api_key, region)
 
             # Load sites for step 2
             self._sites = await loop.run_in_executor(_executor, client.get_sites)
@@ -419,9 +444,20 @@ class UsersView(ToolView):
             )
             return
 
+        token = CancellationToken()
+        if not begin_run("Invite", token):
+            show_toast(
+                e.page,
+                "Another run is still stopping — try again in a moment.",
+                kind="warning",
+            )
+            return
         self._go_to_step(3, e.page)
         await asyncio.sleep(0)
-        await self._run_invites(e.page)
+        try:
+            await self._run_invites(e.page, token)
+        finally:
+            end_run(token)
 
     # ------------------------------------------------------------------
     # Step 4: Invite Progress
@@ -456,9 +492,8 @@ class UsersView(ToolView):
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
-    async def _run_invites(self, page):
+    async def _run_invites(self, page, token: CancellationToken):
         client = get_internal_client()
-        loop = asyncio.get_running_loop()
         success_count = 0
         total = 0
         self._invited_records = []
@@ -477,9 +512,14 @@ class UsersView(ToolView):
             if not email_val:
                 continue
             total += 1
+            if token.is_cancelled:
+                row = StepRow(email_val)
+                row.skip(f"Skipped {email_val} (cancelled)")
+                self._invite_progress.controls.append(row)
+                continue
 
             ok, user_id = await self._run_invite_step(
-                page, loop, client, first, last, email_val
+                page, client, first, last, email_val
             )
             if ok:
                 success_count += 1
@@ -490,10 +530,10 @@ class UsersView(ToolView):
         # Group membership runs once for the whole batch — add_users_to_group
         # takes the id list, so one call covers everyone invited this run.
         # Skipped entirely when the Step 3 toggle is off.
-        if self._add_to_group_switch.value:
+        if self._add_to_group_switch.value and not token.is_cancelled:
             if invited_user_ids:
                 await self._add_invited_to_command_group(
-                    page, loop, client, invited_user_ids
+                    page, client, invited_user_ids
                 )
             elif success_count:
                 self._invite_progress.controls.append(
@@ -531,46 +571,26 @@ class UsersView(ToolView):
     async def _progress_step(
         self,
         page,
-        loop,
         label: str,
         success_label: str,
         fail_label: str,
         fn,
         *args,
     ) -> tuple[bool, object]:
-        """
-        Append a spinner row, run `fn` in the executor, then swap the
-        spinner for a check or error icon.
-
-        Returns (ok, result); result is None when the call raised.
-        """
-        step_icon = ft.ProgressRing(
-            width=16, height=16, stroke_width=2, color=TEXT_SECONDARY
+        """Run `fn` with a live progress row; returns (ok, result)."""
+        ok, result, _ = await run_step(
+            page,
+            self._invite_progress,
+            label,
+            fn,
+            *args,
+            success_text=success_label,
+            failure_text=fail_label,
         )
-        step_text = ft.Text(f"{label}...", color=TEXT_SECONDARY, size=13)
-        step_row = ft.Row([step_icon, step_text], spacing=10)
-        self._invite_progress.controls.append(step_row)
-        page.update()
-        await asyncio.sleep(0)
-
-        try:
-            result = await loop.run_in_executor(_executor, fn, *args)
-            step_row.controls[0] = ft.Icon(
-                ft.Icons.CHECK_CIRCLE, color=SECONDARY, size=18
-            )
-            step_text.value = success_label
-            step_text.color = SECONDARY
-            page.update()
-            return True, result
-        except Exception as ex:
-            step_row.controls[0] = ft.Icon(ft.Icons.ERROR, color=ERROR, size=18)
-            step_text.value = f"{fail_label} — {ex}"
-            step_text.color = ERROR
-            page.update()
-            return False, None
+        return ok, result
 
     async def _run_invite_step(
-        self, page, loop, client, first: str, last: str, email_val: str
+        self, page, client, first: str, last: str, email_val: str
     ) -> tuple[bool, str | None]:
         """Append a progress row, attempt the invite, and update the row.
 
@@ -581,7 +601,6 @@ class UsersView(ToolView):
         who = f"{first} {last}".strip()
         ok, result = await self._progress_step(
             page,
-            loop,
             f"Inviting {who} ({email_val})",
             f"Invited {who} ({email_val})",
             f"Failed: {who}",
@@ -593,7 +612,7 @@ class UsersView(ToolView):
         return ok, (result or {}).get("user_id")
 
     async def _add_invited_to_command_group(
-        self, page, loop, client, user_ids: list[str]
+        self, page, client, user_ids: list[str]
     ) -> bool:
         """
         Add the freshly invited users to the shared Command group, creating
@@ -605,7 +624,6 @@ class UsersView(ToolView):
         """
         ok, groups = await self._progress_step(
             page,
-            loop,
             f"Looking up group '{COMMAND_GROUP_NAME}'",
             f"Looked up group '{COMMAND_GROUP_NAME}'",
             "Failed: group lookup",
@@ -621,7 +639,6 @@ class UsersView(ToolView):
         if not group_id:
             ok, group_id = await self._progress_step(
                 page,
-                loop,
                 f"Creating group '{COMMAND_GROUP_NAME}'",
                 f"Created group '{COMMAND_GROUP_NAME}'",
                 f"Failed: creating group '{COMMAND_GROUP_NAME}'",
@@ -635,7 +652,6 @@ class UsersView(ToolView):
         plural = "" if count == 1 else "s"
         ok, _ = await self._progress_step(
             page,
-            loop,
             f"Adding {count} user{plural} to '{COMMAND_GROUP_NAME}'",
             f"Added {count} user{plural} to '{COMMAND_GROUP_NAME}'",
             f"Failed: adding users to '{COMMAND_GROUP_NAME}'",

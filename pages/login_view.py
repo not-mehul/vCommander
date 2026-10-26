@@ -1,7 +1,7 @@
 """Login screen.
 
-Collects email, password, org short name, region, and (optional) shard,
-then constructs a VerkadaInternalAPIClient and authenticates. On
+Collects email, password, org short name, API region, and shard, then
+constructs a VerkadaInternalAPIClient for that region and authenticates. On
 success it stashes the client in `utils.session` and routes to /home;
 on MFARequiredError it routes to /2fa. Saved credentials are loaded
 from the local SQLite store on mount.
@@ -18,7 +18,7 @@ import flet as ft
 import theme
 from apis.internal_api import MFARequiredError, VerkadaInternalAPIClient
 from components import dropdown, primary_button, set_button_loading, text_field
-from constants import APP_VERSION, FIELD_SPACING
+from constants import API_REGIONS, APP_VERSION, FIELD_SPACING
 from utils.db import load_credentials, save_credentials
 from utils.executor import _executor
 from utils.session import set_internal_client
@@ -30,10 +30,9 @@ def _strip(value: str | None) -> str:
 
 
 class LoginView(ft.View):
-    def __init__(self, push_route, pop_route, **kwargs):
+    def __init__(self, push_route, **kwargs):
         super().__init__(route="/login", bgcolor=theme.BG, padding=0, **kwargs)
         self.push_route = push_route
-        self.pop_route = pop_route
         self._build_ui()
 
     def _build_ui(self):
@@ -58,8 +57,8 @@ class LoginView(ft.View):
         )
         self.region_dropdown = dropdown(
             "API Region",
-            [ft.dropdown.Option(r) for r in ("api", "api.eu", "api.au")],
-            value=creds.get("api_region", "api"),
+            [ft.dropdown.Option(r) for r in API_REGIONS],
+            value=creds.get("api_region") or "api",
         )
         self.shard_dropdown = dropdown(
             "Shard",
@@ -189,7 +188,9 @@ class LoginView(ft.View):
         elif "@" not in email or "." not in email:
             self.email_field.error = "Enter a valid email"
             ok = False
-        if not _strip(self.password_field.value):
+        # Passwords are used verbatim (never stripped), so only an empty
+        # field is rejected — leading/trailing spaces may be intentional.
+        if not self.password_field.value:
             self.password_field.error = "Password is required"
             ok = False
         if not _strip(self.org_field.value):
@@ -209,7 +210,7 @@ class LoginView(ft.View):
             return
 
         email = _strip(self.email_field.value)
-        password = _strip(self.password_field.value)
+        password = self.password_field.value or ""
         org = _strip(self.org_field.value)
         region = self.region_dropdown.value or "api"
         shard = self.shard_dropdown.value or "prod1"
@@ -219,7 +220,7 @@ class LoginView(ft.View):
 
         # Construct the client outside the try/except so it remains available
         # to the MFARequiredError handler. Login itself is what may raise.
-        client = VerkadaInternalAPIClient(email, password, org, shard)
+        client = VerkadaInternalAPIClient(email, password, org, shard, region)
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(_executor, client.login)

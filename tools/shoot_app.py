@@ -38,7 +38,7 @@ from pages import (
 from pages import (
     users_view as uv,
 )
-from utils import session, ui_utils
+from utils import session
 
 VIEW = os.environ.get("SHOT_VIEW", "login")
 STATE = os.environ.get("SHOT_STATE", "")
@@ -51,14 +51,14 @@ _SERIAL = "ABCD-12345678"
 
 
 _PUBLIC_BUILDERS = {
-    "login": lambda: lv.LoginView(_noop, _noop),
-    "twofa": lambda: tv.TwoFactorView(_noop, _noop),
+    "login": lambda: lv.LoginView(_noop),
+    "twofa": lambda: tv.TwoFactorView(_noop),
 }
 _TOOL_BUILDERS = {
-    "home": lambda: hv.HomeView(_noop, _noop),
-    "commission": lambda: cv.CommissionView(_noop, _noop),
-    "decommission": lambda: dv.DecommissionView(_noop, _noop),
-    "users": lambda: uv.UsersView(_noop, _noop),
+    "home": lambda: hv.HomeView(_noop),
+    "commission": lambda: cv.CommissionView(_noop),
+    "decommission": lambda: dv.DecommissionView(_noop),
+    "users": lambda: uv.UsersView(_noop),
 }
 
 
@@ -116,9 +116,10 @@ def _drive(page, view, key, state):
                     + ["[ok]   Configuring device"] * 14
                     + ["[FAIL] Adding PTZ camera: device offline (timeout)"]
                 )
-                view._render_summary(page, all_success=False)
+                view._render_summary(page)
         elif key == "decommission":
             view._assets = _fake_assets()
+            view._selected = {c: set(range(len(i))) for c, i in view._assets.items()}
             if state == "scanning":
                 # Simulate the mid-scan UI (spinner button + progress bar).
                 view._scan_btn.disabled = True
@@ -136,8 +137,8 @@ def _drive(page, view, key, state):
                 view._state = dv.SELECT
                 view._render_state()
             elif state == "confirm":
-                view._selected_categories = {
-                    "Cameras": True, "Doors": True, "Command Users": True
+                view._selected = {
+                    "Cameras": {0, 1, 2}, "Doors": {0, 1}, "Command Users": {0}
                 }
                 view._state = dv.CONFIRM
                 view._render_state()
@@ -149,6 +150,10 @@ def _drive(page, view, key, state):
                     "Access Controllers": (1, 1),
                 }
                 view._cancelled_at = None
+                view._cleanup = [
+                    ("done", "Global Site Admin turned back off"),
+                    ("done", "Temporary API key deleted"),
+                ]
                 view._stepper.set_active(dv._STATE_STEP[dv.COMPLETE])
                 view._render_complete()
         elif key == "users":
@@ -171,7 +176,7 @@ def _drive(page, view, key, state):
 
 def main(page: ft.Page):
     theme.set_theme_mode(MODE)
-    theme.apply_to([constants, ui_utils, lv, tv, hv, cv, dv, uv])
+    theme.apply_to([constants, lv, tv, hv, cv, dv, uv])
     page.theme_mode = ft.ThemeMode.DARK if MODE == "dark" else ft.ThemeMode.LIGHT
     page.bgcolor = theme.BG
     page.padding = 0
@@ -190,7 +195,7 @@ def main(page: ft.Page):
         holder["tool"] = tool
         return tool
 
-    shell = app_shell.AppShell(navigate=_noop, tool_factory=factory)
+    shell = app_shell.AppShell(navigate=_noop, tool_factory=factory, logout=_noop)
     page.views.append(shell)
     page.update()
     shell.show("/" + VIEW)

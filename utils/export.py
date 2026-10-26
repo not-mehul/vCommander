@@ -8,7 +8,6 @@ already used by the decommission asset-list export
 from __future__ import annotations
 
 import csv
-import json
 import os
 from datetime import datetime
 
@@ -29,10 +28,3 @@ def export_csv(rows: list[dict], fieldnames: list[str], prefix: str) -> str:
         writer.writerows(rows)
     return path
 
-
-def export_json(data, prefix: str) -> str:
-    """Write `data` as pretty JSON and return the file path."""
-    path = _downloads_path(prefix, "json")
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-    return path

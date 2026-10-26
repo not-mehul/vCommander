@@ -49,9 +49,15 @@ def _get_connection() -> sqlite3.Connection:
         """CREATE TABLE IF NOT EXISTS import_settings (
             id INTEGER PRIMARY KEY DEFAULT 1,
             org_short_name TEXT,
-            api_key TEXT
+            api_key TEXT,
+            api_region TEXT DEFAULT 'api'
         )"""
     )
+    # Databases created before the Users tool had a region selector lack
+    # the column; add it in place so saved settings survive the upgrade.
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(import_settings)")}
+    if "api_region" not in columns:
+        conn.execute("ALTER TABLE import_settings ADD COLUMN api_region TEXT DEFAULT 'api'")
     conn.commit()
     return conn
 
@@ -95,15 +101,15 @@ def load_credentials() -> dict | None:
         conn.close()
 
 
-def save_import_settings(org_short_name: str, api_key: str):
+def save_import_settings(org_short_name: str, api_key: str, api_region: str = "api"):
     """Persist the external-org connection settings, replacing any previous row."""
     conn = _get_connection()
     try:
         conn.execute(
             """INSERT OR REPLACE INTO import_settings
-               (id, org_short_name, api_key)
-               VALUES (1, ?, ?)""",
-            (org_short_name, api_key),
+               (id, org_short_name, api_key, api_region)
+               VALUES (1, ?, ?, ?)""",
+            (org_short_name, api_key, api_region),
         )
         conn.commit()
     finally:
@@ -119,6 +125,7 @@ def load_import_settings() -> dict | None:
             return {
                 "org_short_name": row["org_short_name"],
                 "api_key": row["api_key"],
+                "api_region": row["api_region"] or "api",
             }
         return None
     finally:

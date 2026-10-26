@@ -1,13 +1,7 @@
 import flet as ft
 
-from constants import BG, ERROR, SECONDARY, TEXT_PRIMARY, WARNING
-
-_TOAST_BG = {
-    "info": None,        # default Flet SnackBar background
-    "success": SECONDARY,
-    "warning": WARNING,
-    "error": ERROR,
-}
+import theme
+from components.surfaces import kind_style
 
 
 def show_toast(
@@ -23,15 +17,24 @@ def show_toast(
     completed, items copied, validation hints. Reserve `show_alert` for
     blocking confirmations and fatal errors the user must dismiss.
 
-    `kind` selects the accent color (info / success / warning / error).
+    `kind` (info / success / warning / error) picks the leading icon and its
+    color. The toast itself stays on a neutral surface so the message text
+    keeps full contrast in both light and dark themes.
     """
-    bgcolor = _TOAST_BG.get(kind)
+    color, icon = kind_style("danger" if kind == "error" else kind)
     snack = ft.SnackBar(
-        content=ft.Text(message, color=TEXT_PRIMARY),
-        bgcolor=bgcolor,
+        content=ft.Row(
+            [
+                ft.Icon(icon, color=color, size=18),
+                ft.Text(message, color=theme.TEXT_PRIMARY, expand=True),
+            ],
+            spacing=theme.SPACE_MD,
+        ),
+        bgcolor=theme.SURFACE_VARIANT,
         duration=duration_ms,
         behavior=ft.SnackBarBehavior.FLOATING,
         show_close_icon=True,
+        close_icon_color=theme.TEXT_SECONDARY,
     )
     # Flet 0.85 shows transient overlays (snackbars, dialogs, pickers) via
     # page.show_dialog(); the older page.open()/overlay-append pattern is gone.
@@ -59,20 +62,34 @@ def show_alert(page: ft.Page, title: str, message: str):
     page.show_dialog(dialog)
 
 
-def create_loading_overlay() -> ft.Container:
-    """Build a translucent full-page loading overlay (initially hidden)."""
-    return ft.Container(
-        content=ft.Column(
-            [
-                ft.ProgressRing(color=TEXT_PRIMARY),
-                ft.Text("Loading...", color=TEXT_PRIMARY, size=14),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=15,
-        ),
-        bgcolor=ft.Colors.with_opacity(0.7, BG),
-        alignment=ft.Alignment(0, 0),
-        visible=False,
-        expand=True,
+def show_confirm(
+    page: ft.Page,
+    title: str,
+    message: str,
+    *,
+    confirm_label: str,
+    on_confirm,
+    cancel_label: str = "Cancel",
+):
+    """Modal two-button dialog; `on_confirm()` runs only on the confirm choice."""
+
+    def close(_e=None):
+        page.pop_dialog()
+
+    def confirm(_e=None):
+        page.pop_dialog()
+        on_confirm()
+
+    dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(title),
+        content=ft.Text(message),
+        actions=[
+            ft.TextButton(cancel_label, on_click=close),
+            ft.TextButton(
+                content=ft.Text(confirm_label, color=theme.DANGER),
+                on_click=confirm,
+            ),
+        ],
     )
+    page.show_dialog(dialog)

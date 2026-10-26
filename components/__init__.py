@@ -19,10 +19,15 @@ from components.buttons import (
 )
 from components.command_palette import CommandPalette
 from components.inputs import dropdown, text_field
-from components.progress import ProgressHeader, RawLogPanel, status_row
+from components.progress import (
+    ProgressHeader,
+    RawLogPanel,
+    StepRow,
+    run_step,
+    status_row,
+)
 from components.stepper import Stepper
 from components.surfaces import (
-    badge,
     banner,
     card,
     section_header,
@@ -33,14 +38,15 @@ __all__ = [
     "CommandPalette",
     "ProgressHeader",
     "RawLogPanel",
+    "StepRow",
     "Stepper",
-    "badge",
     "banner",
     "card",
     "danger_button",
     "dropdown",
     "ghost_button",
     "primary_button",
+    "run_step",
     "secondary_button",
     "section_header",
     "set_button_loading",

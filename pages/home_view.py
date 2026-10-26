@@ -3,7 +3,7 @@
 With the persistent sidebar now owning navigation, org/session chips, and
 logout, Home is a compact landing dashboard rather than the app's primary
 navigation surface: a short intro, a tidy row of tool cards, and a keyboard
-shortcut hint. The session countdown and auto-logout live in `ShellView`.
+shortcut hint. The session countdown and auto-logout live in `AppShell`.
 """
 
 import flet as ft
@@ -12,37 +12,37 @@ import theme
 from components import card
 from pages.app_shell import ToolView
 
-# (route, title, icon, brand tint, description) for the three tool cards.
+# (route, title, icon, brand tint token, description) for the three tool
+# cards. Tints are theme token names, resolved when the card is drawn.
 _TOOLS = [
     (
         "/commission",
         "Commission",
         ft.Icons.BUSINESS_ROUNDED,
-        theme.BRAND_COMMISSION,
+        "BRAND_COMMISSION",
         "Set up sites, claim devices, and configure templates.",
     ),
     (
         "/users",
         "User Management",
         ft.Icons.PEOPLE_ALT_ROUNDED,
-        theme.BRAND_USERS,
+        "BRAND_USERS",
         "Import and invite guest participants from external orgs.",
     ),
     (
         "/decommission",
         "Decommission",
         ft.Icons.DELETE_SWEEP_ROUNDED,
-        theme.BRAND_DECOMMISSION,
+        "BRAND_DECOMMISSION",
         "Scan and remove assets with dependency-aware ordering.",
     ),
 ]
 
 
 class HomeView(ToolView):
-    def __init__(self, push_route, pop_route):
+    def __init__(self, push_route):
         super().__init__(
             push_route,
-            pop_route,
             route="/home",
             title="Home",
             subtitle="Pick a tool to get started.",
@@ -60,6 +60,7 @@ class HomeView(ToolView):
         self.mount(cards_row)
 
     def _tool_card(self, route, title, icon, brand, description) -> ft.Control:
+        brand = getattr(theme, brand)
         inner = card(
             ft.Column(
                 [

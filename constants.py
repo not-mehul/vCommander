@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 # App Info
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 GITHUB_REPO = "not-mehul/vCommander"
 
 _INTERNAL_MARKER = Path(__file__).parent / "assets" / "kits.internal.csv"
@@ -50,7 +50,6 @@ MIN_WIDTH = 1100
 MIN_HEIGHT = 800
 
 # Layout
-PAGE_PADDING = 30
 CARD_PADDING = 20
 FIELD_SPACING = 15
 
@@ -67,6 +66,15 @@ SESSION_MAX_EXTENSIONS = 2
 SEARCH_DURATION = 7
 
 # API
+# Verkada API regions, as chosen on the login screen (US / EU / AU). Public
+# API calls go to https://<region>.verkada.com; region-scoped internal
+# endpoints go to https://<region>.command.verkada.com.
+API_REGIONS = ("api", "api.eu", "api.au")
+
+# Page size for the internal list endpoints that only return one page
+# (visitors, visits, archives, incidents). See PAGED_CATEGORIES.
+INTERNAL_PAGE_SIZE = 99
+
 # Used as a prefix for generated External API key names. The internal client
 # appends a unique suffix (e.g. a unix timestamp) at call time, producing
 # names like "vCommander - Automation API - v2.0.1 - 1714316400".
@@ -115,7 +123,6 @@ ESS_GUEST_ADDRESS = (
     -122.3210929,
     "US",
 )
-ESS_PARTITION_NAME = "VCE Partition"
 
 # ACSL commission constants
 ACSL_SITE_NAME = "HQ"
@@ -295,7 +302,8 @@ ASSET_CATEGORIES = [
 
 # Parent groups for the SELECT UI. Each parent renders one collapsible
 # tile with a checkbox that toggles all of its (non-empty) children.
-# Children are listed in their intended deletion sub-order.
+# Children are listed in display order; DELETION_ORDER (below) decides the
+# order they are actually deleted in.
 CATEGORY_GROUPS = {
     "Access Control": [
         "Doors",
@@ -404,6 +412,17 @@ DELETION_ORDER = [
     # Sites last of all
     "Sites",
 ]
+
+# Scanned for visibility but impossible to delete (Verkada exposes no delete
+# endpoint). Shown read-only in the SELECT step and never counted as
+# selected, so the Confirm total always matches what is deleted.
+READ_ONLY_CATEGORIES = frozenset({"Unassigned Devices"})
+
+# Categories whose getter returns at most INTERNAL_PAGE_SIZE items per call.
+# When a scan comes back full, the delete loop re-lists the category after
+# each pass and keeps deleting until nothing new appears, so larger orgs are
+# cleaned out completely.
+PAGED_CATEGORIES = frozenset({"Visits", "Visitors", "Archives", "Incidents"})
 
 ROLE_PROPAGATION_SECONDS = 3
 BUILDING_PROVISION_SECONDS = 3

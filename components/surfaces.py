@@ -1,5 +1,5 @@
 """Surface & feedback components: cards, section headers, stat rows,
-banners, and badges.
+and banners.
 
 These replace the repeated `ft.Container(bgcolor=SURFACE, border_radius=…,
 border=…, shadow=…)` blocks scattered across the views with one consistent
@@ -12,17 +12,20 @@ import flet as ft
 
 import theme
 
-# Map a semantic kind to its (color, icon) pair for banners/badges.
+# Map a semantic kind to its (theme color token, icon) for banners. The
+# token is resolved at draw time so a light/dark switch is picked up.
 _KIND = {
-    "info": (theme.INFO, ft.Icons.INFO_OUTLINE),
-    "success": (theme.SUCCESS, ft.Icons.CHECK_CIRCLE_OUTLINE),
-    "warning": (theme.WARNING, ft.Icons.WARNING_AMBER_ROUNDED),
-    "danger": (theme.DANGER, ft.Icons.ERROR_OUTLINE),
+    "info": ("INFO", ft.Icons.INFO_OUTLINE),
+    "success": ("SUCCESS", ft.Icons.CHECK_CIRCLE_OUTLINE),
+    "warning": ("WARNING", ft.Icons.WARNING_AMBER_ROUNDED),
+    "danger": ("DANGER", ft.Icons.ERROR_OUTLINE),
 }
 
 
-def _kind_color(kind: str) -> str:
-    return _KIND.get(kind, _KIND["info"])[0]
+def kind_style(kind: str) -> tuple[str, str]:
+    """(color, icon) for a semantic kind in the active palette."""
+    token, icon = _KIND.get(kind, _KIND["info"])
+    return getattr(theme, token), icon
 
 
 def card(
@@ -106,7 +109,7 @@ def stat_row(label: str, value, *, accent: str | None = None) -> ft.Control:
 
 def banner(message: str, *, kind: str = "info") -> ft.Container:
     """An inline, non-blocking banner with a semantic icon + tinted fill."""
-    color, icon = _KIND.get(kind, _KIND["info"])
+    color, icon = kind_style(kind)
     return ft.Container(
         bgcolor=theme.palette.tint(color, 0.12),
         border=ft.Border.all(1, theme.palette.tint(color, 0.4)),
@@ -129,17 +132,3 @@ def banner(message: str, *, kind: str = "info") -> ft.Container:
         ),
     )
 
-
-def badge(text: str, *, kind: str = "info") -> ft.Container:
-    """A small pill label (status tag)."""
-    color = _kind_color(kind)
-    return ft.Container(
-        bgcolor=theme.palette.tint(color, 0.16),
-        border_radius=theme.RADIUS_PILL,
-        padding=ft.Padding.symmetric(
-            horizontal=theme.SPACE_MD, vertical=theme.SPACE_XS
-        ),
-        content=ft.Text(
-            text, color=color, size=theme.FONT_MICRO, weight=theme.WEIGHT_SEMIBOLD
-        ),
-    )
