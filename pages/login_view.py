@@ -1,8 +1,10 @@
 """Login screen.
 
-Collects email, password, org short name, API region, and shard, then
-constructs a VerkadaInternalAPIClient for that region and authenticates. On
-success it stashes the client in `utils.session` and routes to /home;
+Collects email, password and org short name, then constructs a
+VerkadaInternalAPIClient and authenticates. The client looks the org up first
+(org/validate_short_name) to find the shard and API hosts it lives on, so the
+user never picks a shard or region. On success it stashes the client in
+`utils.session` and routes to /home;
 on MFARequiredError it routes to /2fa. Saved credentials are loaded
 from the local SQLite store on mount.
 
@@ -16,9 +18,13 @@ import asyncio
 import flet as ft
 
 import theme
-from apis.internal_api import MFARequiredError, VerkadaInternalAPIClient
-from components import dropdown, primary_button, set_button_loading, text_field
-from constants import API_REGION_LABELS, API_REGIONS, APP_VERSION, FIELD_SPACING
+from apis.internal_api import (
+    MFARequiredError,
+    OrgNotFoundError,
+    VerkadaInternalAPIClient,
+)
+from components import primary_button, set_button_loading, text_field
+from constants import APP_VERSION, FIELD_SPACING
 from utils.db import load_credentials, save_credentials
 from utils.executor import _executor
 from utils.session import set_internal_client
@@ -52,18 +58,9 @@ class LoginView(ft.View):
         self.org_field = text_field(
             "Org Short Name",
             value=creds.get("org_short_name", ""),
+            hint="The part before .command.verkada.com",
             on_change=self._clear_error,
             on_submit=self._on_login,
-        )
-        self.region_dropdown = dropdown(
-            "API Region",
-            [ft.dropdown.Option(key=r, text=API_REGION_LABELS[r]) for r in API_REGIONS],
-            value=creds.get("api_region") or "api",
-        )
-        self.shard_dropdown = dropdown(
-            "Shard",
-            [ft.dropdown.Option("prod1"), ft.dropdown.Option("prod2")],
-            value=creds.get("shard", "prod1"),
         )
 
         self.login_btn = primary_button("Login", on_click=self._on_login, height=45)
@@ -97,28 +94,10 @@ class LoginView(ft.View):
                     ],
                     spacing=row_spacing,
                 ),
-                ft.Row(
-                    [
-                        ft.Container(content=self.org_field, expand=1),
-                        ft.Container(
-                            content=ft.Row(
-                                [
-                                    ft.Container(
-                                        content=self.region_dropdown, expand=1
-                                    ),
-                                    ft.Container(
-                                        content=self.shard_dropdown, expand=1
-                                    ),
-                                ],
-                                spacing=row_spacing,
-                            ),
-                            expand=1,
-                        ),
-                    ],
-                    spacing=row_spacing,
-                ),
+                self.org_field,
             ],
             spacing=row_spacing,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
         card = ft.Container(
@@ -209,6 +188,18 @@ class LoginView(ft.View):
             ok = False
         return ok
 
+    @staticmethod
+    def _save(client: VerkadaInternalAPIClient) -> None:
+        """Remember the login; shard/region are stored for reference only
+        (they are re-resolved from the org short name on every login)."""
+        save_credentials(
+            client.email,
+            client.password,
+            client.org_short_name,
+            client.public_api_region,
+            client.host_shard.name,
+        )
+
     def _show_error(self, page, message: str):
         self._error_text.value = message
         self._error_banner.visible = True
@@ -223,27 +214,29 @@ class LoginView(ft.View):
         email = _strip(self.email_field.value)
         password = self.password_field.value or ""
         org = _strip(self.org_field.value)
-        region = self.region_dropdown.value or "api"
-        shard = self.shard_dropdown.value or "prod1"
 
         set_button_loading(self.login_btn, True, "Logging in")
         await asyncio.sleep(0)
 
         # Construct the client outside the try/except so it remains available
         # to the MFARequiredError handler. Login itself is what may raise.
-        client = VerkadaInternalAPIClient(email, password, org, shard, region)
+        client = VerkadaInternalAPIClient(email, password, org)
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(_executor, client.login)
-            save_credentials(email, password, org, region, shard)
+            self._save(client)
             set_internal_client(client)
             self.push_route("/home")
         except MFARequiredError:
             # Reuse the same client instance — it holds partial auth state
             # from login that verify_mfa() needs to complete the flow.
             set_internal_client(client)
-            save_credentials(email, password, org, region, shard)
+            self._save(client)
             self.push_route("/2fa")
+        except OrgNotFoundError as ex:
+            set_button_loading(self.login_btn, False, "Login")
+            self.org_field.error = str(ex)
+            e.page.update()
         except Exception as ex:
             set_button_loading(self.login_btn, False, "Login")
             self._show_error(e.page, str(ex))

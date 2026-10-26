@@ -665,7 +665,7 @@ class CommissionView(ToolView):
             VerkadaExternalAPIClient,
             self._api_key.key,
             client.org_short_name,
-            client.region,
+            client.public_api_region,
         )
         if ext_client is None:
             return

@@ -1,6 +1,8 @@
+import re
 import time
 from typing import Any, NamedTuple
 
+import requests
 from requests.exceptions import JSONDecodeError, RequestException
 
 from apis.endpoints import (
@@ -10,17 +12,18 @@ from apis.endpoints import (
     _DOOR_EVENT,
     _LPR_DOOR_CREATE_CONFIGS,
     _MFA_DOOR_EVENT,
+    DEFAULT_SHARD,
     Address,
     AlarmAddress,
     GuestAddress,
     MFARequiredError,
+    OrgShard,
     build_url,
     resolve,
 )
 from apis.http import build_session
 from constants import (
     API_NAME,
-    API_REGIONS,
     AS_INSTRUCTOR_KEYCODE,
     AS_INSTRUCTOR_KEYCODE_NAME,
     DEFAULT_TIMEOUT,
@@ -29,6 +32,85 @@ from constants import (
     SEARCH_DURATION,
 )
 from utils.logger import log_api_call
+
+
+class OrgNotFoundError(ValueError):
+    """org/validate_short_name doesn't know the org short name."""
+
+
+# A hostname (or label) as returned in shard host metadata. Anything else is
+# rejected rather than spliced into request URLs.
+_HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+
+
+def validate_org_short_name(
+    org_short_name: str, session: requests.Session | None = None
+) -> OrgShard:
+    """Look up which shard hosts an org (pre-auth, shard-independent).
+
+    POSTs org/validate_short_name on the global vglobal service. The
+    response names the shard and its host metadata, from which every
+    internal and public-API host for the org is built.
+
+    Raises:
+        OrgNotFoundError: the short name isn't a known org (4xx, or a 2xx
+            without shard details).
+        ConnectionError: transport failure, a 5xx, or malformed host data.
+    """
+    endpoint, path = resolve("org.validate_short_name")
+    url = build_url(endpoint, org_short_name, path)
+    log_label = f"{org_short_name}/{path}"
+    session = session or build_session()
+    try:
+        response = session.post(
+            url, json={"orgShortName": org_short_name}, timeout=DEFAULT_TIMEOUT
+        )
+    except RequestException as e:
+        raise ConnectionError(f"Couldn't look up org '{org_short_name}': {e}") from e
+
+    try:
+        data = response.json() if response.content else {}
+    except JSONDecodeError:
+        data = {}
+    shard = data.get("shard") if isinstance(data, dict) else None
+    log_api_call(
+        "POST",
+        log_label,
+        f'{{"orgShortName": "{org_short_name}"}}',
+        str(response.status_code),
+        f'{{"shard": "{(shard or {}).get("name")}"}}',
+    )
+    if response.status_code >= 500:
+        raise ConnectionError(
+            f"Couldn't look up org '{org_short_name}' (HTTP {response.status_code})."
+        )
+    if not response.ok or not isinstance(shard, dict):
+        raise OrgNotFoundError(f"No Verkada org named '{org_short_name}' was found.")
+
+    hosts = shard.get("host_metadata") or {}
+    result = OrgShard(
+        name=str(shard.get("name") or ""),
+        domain=str(hosts.get("domain") or ""),
+        api_gateway_endpoint=str(hosts.get("api_gateway_endpoint") or "api"),
+        public_api_endpoint=str(hosts.get("public_api_endpoint") or "api"),
+        readable_name=str(shard.get("readable_name") or ""),
+        org_name=str(data.get("name") or ""),
+    )
+    for label in (
+        result.domain,
+        result.api_gateway_endpoint,
+        result.public_api_endpoint,
+    ):
+        if not _HOSTNAME.match(label):
+            raise ConnectionError(
+                f"Org lookup for '{org_short_name}' returned an unusable host "
+                f"({label!r})."
+            )
+    if not result.name:
+        raise ConnectionError(
+            f"Org lookup for '{org_short_name}' returned no shard name."
+        )
+    return result
 
 
 class APIError(ConnectionError):
@@ -118,20 +200,14 @@ class VerkadaInternalAPIClient:
         email: str,
         password: str,
         org_short_name: str,
-        shard: str = "prod1",
-        region: str = "api",
+        shard: OrgShard | None = None,
     ):
-        if region not in API_REGIONS:
-            raise ValueError(
-                f"Invalid region: {region!r}; expected one of {list(API_REGIONS)}"
-            )
         self.email = email
         self.password = password
         self.org_short_name = org_short_name
+        # Where the org is hosted. Resolved from org/validate_short_name by
+        # login() unless given; every request URL is built from it.
         self.shard = shard
-        # API region ("api" / "api.eu" / "api.au"): routes the region-scoped
-        # internal endpoints and is handed to the public-API client.
-        self.region = region
 
         # Persistent session keeps cookies alive across requests; the shared
         # factory adds retry on transient failures + a default timeout.
@@ -152,6 +228,22 @@ class VerkadaInternalAPIClient:
     # ------------------------------------------------------------------
     # Identity helpers
     # ------------------------------------------------------------------
+
+    @property
+    def host_shard(self) -> OrgShard:
+        """The resolved shard, or the default US shard before resolution."""
+        return self.shard or DEFAULT_SHARD
+
+    @property
+    def public_api_region(self) -> str:
+        """Public-API host label for this org ("api", "api.eu", …)."""
+        return self.host_shard.public_api_endpoint
+
+    def resolve_shard(self) -> OrgShard:
+        """Look up (once) which shard hosts this org."""
+        if self.shard is None:
+            self.shard = validate_org_short_name(self.org_short_name, self.session)
+        return self.shard
 
     @property
     def user_id(self) -> str | None:
@@ -222,7 +314,7 @@ class VerkadaInternalAPIClient:
     def _login_url(self) -> str:
         """Pre-auth helper: build the login URL from the registry."""
         endpoint, formatted_path = resolve("login")
-        return build_url(endpoint, self.org_short_name, formatted_path, self.region)
+        return build_url(endpoint, self.org_short_name, formatted_path, self.host_shard)
 
     def _set_global_site_admin(self, enabled: bool) -> None:
         key = (
@@ -452,7 +544,7 @@ class VerkadaInternalAPIClient:
             raise PermissionError("Not authenticated. Please call login() first.")
 
         endpoint, formatted_path = resolve(endpoint_key, path_params)
-        url = build_url(endpoint, self.org_short_name, formatted_path, self.region)
+        url = build_url(endpoint, self.org_short_name, formatted_path, self.host_shard)
 
         try:
             response = self.session.request(
@@ -577,7 +669,7 @@ class VerkadaInternalAPIClient:
         decide whether a send failure should block the 2FA challenge.
         """
         endpoint, formatted_path = resolve("auth.twofactor.sms.new")
-        url = build_url(endpoint, self.org_short_name, formatted_path, self.region)
+        url = build_url(endpoint, self.org_short_name, formatted_path, self.host_shard)
         payload = {
             "email": self.email,
             "password": self.password,
@@ -640,13 +732,15 @@ class VerkadaInternalAPIClient:
             self.session.cookies.set("token", "dev-csrf")
             return
 
+        # Route the login (and everything after it) to the org's shard.
+        shard = self.resolve_shard()
         payload = {
             "email": self.email,
             "orgShortName": self.org_short_name,
             "termsAcked": False,
             "password": self.password,
             "loginMethod": "password",
-            "shard": self.shard,
+            "shard": shard.name,
             "subdomain": True,
         }
         log_label = f"{self.org_short_name}/user/login"

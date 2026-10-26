@@ -89,7 +89,6 @@ vCommander bundles three tools behind a single login. Pick whichever you need fr
    - **Email** — the email you use to sign into Verkada Command.
    - **Password** — your Verkada Command password.
    - **Org Short Name** — the part before `.command.verkada.com` in your Command URL. For example, if you log in at `acme-training.command.verkada.com`, your short name is `acme-training`.
-   - **API Region** — pick `api` for US, `api.eu` for Europe, or `api.au` for Australia. Every API call for the session goes to this region.
 3. Click **Login**.
 4. You'll be prompted for a code from SMS or your authenticator app. Enter it.
 
@@ -112,7 +111,7 @@ If you want to run vCommander from source, modify it, or build your own packaged
 - **OS:** macOS, Windows, or Linux. Flet runs as a native desktop window.
 - **Flet 1.0.x** — pinned in `requirements.txt` (`flet>=1.0.5,<1.1`). On first launch Flet downloads its desktop runtime if it isn't installed yet.
 - **A Verkada Command account** with **Org Admin** rights on the target org.
-- **Network access** to `*.command.verkada.com` and `api.verkada.com` (or `api.eu.verkada.com` / `api.au.verkada.com` depending on region).
+- **Network access** to `vglobal.global-prod.verkada.com` (org lookup), your org's shard hosts (`*.command.verkada.com`, `*.prod-us-ohio.verkada.com`, … — see [Shards](#shards-and-regions)) and the public API (`api.verkada.com`, or the regional host your org uses).
 
 ### Install from source
  
@@ -136,15 +135,13 @@ python main.py
 
 ### Logging In
  
-The login screen captures five fields plus an optional 2FA step:
+The login screen captures three fields plus an optional 2FA step. There is no shard or region to pick: vCommander looks the org short name up first and routes everything to the shard it lives on (see [Shards](#shards-and-regions)). An unknown short name is flagged on the field before any credentials are sent.
  
 | Field | What to enter | Example |
 |---|---|---|
 | Email | Your Verkada Command admin email | `you@company.com` |
 | Password | Your Verkada Command password | — |
 | Org Short Name | The subdomain of your Command URL | `acme-training` |
-| API Region | The API region your org lives in | `api`, `api.eu`, or `api.au` |
-| Shard | The Command shard your org lives on | `prod1` or `prod2` |
 
 <p align="center">
   <img src="docs/screenshots/Login-Page.png" alt="Login screen" width="48%" />
@@ -197,7 +194,7 @@ Bulk-invites users to your current org by pulling them from another org's **gues
  
 **Steps:**
  
-1. **Connect to a source org** — enter its short name, its **API region**, and a Verkada **public-API key** (generate one in the source org's Command settings). The source org's region can differ from the org you're logged in to.
+1. **Connect to a source org** — enter its short name and a Verkada **public-API key** (generate one in the source org's Command settings). vCommander looks up the source org's region itself; it can differ from the org you're logged in to.
 2. **Pick a site and a date** — vCommander fetches the guest-visit participants who checked in at that site on that day.
 3. **Review the list** — you can edit names and emails inline, or remove rows you don't want to invite. Malformed emails are flagged before anything is sent. Use **Back** on steps 2 and 3 to change the site/date or the source org without starting over.
 4. **Send invites** — invitations are sent against the org you're logged into, and (unless you turn it off in step 3) everyone invited is added to the **All Participants** group. A copy-able summary at the end breaks down successful vs. failed invites.
@@ -358,7 +355,6 @@ Everything user-tunable lives at the top of [`constants.py`](constants.py):
 | `SESSION_TIMEOUT_MINUTES` | `30` | Minutes after login before auto-logout (fixed window, not reset by navigation). |
 | `SESSION_WARNING_MINUTES` | `5` | When to show the "session ending" warning. |
 | `SESSION_EXTENSION_MINUTES` / `SESSION_MAX_EXTENSIONS` | `15` / `2` | Size and number of "Extend session" grants. |
-| `API_REGIONS` | `api`, `api.eu`, `api.au` | Regions offered on the login and Users screens. |
 | `ESS_*` / `VSSL_*` / `AS_*` … | HQ data | Default site/building/address constants per template. |
 | `TEMPLATE_FIELDS` | — | Add/remove devices that a template asks for. |
 | `DELETION_ORDER` | — | Order in which categories are deleted — **dependency-sensitive, edit with care.** |
@@ -449,7 +445,7 @@ SHOT_VIEW=decommission SHOT_STATE=select SHOT_THEME=light SHOT_PORT=8700 python 
 - Accesses internal/private APIs for comprehensive device management.
 - Handles login, MFA verification, and privilege escalation.
 - Dynamically generates temporary API keys with a 1-hour TTL, and deletes them again when the run that created them ends.
-- Region-scoped endpoints are sent to the session's API region (`api` / `api.eu` / `api.au`).
+- Every request goes to the org's shard: `https://<service>.<shard domain>/__v/<org>/…` (see below).
 **`VerkadaExternalAPIClient`** (`apis/external_api.py`)
 - Uses the standard public API endpoints documented at [`apidocs.verkada.com`](https://apidocs.verkada.com).
 - Automatic token generation (refreshed on 401/403) and full pagination of list endpoints.
@@ -457,6 +453,19 @@ SHOT_VIEW=decommission SHOT_STATE=select SHOT_THEME=light SHOT_PORT=8700 python 
 The Decommission tool uses a **hybrid architecture** — combining the internal client (for assets the public API doesn't expose) with the external client (for everything else) to get full coverage.
 
 Both clients share `apis/http.py`: every request has a default timeout, and transient failures are retried — but a `POST` (create site, claim device, invite user) is only retried when the server provably did nothing (connection never opened, or HTTP 429), so a retry can never create a duplicate.
+
+### Shards and regions
+
+Command orgs are hosted on separate shards (`prod1`, `prod2`, `prod-ap-syd`, `prod-us-ohio`, …), each with its own host names. Before logging in, vCommander calls `org/validate_short_name` on the global `vglobal.global-prod.verkada.com` service. The response names the org's shard and its host metadata, and the client builds every URL from it:
+
+| From the lookup | Used for | `prod-us-ohio` example |
+|---|---|---|
+| `shard.name` | `shard` in the login request | `prod-us-ohio` |
+| `host_metadata.domain` | every internal service: `https://<service>.<domain>` | `vprovision.prod-us-ohio.verkada.com` |
+| `host_metadata.api_gateway_endpoint` | gateway endpoints (registered with subdomain `api`) | `api.prod-us-ohio.verkada.com` |
+| `host_metadata.public_api_endpoint` | the public API: `https://<label>.verkada.com` | `api.verkada.com` |
+
+The endpoint paths and payloads are the same on every shard; only the hosts differ. The resolved org name and shard are shown in the sidebar. Before an org is resolved (and for the dev login bypass) the client falls back to `prod1` on `command.verkada.com`.
 
 ### Deletion Order
  

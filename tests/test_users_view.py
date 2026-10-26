@@ -3,10 +3,12 @@ import asyncio
 from conftest import Event
 
 import pages.users_view as uv
+from apis.endpoints import OrgShard
+from apis.internal_api import OrgNotFoundError
 from utils import db, session
 
 
-def test_connect_uses_and_saves_the_external_region(page, monkeypatch):
+def test_connect_looks_up_the_source_org_region(page, monkeypatch):
     seen = {}
 
     class FakeExternal:
@@ -17,15 +19,37 @@ def test_connect_uses_and_saves_the_external_region(page, monkeypatch):
             return [{"site_id": "s1", "name": "HQ"}]
 
     monkeypatch.setattr(uv, "VerkadaExternalAPIClient", FakeExternal)
+    monkeypatch.setattr(
+        uv,
+        "validate_org_short_name",
+        lambda org: OrgShard(
+            "prod-eu", "prod-eu.verkada.com", public_api_endpoint="api.eu",
+            readable_name="EU", org_name="Source Org",
+        ),
+    )
     view = uv.UsersView(lambda route: None)
     view.page = page
     view._api_key_field.value = "key"
     view._import_org_field.value = "source-org"
-    view._import_region_dropdown.value = "api.eu"
     asyncio.run(view._on_connect(Event(page)))
     assert seen["region"] == "api.eu"
     assert db.load_import_settings()["api_region"] == "api.eu"
     assert view._current_step == 1
+    assert view._source_org_text.value == "Connected to Source Org · EU"
+
+
+def test_connect_flags_an_unknown_source_org(page, monkeypatch):
+    def not_found(org):
+        raise OrgNotFoundError(f"No Verkada org named '{org}' was found.")
+
+    monkeypatch.setattr(uv, "validate_org_short_name", not_found)
+    view = uv.UsersView(lambda route: None)
+    view.page = page
+    view._api_key_field.value = "key"
+    view._import_org_field.value = "typo-org"
+    asyncio.run(view._on_connect(Event(page)))
+    assert view._import_org_field.error == "No Verkada org named 'typo-org' was found."
+    assert view._current_step == 0
 
 
 def test_stopping_an_invite_batch_skips_the_rest(page, monkeypatch):

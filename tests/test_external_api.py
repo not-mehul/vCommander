@@ -96,6 +96,7 @@ def test_access_group_calls_use_the_client_region(region):
     }
 
 
-def test_invalid_region_is_rejected():
+@pytest.mark.parametrize("region", ["evil.com", "api/../x", "api.eu/x", "API"])
+def test_malformed_region_is_rejected(region):
     with pytest.raises(ValueError):
-        VerkadaExternalAPIClient("k", "org", region="api.mars")
+        VerkadaExternalAPIClient("k", "org", region=region)

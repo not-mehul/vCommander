@@ -1,7 +1,8 @@
 """Users screen — guest invitation workflow.
 
 Four-step wizard:
-  1. Connect to an external Verkada org (org short name, API key, region).
+  1. Connect to an external Verkada org (org short name + API key; its
+     shard and public-API region are looked up from the short name).
   2. Pick a date range and pull guest participants from that org.
   3. Review/edit the list, optionally trim rows.
   4. Send invites against the currently logged-in (internal) org and
@@ -15,6 +16,7 @@ import flet as ft
 
 import theme
 from apis.external_api import VerkadaExternalAPIClient
+from apis.internal_api import OrgNotFoundError, validate_org_short_name
 from components import (
     ProgressHeader,
     Stepper,
@@ -32,8 +34,6 @@ from components import (
     text_field,
 )
 from constants import (
-    API_REGION_LABELS,
-    API_REGIONS,
     BORDER,
     CARD_PADDING,
     COMMAND_GROUP_NAME,
@@ -154,14 +154,7 @@ class UsersView(ToolView):
         self._import_org_field = text_field(
             label="Org Short Name (External)",
             value=org_default,
-        )
-        # The external org's API region — independent of the region this
-        # session logged in to, since participants may come from anywhere.
-        self._import_region_dropdown = dropdown(
-            "API Region (External)",
-            [ft.dropdown.Option(key=r, text=API_REGION_LABELS[r]) for r in API_REGIONS],
-            value=(settings or {}).get("api_region")
-            or defaults.get("api_region", "api"),
+            on_change=self._clear_field_error,
         )
         self._connect_btn = primary_button("Connect", on_click=self._on_connect)
 
@@ -175,13 +168,7 @@ class UsersView(ToolView):
                 ft.Container(height=10),
                 self._api_key_field,
                 ft.Container(height=FIELD_SPACING),
-                ft.Row(
-                    [
-                        ft.Container(content=self._import_org_field, expand=2),
-                        ft.Container(content=self._import_region_dropdown, expand=1),
-                    ],
-                    spacing=FIELD_SPACING,
-                ),
+                self._import_org_field,
                 ft.Container(height=FIELD_SPACING + 5),
                 self._connect_btn,
             ],
@@ -191,7 +178,6 @@ class UsersView(ToolView):
     async def _on_connect(self, e):
         api_key = _strip(self._api_key_field.value)
         org = _strip(self._import_org_field.value)
-        region = self._import_region_dropdown.value or "api"
         if not api_key or not org:
             show_toast(
                 e.page,
@@ -205,11 +191,24 @@ class UsersView(ToolView):
 
         try:
             loop = asyncio.get_running_loop()
+            # The source org may live on a different shard/region than the
+            # org this session is logged in to; look it up by short name.
+            shard = await loop.run_in_executor(
+                _executor, validate_org_short_name, org
+            )
             client = await loop.run_in_executor(
-                _executor, VerkadaExternalAPIClient, api_key, org, region
+                _executor,
+                VerkadaExternalAPIClient,
+                api_key,
+                org,
+                shard.public_api_endpoint,
             )
             set_external_client(client)
-            save_import_settings(org, api_key, region)
+            save_import_settings(org, api_key, shard.public_api_endpoint)
+            self._source_org_text.value = (
+                f"Connected to {shard.org_name or org}"
+                + (f" · {shard.readable_name}" if shard.readable_name else "")
+            )
 
             # Load sites for step 2
             self._sites = await loop.run_in_executor(_executor, client.get_sites)
@@ -221,6 +220,10 @@ class UsersView(ToolView):
                 self._site_dropdown.value = self._sites[0]["site_id"]
 
             self._go_to_step(1, e.page)
+        except OrgNotFoundError as ex:
+            set_button_loading(self._connect_btn, False, "Connect")
+            self._import_org_field.error = str(ex)
+            e.page.update()
         except Exception as ex:
             set_button_loading(self._connect_btn, False, "Connect")
             show_alert(e.page, "Connection Failed", str(ex))
@@ -230,6 +233,9 @@ class UsersView(ToolView):
     # ------------------------------------------------------------------
 
     def _build_step_2(self) -> ft.Column:
+        self._source_org_text = ft.Text(
+            "", size=theme.FONT_CAPTION, color=theme.TEXT_MUTED
+        )
         self._site_dropdown = dropdown("Guest site", [])
         self._date_btn = secondary_button(
             self._date_text(),
@@ -249,6 +255,7 @@ class UsersView(ToolView):
                     "Participants are the guests who visited this site on "
                     "this day.",
                 ),
+                self._source_org_text,
                 ft.Container(height=10),
                 ft.Row(
                     [self._site_dropdown, self._date_btn],

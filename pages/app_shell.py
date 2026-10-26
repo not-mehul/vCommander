@@ -28,6 +28,7 @@ from utils.session import (
     can_extend,
     clear_session,
     extend_session,
+    get_internal_client,
     get_session_remaining,
     start_session,
 )
@@ -237,6 +238,7 @@ class AppShell(ft.View):
                 ft.Divider(height=1, color=theme.BORDER_SUBTLE),
                 ft.Container(height=theme.SPACE_SM),
                 self._chip(ft.Icons.CORPORATE_FARE_ROUNDED, self._org_name()),
+                self._chip(ft.Icons.PUBLIC_ROUNDED, self._shard_label()),
                 ft.Container(
                     content=ft.Row(
                         [
@@ -367,9 +369,28 @@ class AppShell(ft.View):
         if _THEME_TOGGLE is not None:
             _THEME_TOGGLE()
 
+    @staticmethod
+    def _client():
+        try:
+            return get_internal_client()
+        except RuntimeError:
+            return None
+
     def _org_name(self) -> str:
+        """The org's display name from the shard lookup, else its short name."""
+        client = self._client()
+        if client is not None and client.shard and client.shard.org_name:
+            return client.shard.org_name
         creds = load_credentials() or {}
         return creds.get("org_short_name") or "—"
+
+    def _shard_label(self) -> str:
+        """e.g. "US · prod-us-ohio" — where the session's org is hosted."""
+        client = self._client()
+        if client is None or client.shard is None:
+            return "—"
+        shard = client.shard
+        return " · ".join(p for p in (shard.readable_name, shard.name) if p)
 
     def _get_page(self):
         """Return the page, or None if not mounted yet (0.85 raises otherwise)."""

@@ -1,10 +1,15 @@
+import re
 from typing import Any
 
 from requests.exceptions import JSONDecodeError, RequestException
 
 from apis.http import build_session
-from constants import API_REGIONS
 from utils.logger import log_api_call
+
+# The public API lives at https://<region>.verkada.com, where region is the
+# org's public_api_endpoint label ("api", "api.eu", "api.au", …) from
+# org/validate_short_name. Only well-formed host labels are accepted.
+_REGION = re.compile(r"^api(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
 
 # Public-API list endpoints page with `page_size` + `page_token`, returning
 # `next_page_token` until the last page. The cap only guards against a
@@ -22,10 +27,8 @@ class VerkadaExternalAPIClient:
 
     def __init__(self, api_key: str, org_short_name: str, region: str = "api"):
         region = region or "api"
-        if region not in API_REGIONS:
-            raise ValueError(
-                f"Invalid region: {region!r}; expected one of {list(API_REGIONS)}"
-            )
+        if not _REGION.match(region):
+            raise ValueError(f"Invalid public API region: {region!r}")
         self.api_key = api_key
         self.org_short_name = org_short_name
         self.region = region

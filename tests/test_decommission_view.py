@@ -26,7 +26,7 @@ _DELETER_TO_CATEGORY = {
 class FakeOrg:
     """In-memory org. Paged categories return one INTERNAL_PAGE_SIZE page."""
 
-    org_short_name, region, user_id = "lab", "api", "me"
+    org_short_name, public_api_region, user_id = "lab", "api", "me"
 
     def __init__(self, assets, *, fail_ids=(), scan_error=None):
         self.store = {c: [dict(i) for i in items] for c, items in assets.items()}

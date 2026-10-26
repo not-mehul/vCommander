@@ -406,7 +406,7 @@ class DecommissionView(ToolView):
                 VerkadaExternalAPIClient,
                 self._api_key.key,
                 client.org_short_name,
-                client.region,
+                client.public_api_region,
             )
 
             # Pre-scan permission elevation. Both calls grant the running

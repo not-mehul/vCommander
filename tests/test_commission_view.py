@@ -11,7 +11,7 @@ from utils import session
 
 
 class FakeInternal:
-    org_short_name, region, user_id = "lab", "api.eu", "me"
+    org_short_name, public_api_region, user_id = "lab", "api.eu", "me"
 
     def __init__(self, fail=(), key_error=None):
         self.fail, self.key_error, self.calls = set(fail), key_error, []
@@ -96,7 +96,7 @@ def test_api_key_failure_ends_in_a_report_not_a_hang(view, page, monkeypatch):
     assert session._active_run is None
 
 
-def test_external_client_gets_the_session_region(view, page, monkeypatch):
+def test_external_client_gets_the_org_public_api_region(view, page, monkeypatch):
     seen = {}
 
     def ext(key, org, region):
