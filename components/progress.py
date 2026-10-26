@@ -22,6 +22,7 @@ import flet as ft
 
 import theme
 from utils.executor import _executor
+from utils.logger import log_system
 
 # state -> (icon, theme color token). Tokens are resolved at draw time.
 _STATUS = {
@@ -127,6 +128,9 @@ async def run_step(
             _executor, fn, *args
         )
     except Exception as ex:
+        # Logged so a failed step shows up in the terminal and api_calls.log,
+        # not only in its progress row.
+        log_system(f"{label} failed: {ex}", level="ERROR")
         row.fail(
             f"{failure_text} — {ex}" if failure_text else f"{label} — failed: {ex}"
         )

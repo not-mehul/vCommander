@@ -41,6 +41,7 @@ OHIO_RESPONSE = {
 OHIO = OrgShard(
     name="prod-us-ohio",
     domain="prod-us-ohio.verkada.com",
+    public_api_endpoint="api",
     readable_name="US",
     org_name="SSS Alpha",
 )
@@ -124,6 +125,27 @@ def test_validate_rejects_unusable_hosts(field, value):
     session = _Session({"validate_short_name": _Resp(bad)})
     with pytest.raises(ConnectionError):
         validate_org_short_name("sss-alpha", session)
+
+
+@pytest.mark.parametrize(
+    ("region", "label"),
+    [("US", "api"), ("EU", "api.eu"), ("AU", "api.au"), ("us", "api"), ("", "api")],
+)
+def test_public_api_host_follows_the_shard_region(region, label):
+    # Command's shard table sets public_api_endpoint to "apiadmin" (the key
+    # admin service) on every shard; it must never become the public host.
+    shard = OrgShard("x", "x.verkada.com", public_api_endpoint="apiadmin",
+                     readable_name=region)
+    assert shard.public_api_region == label
+
+
+def test_validate_accepts_the_apiadmin_label():
+    live = json.loads(json.dumps(OHIO_RESPONSE))
+    live["shard"]["host_metadata"]["public_api_endpoint"] = "apiadmin"
+    session = _Session({"validate_short_name": _Resp(live)})
+    shard = validate_org_short_name("sss-alpha", session)
+    assert shard.public_api_endpoint == "apiadmin"
+    assert shard.public_api_region == "api"
 
 
 def test_validate_uses_the_global_domain():

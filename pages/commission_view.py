@@ -714,6 +714,7 @@ class CommissionView(ToolView):
             await asyncio.get_running_loop().run_in_executor(
                 _executor, client.delete_external_api_key, key.key_id
             )
+            log_system("Deleted temporary API key.")
             self._cleanup.append(("done", "Temporary API key deleted"))
         except Exception as ex:
             log_system(f"Could not delete temporary API key: {ex}", level="WARN")

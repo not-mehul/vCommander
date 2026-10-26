@@ -463,7 +463,9 @@ Command orgs are hosted on separate shards (`prod1`, `prod2`, `prod-ap-syd`, `pr
 | `shard.name` | `shard` in the login request | `prod-us-ohio` |
 | `host_metadata.domain` | every internal service: `https://<service>.<domain>` | `vprovision.prod-us-ohio.verkada.com` |
 | `host_metadata.api_gateway_endpoint` | gateway endpoints (registered with subdomain `api`) | `api.prod-us-ohio.verkada.com` |
-| `host_metadata.public_api_endpoint` | the public API: `https://<label>.verkada.com` | `api.verkada.com` |
+| `shard.readable_name` | the public API's region: `US` → `api.verkada.com`, `EU` → `api.eu.verkada.com`, `AU` → `api.au.verkada.com` | `api.verkada.com` |
+
+`host_metadata.public_api_endpoint` is not the public API's host: Command sets it to `apiadmin` (the API-key service) on every shard, so vCommander ignores it.
 
 The endpoint paths and payloads are the same on every shard; only the hosts differ. The resolved org name and shard are shown in the sidebar. Before an org is resolved (and for the dev login bypass) the client falls back to `prod1` on `command.verkada.com`.
 

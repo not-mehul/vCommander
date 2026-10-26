@@ -100,3 +100,34 @@ def test_access_group_calls_use_the_client_region(region):
 def test_malformed_region_is_rejected(region):
     with pytest.raises(ValueError):
         VerkadaExternalAPIClient("k", "org", region=region)
+
+
+class _TokenSession:
+    def __init__(self, resp):
+        self.resp, self.urls = resp, []
+
+    def post(self, url, headers=None):
+        self.urls.append(url)
+        return self.resp
+
+
+@pytest.mark.parametrize(
+    ("resp", "reason"),
+    [
+        (_Resp({"message": "invalid api key"}, 401), "invalid api key"),
+        (_Resp({"id": "x"}, 200), "missing 'token'"),
+        (_Resp(["unexpected"], 200), "unexpected"),
+    ],
+)
+def test_token_failures_are_logged_and_name_the_host(resp, reason, monkeypatch):
+    import apis.external_api as ext
+
+    logged = []
+    monkeypatch.setattr(ext, "log_api_call", lambda *a: logged.append(a))
+    monkeypatch.setattr(ext, "build_session", lambda: _TokenSession(resp))
+    with pytest.raises(ConnectionError, match="api.eu.verkada.com") as err:
+        VerkadaExternalAPIClient("k", "org", region="api.eu")
+    assert reason in str(err.value)
+    (method, endpoint, req, status, summary), = logged
+    assert endpoint == "api.eu.verkada.com/token" and reason in summary
+    assert req == '{"x-api-key": "***"}'

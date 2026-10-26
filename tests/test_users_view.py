@@ -23,7 +23,7 @@ def test_connect_looks_up_the_source_org_region(page, monkeypatch):
         uv,
         "validate_org_short_name",
         lambda org: OrgShard(
-            "prod-eu", "prod-eu.verkada.com", public_api_endpoint="api.eu",
+            "prod2", "prod2.verkada.com",
             readable_name="EU", org_name="Source Org",
         ),
     )

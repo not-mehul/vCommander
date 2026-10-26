@@ -17,16 +17,31 @@ class OrgShard(NamedTuple):
 
     Every internal service lives at `<service>.<domain>` (e.g.
     vprovision.prod-us-ohio.verkada.com). Gateway endpoints use the
-    `api_gateway_endpoint` label instead of a service name, and the public
-    API lives at `https://<public_api_endpoint>.verkada.com`.
+    `api_gateway_endpoint` label instead of a service name.
+
+    `public_api_endpoint` is NOT the public API's host: Command's own shard
+    table sets it to "apiadmin" on every shard, the service that manages
+    API keys. The public API is regional instead (see `public_api_region`).
     """
 
     name: str  # shard id sent at login: "prod1", "prod-us-ohio", ...
     domain: str  # e.g. "command.verkada.com", "prod-us-ohio.verkada.com"
     api_gateway_endpoint: str = "api"
-    public_api_endpoint: str = "api"  # "api" (US), "api.eu", "api.au"
-    readable_name: str = ""  # e.g. "US"
+    public_api_endpoint: str = "apiadmin"  # informational only, see above
+    readable_name: str = ""  # region: "US", "EU", "AU"
     org_name: str = ""  # display name, e.g. "SSS Alpha"
+
+    @property
+    def public_api_region(self) -> str:
+        """Public-API host label (https://<label>.verkada.com) for the
+        shard's region. Both US shards (prod1, prod-us-ohio) use "api"."""
+        return PUBLIC_API_REGIONS.get(self.readable_name.strip().upper(), "api")
+
+
+# Public API host label per shard region (readable_name), from Verkada's
+# documented regional base URLs: api.verkada.com, api.eu.verkada.com,
+# api.au.verkada.com. An unknown region falls back to the US host.
+PUBLIC_API_REGIONS = {"US": "api", "EU": "api.eu", "AU": "api.au"}
 
 
 # The original US shard. Used before an org's shard is known (and by the dev

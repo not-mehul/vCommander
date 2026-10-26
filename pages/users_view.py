@@ -201,10 +201,10 @@ class UsersView(ToolView):
                 VerkadaExternalAPIClient,
                 api_key,
                 org,
-                shard.public_api_endpoint,
+                shard.public_api_region,
             )
             set_external_client(client)
-            save_import_settings(org, api_key, shard.public_api_endpoint)
+            save_import_settings(org, api_key, shard.public_api_region)
             self._source_org_text.value = (
                 f"Connected to {shard.org_name or org}"
                 + (f" · {shard.readable_name}" if shard.readable_name else "")

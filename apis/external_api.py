@@ -7,8 +7,8 @@ from apis.http import build_session
 from utils.logger import log_api_call
 
 # The public API lives at https://<region>.verkada.com, where region is the
-# org's public_api_endpoint label ("api", "api.eu", "api.au", …) from
-# org/validate_short_name. Only well-formed host labels are accepted.
+# label for the org's shard region ("api" for US, "api.eu", "api.au"; see
+# OrgShard.public_api_region). Only well-formed host labels are accepted.
 _REGION = re.compile(r"^api(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
 
 # Public-API list endpoints page with `page_size` + `page_token`, returning
@@ -54,36 +54,35 @@ class VerkadaExternalAPIClient:
         Raises:
             ConnectionError: If token generation fails.
         """
-        url = f"https://{self.region}.verkada.com/token"
+        host = f"{self.region}.verkada.com"
         headers = {"accept": "application/json", "x-api-key": self.api_key}
 
+        def fail(status: str, reason: str) -> ConnectionError:
+            # Failures are logged too: without this line a rejected key left
+            # no trace between the key's creation and its cleanup.
+            log_api_call("POST", f"{host}/token", '{"x-api-key": "***"}', status, reason)
+            return ConnectionError(f"Failed to generate API token at {host}: {reason}")
+
         try:
-            response = self.session.post(url, headers=headers)
+            response = self.session.post(f"https://{host}/token", headers=headers)
+        except RequestException as e:
+            raise fail("error", str(e)) from e
+        try:
             data = response.json()
         except JSONDecodeError:
-            raise ConnectionError(
-                "Failed to generate API token: non-JSON response."
-            ) from None
-        except RequestException as e:
-            raise ConnectionError(f"Failed to generate API token: {e}") from e
+            data = None
+        status = str(response.status_code)
+        if not isinstance(data, dict):
+            raise fail(status, response.text[:200] or "non-JSON response.")
 
         if not response.ok:
-            msg = data.get("message", response.text)
-            raise ConnectionError(f"Failed to generate API token: {msg}")
+            raise fail(status, str(data.get("message") or response.text[:200]))
 
         token = data.get("token")
         if not token:
-            raise ConnectionError(
-                "Failed to generate API token: response missing 'token' key."
-            )
+            raise fail(status, "response missing 'token' key.")
 
-        log_api_call(
-            "POST",
-            f"{self.region}.verkada.com/token",
-            '{"x-api-key": "***"}',
-            str(response.status_code),
-            '{"token": "***"}',
-        )
+        log_api_call("POST", f"{host}/token", '{"x-api-key": "***"}', status, '{"token": "***"}')
         return token
 
     def _auth_headers(self, *, with_content_type: bool = False) -> dict[str, str]:
@@ -181,6 +180,13 @@ class VerkadaExternalAPIClient:
         if not response.ok:
             msg = (
                 data_dict.get("message", response.text) if data_dict else response.text
+            )
+            log_api_call(
+                method,
+                url.removeprefix("https://"),
+                "-",
+                str(response.status_code),
+                str(msg or "unknown error")[:300],
             )
             raise ConnectionError(
                 f"{error_context} (HTTP {response.status_code}): "

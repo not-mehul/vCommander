@@ -1,3 +1,4 @@
+import json
 import re
 import time
 from typing import Any, NamedTuple
@@ -73,12 +74,19 @@ def validate_org_short_name(
     except JSONDecodeError:
         data = {}
     shard = data.get("shard") if isinstance(data, dict) else None
+    shard_info = shard if isinstance(shard, dict) else {}
     log_api_call(
         "POST",
         log_label,
         f'{{"orgShortName": "{org_short_name}"}}',
         str(response.status_code),
-        f'{{"shard": "{(shard or {}).get("name")}"}}',
+        json.dumps(
+            {
+                "shard": shard_info.get("name"),
+                "region": shard_info.get("readable_name"),
+                "host_metadata": shard_info.get("host_metadata"),
+            }
+        ),
     )
     if response.status_code >= 500:
         raise ConnectionError(
@@ -92,15 +100,12 @@ def validate_org_short_name(
         name=str(shard.get("name") or ""),
         domain=str(hosts.get("domain") or ""),
         api_gateway_endpoint=str(hosts.get("api_gateway_endpoint") or "api"),
-        public_api_endpoint=str(hosts.get("public_api_endpoint") or "api"),
+        public_api_endpoint=str(hosts.get("public_api_endpoint") or "apiadmin"),
         readable_name=str(shard.get("readable_name") or ""),
         org_name=str(data.get("name") or ""),
     )
-    for label in (
-        result.domain,
-        result.api_gateway_endpoint,
-        result.public_api_endpoint,
-    ):
+    # public_api_endpoint isn't used to build any host, so it isn't checked.
+    for label in (result.domain, result.api_gateway_endpoint):
         if not _HOSTNAME.match(label):
             raise ConnectionError(
                 f"Org lookup for '{org_short_name}' returned an unusable host "
@@ -236,8 +241,8 @@ class VerkadaInternalAPIClient:
 
     @property
     def public_api_region(self) -> str:
-        """Public-API host label for this org ("api", "api.eu", …)."""
-        return self.host_shard.public_api_endpoint
+        """Public-API host label for this org's region ("api", "api.eu", …)."""
+        return self.host_shard.public_api_region
 
     def resolve_shard(self) -> OrgShard:
         """Look up (once) which shard hosts this org."""
