@@ -8,8 +8,8 @@ device creation against the internal API. Each step's success/failure
 is rendered in the live progress panel.
 
 The run's outcome is derived from the step counters, never tracked by
-hand, and the temporary public-API key it creates is always deleted when
-the run ends so the org's 10-key limit isn't eaten up."""
+hand. Every step goes through the internal API, as the Command web app
+does, so a run needs no temporary public-API key."""
 
 import asyncio
 import csv
@@ -19,7 +19,6 @@ import os
 import flet as ft
 
 import theme
-from apis.external_api import VerkadaExternalAPIClient
 from components import (
     ProgressHeader,
     RawLogPanel,
@@ -102,9 +101,7 @@ from constants import (
 )
 from pages.app_shell import ToolView
 from utils.cancellation import CancellationToken
-from utils.executor import _executor
 from utils.export import export_csv
-from utils.logger import log_system
 from utils.session import begin_run, end_run, get_internal_client
 from utils.ui_utils import show_alert, show_toast
 from utils.validation import (
@@ -141,10 +138,6 @@ class CommissionView(ToolView):
         self._steps_failed = 0
         self._failures: list[tuple[str, str]] = []
         self._run_log: list[str] = []
-        # Temporary public-API key for the current run (deleted at the end)
-        # and the cleanup results shown in the report.
-        self._api_key = None
-        self._cleanup: list[tuple[str, str]] = []
         self._load_kits()
         self._build_ui()
 
@@ -626,7 +619,6 @@ class CommissionView(ToolView):
         self._steps_failed = 0
         self._failures = []
         self._run_log = []
-        self._cleanup = []
         self._progress_header.set_progress(0, failed=0)
         self._cancel_token = token
         self.cancel_btn.visible = True
@@ -643,7 +635,6 @@ class CommissionView(ToolView):
             # Run screen; count it as a failed step.
             self._record_step("Unexpected error", ok=False, error=ex)
         finally:
-            await self._delete_api_key(client)
             end_run(token)
         self._render_summary(page)
 
@@ -652,23 +643,6 @@ class CommissionView(ToolView):
 
         async def step(label: str, fn, *args):
             return await self._run_step(page, label, fn, *args)
-
-        # The public-API client is only needed by VSSL, but creating it up
-        # front surfaces auth/key-limit problems before anything is built.
-        self._api_key = await step(
-            "Creating temporary API key", client.create_external_api_key
-        )
-        if self._api_key is None:
-            return
-        ext_client = await step(
-            "Connecting to the public API",
-            VerkadaExternalAPIClient,
-            self._api_key.key,
-            client.org_short_name,
-            client.public_api_region,
-        )
-        if ext_client is None:
-            return
 
         # ── Common prelude (every template) ──
         await step("Enabling Custom Roles", client.enable_custom_roles)
@@ -685,7 +659,7 @@ class CommissionView(ToolView):
             # No additional steps beyond the prelude.
             pass
         elif code == "VSSL":
-            await self._run_vssl_flow(step, page, client, ext_client)
+            await self._run_vssl_flow(step, page, client)
         elif code == "VSSE":
             await self._run_vsse_flow(step, page, client)
         elif code == "AS":
@@ -693,34 +667,6 @@ class CommissionView(ToolView):
 
         # ── Supporting users — shared across all templates ──
         await self._invite_supporting_users(step, client, "Org Admin")
-
-    async def _delete_api_key(self, client) -> None:
-        """Delete this run's temporary API key, whatever the run's outcome.
-
-        Not a counted step: it runs even after a cancel, and its result is
-        listed separately in the report so a failure here doesn't turn a
-        clean commission into "completed with errors".
-        """
-        key, self._api_key = self._api_key, None
-        if key is None:
-            return
-        if not key.key_id:
-            self._cleanup.append(
-                ("partial", "Temporary API key could not be identified — "
-                 "delete it under Org Settings > API Keys.")
-            )
-            return
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                _executor, client.delete_external_api_key, key.key_id
-            )
-            log_system("Deleted temporary API key.")
-            self._cleanup.append(("done", "Temporary API key deleted"))
-        except Exception as ex:
-            log_system(f"Could not delete temporary API key: {ex}", level="WARN")
-            self._cleanup.append(
-                ("partial", f"Temporary API key could not be deleted: {ex}")
-            )
 
     # ------------------------------------------------------------------
     # Per-template flows
@@ -908,7 +854,7 @@ class CommissionView(ToolView):
                     ACSL_MFA_DOOR_SCHEDULE_NAME,
                 )
 
-    async def _run_vssl_flow(self, step, page, client, ext_client) -> None:
+    async def _run_vssl_flow(self, step, page, client) -> None:
         bullet_serial = self._device_serial("Bullet")
         ptz_serial = self._device_serial("PTZ")
         connector_serial = self._device_serial("Command Connector")
@@ -1048,20 +994,20 @@ class CommissionView(ToolView):
 
         group_id = await step(
             "Creating Access Group",
-            ext_client.create_access_group,
+            client.create_access_group,
             VSS_ACCESS_GROUP_NAME,
         )
 
         _ = await step(
             "Adding User to Access Group",
-            ext_client.add_user_to_access_group,
+            client.add_user_to_access_group,
             client.user_id,
             group_id,
         )
 
         _ = await step(
             "Adding License Plate to Access User",
-            ext_client.add_license_plate_to_user,
+            client.add_license_plate_to_user,
             client.user_id,
             license_plate,
         )
@@ -1395,11 +1341,6 @@ class CommissionView(ToolView):
                 )
             )
             report.extend(failure_rows)
-
-        if self._cleanup:
-            report.append(ft.Container(height=8))
-            report.append(section_header("Cleanup"))
-            report.extend(status_row(state, text) for state, text in self._cleanup)
 
         report.append(ft.Container(height=8))
         report.append(RawLogPanel(lambda: "\n".join(self._run_log) or "(no steps)"))

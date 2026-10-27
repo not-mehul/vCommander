@@ -14,6 +14,7 @@ from apis.endpoints import (
     resolve,
 )
 from apis.internal_api import (
+    APIError,
     MFARequiredError,
     OrgNotFoundError,
     VerkadaInternalAPIClient,
@@ -438,7 +439,7 @@ def test_org_role_keys_come_from_role_grants(monkeypatch):
     assert sent["grant"] == sent["revoke"] == [] and sent["returnPermissions"] is True
 
 
-def test_access_admin_grant_and_revoke_use_their_endpoints(monkeypatch):
+def test_access_admin_roles_change_in_one_call(monkeypatch):
     client = _client()
     sent = []
     monkeypatch.setattr(
@@ -446,10 +447,49 @@ def test_access_admin_grant_and_revoke_use_their_endpoints(monkeypatch):
     )
     client.enable_access_admin(["ACCESS_CONTROL_USER_ADMIN"])
     client.disable_access_admin()
-    assert [k for k, _ in sent] == [
-        "permissions.access_user_admin.enable",
-        "permissions.access_system_admin.disable",
-        "permissions.access_user_admin.disable",
+    client.disable_access_admin([])  # nothing to do: no call
+    assert [k for k, _ in sent] == ["permissions.user_roles.set"] * 2
+    assert [p["permission"] for p in sent[0][1]["grant"]] == ["ACCESS_CONTROL_USER_ADMIN"]
+    assert sent[0][1]["revoke"] == []
+    assert [p["permission"] for p in sent[1][1]["revoke"]] == [
+        "ACCESS_CONTROL_SYSTEM_ADMIN",
+        "ACCESS_CONTROL_USER_ADMIN",
     ]
-    assert sent[0][1]["grant"][0]["permission"] == "ACCESS_CONTROL_USER_ADMIN"
-    assert sent[1][1]["revoke"][0]["permission"] == "ACCESS_CONTROL_SYSTEM_ADMIN"
+
+
+# -- license plates (internal API, as the web app) -----------------------------
+
+
+def _plate_client(monkeypatch, holder):
+    client = _client()
+    sent = []
+
+    def fake_request(key, json=None, path_params=None, **kw):
+        sent.append(key)
+        if key == "user.license_plate.get":
+            if holder is None:
+                raise APIError("No such license plate registered", status_code=404)
+            return {"userId": holder}, 200
+        return {}, 201
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    return client, sent
+
+
+def test_new_license_plate_is_looked_up_then_added(monkeypatch):
+    client, sent = _plate_client(monkeypatch, None)
+    assert client.add_license_plate_to_user("u", "VC1") == "VC1"
+    assert sent == ["user.license_plate.get", "user.add_license_plate"]
+
+
+def test_license_plate_already_on_the_user_is_not_added_again(monkeypatch):
+    client, sent = _plate_client(monkeypatch, "u")
+    assert client.add_license_plate_to_user("u", "VC1") == "VC1"
+    assert sent == ["user.license_plate.get"]
+
+
+def test_license_plate_of_another_user_is_refused(monkeypatch):
+    client, sent = _plate_client(monkeypatch, "someone-else")
+    with pytest.raises(ValueError, match="another user"):
+        client.add_license_plate_to_user("u", "VC1")
+    assert sent == ["user.license_plate.get"]

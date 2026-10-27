@@ -1,9 +1,11 @@
 // Create, then delete, an access level: Access → Access Levels → Add Access
 // Level → name, group, site, door (default all-week schedule) → Save; then
-// tick it → Delete → confirm.
+// the row's Delete Access Level (on hover) → confirm. DELETE_ONLY=1 skips
+// the create.
 // Args: name ("VCE Web Level"), group ("VCE Access Group"), site ("HQ"),
 // door ("Garage Door", the VSSL door).
 module.exports = async (s, ui, name = 'VCE Web Level', group = 'VCE Access Group', site = 'HQ', door = 'Garage Door') => {
+  if (process.env.DELETE_ONLY) return module.exports.remove(s, ui, name);
   await ui.go(s, '/access');
   await ui.click(s.page, 'Access Levels', { wait: 4000 });
   await ui.click(s.page, 'Add Access Level', { wait: 3000 });
@@ -23,12 +25,18 @@ module.exports = async (s, ui, name = 'VCE Web Level', group = 'VCE Access Group
   console.log(s.red(await dlg.ariaSnapshot()).split('\n').filter(l => /textbox|searchbox|Save|listitem/.test(l)).slice(0, 14).join('\n'));
   ui.mark(s, `access_level.create ${name}`);
   await ui.click(s.page, 'Save', { within: dlg, wait: 5000 });
+  await module.exports.remove(s, ui, name);
+};
+
+module.exports.remove = async (s, ui, name) => {
   await ui.go(s, '/access');
   await ui.click(s.page, 'Access Levels', { wait: 4000 });
   const item = s.page.getByRole('listitem').filter({ hasText: name }).first();
-  await item.getByRole('checkbox').locator('xpath=..').click();
-  await s.page.waitForTimeout(1500);
-  await ui.click(s.page, /^Delete/, { wait: 2000 });
+  // The row's actions (Clone / Delete Access Level) appear on hover.
+  await item.hover();
+  await s.page.waitForTimeout(800);
+  await item.getByRole('button', { name: 'Delete Access Level' }).click();
+  await s.page.waitForTimeout(2000);
   ui.mark(s, `access_level.delete ${name}`);
   await ui.confirm(s.page, ['Delete', 'Confirm', 'Yes']);
 };

@@ -3,6 +3,8 @@
 // Args: name ("HQ"), address, floor ("G").
 module.exports = async (s, ui, name = 'HQ', address = '406 E 3rd Ave, San Mateo, CA 94401', floor = 'G') => {
   await ui.go(s, '/access/admin/buildings');
+  // The list loads slowly on a fresh session.
+  await s.page.getByRole('button', { name: 'Add Building' }).first().waitFor({ timeout: 30000 });
   await ui.click(s.page, 'Add Building', { wait: 2000 });
   const dlg = s.page.getByRole('dialog').filter({ hasText: 'Create Building and Floor' });
   await dlg.getByRole('textbox', { name: 'Building Name*' }).fill(name);

@@ -36,7 +36,6 @@ with contextlib.redirect_stdout(buf):
 print(f"== {TEMPLATE}: {view._steps_done} ok, {view._steps_failed} failed")
 for line in view._run_log:
     print("  ", redact(line)[:300])
-print("cleanup:", [redact(f"{kind}: {msg}") for kind, msg in view._cleanup])
 print("non-2xx / warn / error log lines:")
 for line in buf.getvalue().splitlines():
     if re.search(r"status: [45]\d\d|\[(ERROR|WARN)\]", line):

@@ -35,11 +35,10 @@ from constants import (
 )
 from utils.logger import log_api_call
 
-# Access-control admin roles Decommission needs: role key -> (endpoint key
-# prefix, label).
+# Access-control admin roles Decommission needs: role key -> label.
 ACCESS_ADMIN_ROLES = {
-    "ACCESS_CONTROL_SYSTEM_ADMIN": ("permissions.access_system_admin", "Access System Admin"),
-    "ACCESS_CONTROL_USER_ADMIN": ("permissions.access_user_admin", "Access User Admin"),
+    "ACCESS_CONTROL_SYSTEM_ADMIN": "Access System Admin",
+    "ACCESS_CONTROL_USER_ADMIN": "Access User Admin",
 }
 
 
@@ -344,39 +343,6 @@ class VerkadaInternalAPIClient:
             },
             error_context=f"Failed to {action} Global Site Admin",
             log_request=(f'{{"globalSiteAdmin": {str(enabled).lower()}}}'),
-        )
-
-    def _set_user_permission(
-        self,
-        endpoint_key: str,
-        permission: str,
-        *,
-        grant: bool,
-        label: str,
-    ) -> None:
-        """
-        Grant or revoke a single org-scoped permission on the current user.
-
-        v2 splits the legacy multi-grant `access.roles.modify` endpoint
-        into per-permission enable/disable keys (each just a thin wrapper
-        around POST org/set_user_permissions with the grant/revoke arrays
-        swapped); this helper carries the payload shape so callers only
-        name the endpoint key and the permission string.
-        """
-        perms = [{"entityId": self.org_id, "permission": permission}]
-        self._request(
-            endpoint_key,
-            json={
-                "organizationId": self.org_id,
-                "targetUserId": self.user_id,
-                "returnPermissions": False,
-                "grant": perms if grant else [],
-                "revoke": [] if grant else perms,
-            },
-            error_context=f"Failed to {'grant' if grant else 'revoke'} {label}",
-            log_request=(
-                f'{{"targetUserId": "{self.user_id}", "permission": "{permission}"}}'
-            ),
         )
 
     def _set_camera_features(
@@ -1171,20 +1137,32 @@ class VerkadaInternalAPIClient:
         Grant the current user the elevated access-control admin roles
         (ACCESS_CONTROL_SYSTEM_ADMIN + ACCESS_CONTROL_USER_ADMIN, or the
         given subset) required to delete certain access control hardware.
-
-        One API call per role — atomicity note: if the second fails, the
-        user is left with the first only. There's no rollback; the caller
-        surfaces the failure and retries.
+        One call for all of them, as the Command web app does.
         """
-        for role in roles if roles is not None else ACCESS_ADMIN_ROLES:
-            key, label = ACCESS_ADMIN_ROLES[role]
-            self._set_user_permission(f"{key}.enable", role, grant=True, label=label)
+        self._set_user_permissions(roles, grant=True)
 
     def disable_access_admin(self, roles: list[str] | None = None) -> None:
         """Revoke the access-control admin roles (or the given subset)."""
-        for role in roles if roles is not None else ACCESS_ADMIN_ROLES:
-            key, label = ACCESS_ADMIN_ROLES[role]
-            self._set_user_permission(f"{key}.disable", role, grant=False, label=label)
+        self._set_user_permissions(roles, grant=False)
+
+    def _set_user_permissions(self, roles: list[str] | None, *, grant: bool) -> None:
+        roles = list(roles if roles is not None else ACCESS_ADMIN_ROLES)
+        if not roles:
+            return
+        perms = [{"entityId": self.org_id, "permission": r} for r in roles]
+        labels = ", ".join(ACCESS_ADMIN_ROLES.get(r, r) for r in roles)
+        self._request(
+            "permissions.user_roles.set",
+            json={
+                "organizationId": self.org_id,
+                "targetUserId": self.user_id,
+                "returnPermissions": False,
+                "grant": perms if grant else [],
+                "revoke": [] if grant else perms,
+            },
+            error_context=f"Failed to {'grant' if grant else 'revoke'} {labels}",
+            log_request=f'{{"targetUserId": "{self.user_id}", "permissions": {roles}}}',
+        )
 
     # ------------------------------------------------------------------
     # Org Roles/Agreements
@@ -1937,6 +1915,47 @@ class VerkadaInternalAPIClient:
             ),
             log_request=f'{{"userId": "{user_id}", "groupId": "{group_id}"}}',
         )
+
+    def add_license_plate_to_user(self, user_id: str, license_plate: str) -> str:
+        """
+        Gives an access user a license plate credential. Returns the plate.
+
+        Same calls as the Command web app: look the plate up first, and add
+        it only when nobody holds it. Idempotent: a plate already on this
+        user (Decommission keeps users, so a re-run finds it) is a success.
+
+        Raises:
+            ValueError: If another user already holds the plate.
+            APIError / ConnectionError: On other API failures.
+        """
+        try:
+            held, _ = self._request(
+                "user.license_plate.get",
+                path_params={"license_plate": license_plate},
+                error_context=f"Failed to look up license plate '{license_plate}'",
+                log_request=f'{{"licensePlateNumber": "{license_plate}"}}',
+            )
+        except APIError as ex:
+            if ex.status_code != 404:
+                raise
+            held = {}
+        if held.get("userId") == user_id:
+            return license_plate
+        if held.get("userId"):
+            raise ValueError(
+                f"License plate '{license_plate}' already belongs to another user."
+            )
+        self._request(
+            "user.add_license_plate",
+            json={
+                "userId": user_id,
+                "licensePlateNumber": license_plate,
+                "organizationId": self.org_id,
+            },
+            error_context=f"Failed to add license plate '{license_plate}'",
+            log_request=f'{{"userId": "{user_id}", "licensePlateNumber": "{license_plate}"}}',
+        )
+        return license_plate
 
     # ------------------------------------------------------------------
     # Security entity groups, access users, footage archives,

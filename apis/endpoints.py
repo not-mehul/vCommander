@@ -532,6 +532,25 @@ ENDPOINTS: dict[str, Endpoint] = {
             "permissions": [{"permission": "ADMIN", "entityId": "<entity_id>"}],
         },
     ),
+    # Grant and/or revoke any org-level roles on a user in one call; the
+    # Command web app batches every role changed in a Manage dialog (Org
+    # Admin is ORG_MANAGER). The per-role keys below are single-role uses.
+    "permissions.user_roles.set": Endpoint(
+        method="POST",
+        subdomain="vprovision",
+        path="org/set_user_permissions",
+        payload={
+            "organizationId": "<org_id>",
+            "targetUserId": "<user_id>",
+            "returnPermissions": False,
+            "grant": [
+                {"entityId": "<org_id>", "permission": "ACCESS_CONTROL_SYSTEM_ADMIN"},
+                {"entityId": "<org_id>", "permission": "ACCESS_CONTROL_USER_ADMIN"},
+            ],
+            "revoke": [],
+        },
+        response={},
+    ),
     "permissions.access_system_admin.enable": Endpoint(
         method="POST",
         subdomain="vprovision",
@@ -921,6 +940,15 @@ ENDPOINTS: dict[str, Endpoint] = {
         },
         response={},
     ),
+    # What the Command web app calls for User Management → user → Delete
+    # User (recorded 2026-10-27). Takes several userIds in one call.
+    "user.delete.batch": Endpoint(
+        method="POST",
+        subdomain="vcorgi",
+        path="org/{org_id}/users/delete",
+        payload={"userIds": ["<user_id>"]},
+        response={},
+    ),
     "user.hard_delete": Endpoint(
         method="POST",
         subdomain="vprovision",
@@ -956,6 +984,29 @@ ENDPOINTS: dict[str, Endpoint] = {
             "organizationId": "<org_id>",
             "userId": "<user_id>",
         },
+    ),
+    # Who holds a license plate (the web app checks this before adding one).
+    # 404 "No such license plate registered" when nobody does.
+    "user.license_plate.get": Endpoint(
+        method="GET",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="access/v2/user/license_plate/{license_plate}",
+        payload={},
+        response={
+            "licensePlateNumber": "<license_plate_number>",
+            "userId": "<user_id>",
+            "organizationId": "<org_id>",
+            "active": True,
+        },
+    ),
+    # Remove a plate from its user (Access → user → Profile → Remove License
+    # Plate in the web app).
+    "user.license_plate.delete": Endpoint(
+        method="POST",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="access/v2/user/license_plate/delete",
+        payload={"licensePlateNumber": "<license_plate_number>"},
+        response={},
     ),
     "group.create": Endpoint(
         method="POST",

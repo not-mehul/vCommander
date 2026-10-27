@@ -34,17 +34,8 @@ class FakeInternal:
         return call
 
 
-class FakeExternal:
-    def __init__(self, key, org, region):
-        self.region = region
-
-    def __getattr__(self, name):
-        return lambda *a: f"{name}-id"
-
-
 @pytest.fixture
 def view(page, monkeypatch):
-    monkeypatch.setattr(cv, "VerkadaExternalAPIClient", FakeExternal)
     monkeypatch.setattr(cv, "ROLE_PROPAGATION_SECONDS", 0)
     monkeypatch.setattr(cv, "BUILDING_PROVISION_SECONDS", 0)
     v = cv.CommissionView(lambda r: None)
@@ -78,39 +69,39 @@ def test_a_failed_step_is_reported_as_failed(view, page, monkeypatch):
     assert "0 failed" not in _banner_text(view)
 
 
-def test_clean_run_reports_success_and_deletes_the_key(view, page, monkeypatch):
+def test_clean_run_reports_success_and_needs_no_api_key(view, page, monkeypatch):
     client = FakeInternal()
     _run(view, page, client, monkeypatch)
     assert _banner_text(view).startswith("Commission complete")
-    assert client.calls[-1] == "delete_external_api_key"
-    assert ("done", "Temporary API key deleted") in view._cleanup
+    assert not [c for c in client.calls if "external_api_key" in c]
     assert session.running_job() is None and session._active_run is None
 
 
-def test_api_key_failure_ends_in_a_report_not_a_hang(view, page, monkeypatch):
-    client = FakeInternal(key_error="exceeded 10 API keys limit")
+def test_a_failed_first_step_ends_in_a_report_not_a_hang(view, page, monkeypatch):
+    client = FakeInternal(fail={"enable_custom_roles"})
     _run(view, page, client, monkeypatch, template="ACSE")
     assert view._steps_failed == 1
-    assert "exceeded 10 API keys limit" in view._failures[0][1]
+    assert "enable_custom_roles broke" in view._failures[0][1]
     assert view._stepper._current == 3  # Report step
     assert not view.cancel_btn.visible
-    assert client.calls == ["create_external_api_key"]  # nothing else attempted
     assert session._active_run is None
 
 
-def test_external_client_gets_the_org_public_api_region(view, page, monkeypatch):
-    seen = {}
+def test_vssl_access_group_and_plate_use_the_internal_api(view, page, monkeypatch):
+    # The Command web app makes these calls through the internal API too, so
+    # no template needs the public API (or a temporary key) any more.
+    client = FakeInternal()
+    _run(view, page, client, monkeypatch, template="VSSL")
+    for name in (
+        "create_access_group",
+        "add_user_to_access_group",
+        "add_license_plate_to_user",
+    ):
+        assert name in client.calls
+    assert client.args["add_license_plate_to_user"][0] == ("me", "PLATE1")
 
-    def ext(key, org, region):
-        seen["region"] = region
-        return FakeExternal(key, org, region)
 
-    monkeypatch.setattr(cv, "VerkadaExternalAPIClient", ext)
-    _run(view, page, FakeInternal(), monkeypatch, template="ACSE")
-    assert seen["region"] == "api.eu"
-
-
-def test_cancel_skips_remaining_steps_but_still_deletes_the_key(
+def test_cancel_skips_remaining_steps(
     view, page, monkeypatch
 ):
     client = FakeInternal()
@@ -127,7 +118,7 @@ def test_cancel_skips_remaining_steps_but_still_deletes_the_key(
     _run(view, page, client, monkeypatch)
     assert "Commission cancelled" in _banner_text(view)
     assert "create_or_reuse_site" not in client.calls
-    assert client.calls[-1] == "delete_external_api_key"
+    assert session._active_run is None
 
 
 @pytest.mark.parametrize("template", ["ESS", "ACSL"])
