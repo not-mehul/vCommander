@@ -12,12 +12,18 @@ variable per device type holding its serial (SERIAL_VARS).
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import io
+import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import requests
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
@@ -51,8 +57,78 @@ def redact(text: str) -> str:
     """Strip serials, the org short name, emails and ids from text."""
     for secret in [*serials().values(), os.environ.get("VERKADA_ORG", "")]:
         if secret:
-            text = re.sub(re.escape(secret), "<redacted>", text, flags=re.I)
+            # Serials also match with or without dashes (Command shows them dashed).
+            pattern = "-?".join(re.escape(c) for c in secret.replace("-", ""))
+            text = re.sub(pattern, "<redacted>", text, flags=re.I)
     return EMAIL.sub("<email>", UUID.sub("<id>", text))
+
+
+# JSON keys whose values are credentials (API key secrets, tokens, passwords);
+# names, ids and expiry times of keys are kept.
+_SECRET_KEY = re.compile(r"(api_?key|secret|token|password|cookie)(?!.*(name|id|expir))", re.I)
+OUT = Path(os.environ.get("LIVE_OUT", Path.home() / ".vcommander-live"))
+
+
+def scrub(value):
+    """Blank credential values in a decoded JSON value."""
+    if isinstance(value, dict):
+        return {
+            k: "<secret>" if _SECRET_KEY.search(k) and isinstance(v, str) else scrub(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [scrub(v) for v in value]
+    return value
+
+
+def _redact_body(raw) -> str:
+    if not raw:
+        return ""
+    text = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+    try:
+        text = json.dumps(scrub(json.loads(text)), separators=(",", ":"))
+    except ValueError:
+        pass
+    return redact(text)
+
+
+def record(name: str) -> list[dict]:
+    """Record every HTTP request vCommander makes (internal and public API).
+
+    Wraps requests.Session.send, so it covers clients the views create
+    themselves. Entries use the web/session.js format ({t, method, host,
+    path, body, status, resp}), redacted, and are written to $LIVE_OUT/<name>
+    at exit. Headers are never recorded.
+    """
+    log: list[dict] = []
+    send = requests.Session.send
+
+    def recording_send(self, request, **kwargs):
+        url = urlsplit(request.url)
+        entry = {
+            "t": int(time.time() * 1000),
+            "method": request.method,
+            "host": redact(url.hostname or ""),
+            "path": redact(url.path + (f"?{url.query}" if url.query else "")),
+            "body": _redact_body(request.body),
+            "status": 0,
+            "resp": "",
+        }
+        log.append(entry)
+        response = send(self, request, **kwargs)
+        entry["status"] = response.status_code
+        entry["resp"] = _redact_body(response.content)[:4000]
+        return response
+
+    requests.Session.send = recording_send
+
+    def save():
+        OUT.mkdir(parents=True, exist_ok=True)
+        (OUT / name).write_text(json.dumps(log, indent=1))
+        print(f"recording: {len(log)} calls -> $LIVE_OUT/{name}")
+
+    atexit.register(save)
+    return log
 
 
 def quiet(fn, *args, **kwargs):
@@ -69,7 +145,12 @@ def quiet(fn, *args, **kwargs):
 
 
 def make_client():
-    """An internal client on the org's shard, authenticated by the session."""
+    """An internal client on the org's shard, authenticated by the session.
+
+    With LIVE_RECORD=<file>.json set, every call is recorded (see record()).
+    """
+    if os.environ.get("LIVE_RECORD"):
+        record(os.environ["LIVE_RECORD"])
     client = VerkadaInternalAPIClient(
         os.environ["VERKADA_EMAIL"], "unused", os.environ["VERKADA_ORG"]
     )

@@ -35,7 +35,7 @@ async def main():
     for cat in dv.ASSET_CATEGORIES:
         items = view._assets.get(cat) or []
         if items:
-            names = ", ".join(
+            names = "(names hidden)" if cat == "Command Users" else ", ".join(
                 redact(str(i.get("name") or i.get("id")))[:40] for i in items[:6]
             )
             more = f" (+{len(items) - 6} more)" if len(items) > 6 else ""

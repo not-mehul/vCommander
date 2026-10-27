@@ -17,10 +17,12 @@ try:
 except Exception as ex:  # a revoked/expired session lands here
     raise SystemExit(f"session check FAILED: {type(ex).__name__}: {str(ex)[:200]}") from None
 
-found = {
-    "cameras": json.dumps(quiet(client.get_camera)).upper(),
-    "unassigned": json.dumps(quiet(client.get_unassigned_device)).upper(),
-}
+found = {}
+for kind, getter in (("cameras", client.get_camera), ("unassigned", client.get_unassigned_device)):
+    try:
+        found[kind] = json.dumps(quiet(getter)).upper()
+    except Exception as ex:  # camera.list needs a site permission (or GSA)
+        print(f"  {kind} not listed: {str(ex)[:120]}")
 for kind, serial in serials().items():
     where = [k for k, blob in found.items() if serial in blob] or ["not in org"]
     print(f"  {kind:20} {', '.join(where)}")
