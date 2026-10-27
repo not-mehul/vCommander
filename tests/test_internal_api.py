@@ -493,3 +493,11 @@ def test_license_plate_of_another_user_is_refused(monkeypatch):
     with pytest.raises(ValueError, match="another user"):
         client.add_license_plate_to_user("u", "VC1")
     assert sent == ["user.license_plate.get"]
+
+
+def test_standard_door_configs_leave_polling_frequency_at_its_default():
+    # The web app doesn't send it; Command applies 10000 ms either way.
+    from apis.endpoints import _DOOR_CREATE_CONFIGS, _LPR_DOOR_CREATE_CONFIGS
+
+    for configs in (_DOOR_CREATE_CONFIGS, _LPR_DOOR_CREATE_CONFIGS):
+        assert "polling-frequency-ms" not in {c["paramName"] for c in configs}

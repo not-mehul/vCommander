@@ -155,7 +155,6 @@ _LPR_DOOR_CREATE_CONFIGS = [
     {"paramName": "lpr-unlock-cooldown-time", "paramValue": "0"},
     {"paramName": "ignore-outbound-reader-ac", "paramValue": "False"},
     {"paramName": "lf-card-reading-enabled", "paramValue": "True"},
-    {"paramName": "polling-frequency-ms", "paramValue": "10000"},
     {"paramName": "c3po-in1-type", "paramValue": "NONE"},
     {"paramName": "c3po-in2-type", "paramValue": "NONE"},
     {"paramName": "replace-ios-with-security-relay", "paramValue": "False"},
@@ -230,7 +229,6 @@ _DOOR_CREATE_CONFIGS = [
     {"paramName": "lpr-unlock-cooldown-time", "paramValue": "0"},
     {"paramName": "ignore-outbound-reader-ac", "paramValue": "False"},
     {"paramName": "lf-card-reading-enabled", "paramValue": "True"},
-    {"paramName": "polling-frequency-ms", "paramValue": "10000"},
     {"paramName": "c3po-in1-type", "paramValue": "NONE"},
     {"paramName": "c3po-in2-type", "paramValue": "NONE"},
     {"paramName": "replace-ios-with-security-relay", "paramValue": "False"},
@@ -947,7 +945,8 @@ ENDPOINTS: dict[str, Endpoint] = {
         subdomain="vcorgi",
         path="org/{org_id}/users/delete",
         payload={"userIds": ["<user_id>"]},
-        response={},
+        # Asynchronous: users/search shows the user for a few seconds more.
+        response={"operationId": "<operation_id>"},
     ),
     "user.hard_delete": Endpoint(
         method="POST",
@@ -3425,5 +3424,118 @@ ENDPOINTS: dict[str, Endpoint] = {
                 },
             }
         },
+    ),
+    # ── Observed in the Command web app (live recordings, 2026-10-27) ──
+    # Not called by vCommander; registered so the calls are documented.
+    "org.features.get": Endpoint(
+        # Feature Manager state per feature (ENABLED / DISABLED, pending
+        # removal); the web app reads it before camera setup.
+        method="GET",
+        subdomain="vcorgi",
+        path="org/{org_id}/features",
+        payload={},
+        response={
+            "aiSummarization": {
+                "state": "ENABLED",
+                "pendingRemoval": False,
+                "lastUpdated": "<iso8601>",
+                "updatedBy": "<email>",
+            },
+        },
+    ),
+    "access_controller.list.v4": Endpoint(
+        method="GET",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="access/v4/user/access_controllers",
+        payload={},
+        response={"accessControllers": []},
+    ),
+    "door.list.v4": Endpoint(
+        method="GET",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="access/v4/user/doors",
+        payload={},
+        response={"doors": []},
+    ),
+    "door.set_nearby_cameras": Endpoint(
+        # After creating a door the web app attaches nearby cameras
+        # (position "doorway" / "interior" / "exterior").
+        method="POST",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="door/set_nearby_cameras",
+        payload={
+            "doorId": "<door_id>",
+            "cameras": [{"cameraId": "<camera_id>", "position": "doorway", "offset": 1}],
+        },
+        response={"doors": [{"doorId": "<door_id>"}]},
+    ),
+    "access.roles.modify": Endpoint(
+        # Access site roles. The web app grants the user Access Site Admin on
+        # a site when it sets up an access controller there; on a site Access
+        # doesn't know yet it fails 400 "Unknown entity" and the setup stops.
+        method="POST",
+        subdomain="vcerberus",
+        path="access/v2/user/roles/modify",
+        payload={
+            "grants": [
+                {
+                    "granteeId": "<user_id>",
+                    "entityId": "<site_id>",
+                    "roleKey": "ACCESS_CONTROL_SITE_ADMIN",
+                    "role": "ACCESS_CONTROL_SITE_ADMIN",
+                }
+            ],
+            "revokes": [],
+        },
+        response={},
+    ),
+    "camera.recommended_settings.apply": Endpoint(
+        # The camera Set Up dialog's Apply: codec, analytics features and
+        # wildcard settings in one call (vCommander uses camera.create.feature).
+        method="POST",
+        subdomain="vcorgi",
+        path="device/recommended_default_settings/apply",
+        payload={
+            "organizationId": "<org_id>",
+            "siteId": "<site_id>",
+            "deviceType": "camera",
+            "deviceIds": ["<camera_id>"],
+            "configs": [{"name": "stream-configs.high.stream-encoding", "value": "HEVC"}],
+            "features": [
+                {"name": "people-history", "value": True},
+                {"name": "person-attributes", "value": True},
+                {"name": "face-detection", "value": True},
+            ],
+            "wildcard": [{"name": "low-bandwidth-mode", "value": False}],
+        },
+        response={"configs": [], "features": [], "wildcard": []},
+    ),
+    "camera.rotate": Endpoint(
+        # Sent before LPR mode is turned on (LPR needs normal orientation).
+        method="POST",
+        subdomain="vprovision",
+        path="camera/rotate",
+        payload={"cameraId": "<camera_id>", "rotate": "0"},
+        response={"cameraConfigParams": [{"paramName": "camera-config.camera-rotate"}]},
+    ),
+    "camera.create.ptz_install.web": Endpoint(
+        # The web app's PTZ Installation Mode switch (vCommander's
+        # camera.create.ptz_install_disable uses vdeviceconfig with cameraIds).
+        method="POST",
+        subdomain="vprovision",
+        path="user/camera/config/set",
+        payload={
+            "cameraId": "<camera_id>",
+            "params": {"peripheral-motor-ctrl.disable-pan-tilt": False},
+        },
+        response={},
+    ),
+    "alarm.keycode.generate": Endpoint(
+        # A random unused code, used to pre-fill the Add Keycode dialog.
+        method="POST",
+        subdomain="vproconfig",
+        path="keycode/generate",
+        payload={"alarmSystemId": "<alarm_system_id>"},
+        response={"code": "<6 digits>"},
     ),
 }
