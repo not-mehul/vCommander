@@ -1,6 +1,7 @@
-// Set up a new camera: Devices → camera → Set Up → Site, Location (first
-// address suggestion), analytics switches that are enabled → Apply.
-// Args: camera name ("HQ CD62"), site ("HQ"), address.
+// Set up a new camera or access controller (same dialog, minus analytics):
+// Devices → device → Set Up → Site, Location (first address suggestion),
+// analytics switches that are enabled → Apply.
+// Args: device name ("HQ CD62"), site ("HQ"), address.
 module.exports = async (s, ui, name = 'HQ CD62', site = 'HQ', address = '406 E 3rd Ave, San Mateo') => {
   await ui.go(s, '/devices');
   await ui.click(s.page, new RegExp(`^${name}\\b`), { wait: 3000 });
@@ -29,7 +30,7 @@ module.exports = async (s, ui, name = 'HQ CD62', site = 'HQ', address = '406 E 3
   for (const sw of ['People History', 'Person Appearance & Attributes', 'Face Detection']) {
     const t = dlg.getByRole('switch', { name: sw });
     // The switch input is visually hidden; its parent is the clickable toggle.
-    if (await t.isEnabled() && !(await t.isChecked())) { await t.locator('xpath=..').click(); await s.page.waitForTimeout(800); }
+    if (await t.count() && await t.isEnabled() && !(await t.isChecked())) { await t.locator('xpath=..').click(); await s.page.waitForTimeout(800); }
   }
   console.log(s.red(await dlg.ariaSnapshot()).split('\n').filter(l => /switch|textbox|Apply/.test(l)).join('\n'));
   ui.mark(s, `camera setup ${name}`);

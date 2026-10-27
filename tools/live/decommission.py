@@ -45,11 +45,17 @@ async def main():
         for cat in KEEP:
             view._selected[cat] = set()
         print(f"kept (unticked): {KEEP}")
-        view._set_state(page, dv.CONFIRM)
-        await view._on_delete(Event(page))
-        print(f"state after delete: {view._state}, failed: {view._failed_total}")
-        for cat, (ok, planned) in view._results.items():
-            print(f"  deleted {cat:24} {ok}/{planned}")
+        if not view._deletion_plan():
+            # _on_delete returns early on an empty plan without releasing the
+            # org, which would leave Global Site Admin on and the key behind.
+            print("nothing to delete")
+            await view._release_org()
+        else:
+            view._set_state(page, dv.CONFIRM)
+            await view._on_delete(Event(page))
+            print(f"state after delete: {view._state}, failed: {view._failed_total}")
+            for cat, (ok, planned) in view._results.items():
+                print(f"  deleted {cat:24} {ok}/{planned}")
     else:
         await view._release_org()
     print("cleanup:", [redact(f"{kind}: {msg}") for kind, msg in view._cleanup])

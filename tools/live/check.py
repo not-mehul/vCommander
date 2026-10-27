@@ -17,6 +17,13 @@ try:
 except Exception as ex:  # a revoked/expired session lands here
     raise SystemExit(f"session check FAILED: {type(ex).__name__}: {str(ex)[:200]}") from None
 
+# Leftover state from interrupted runs: Global Site Admin and temporary keys.
+try:
+    keys = quiet(client.get_external_api_key)
+    print(f"API keys: {len(keys)} ({sum('Automation API' in k['name'] for k in keys)} temporary)")
+except Exception as ex:
+    print(f"API keys not listed: {str(ex)[:120]}")
+
 found = {}
 for kind, getter in (("cameras", client.get_camera), ("unassigned", client.get_unassigned_device)):
     try:
