@@ -7,7 +7,7 @@ Results of running vCommander against a real test org with the scripts in
 
 Follow-up to the section below, after the owner answered its questions
 (GSA lives under Modify Default Roles; Self-Monitored is the Response tab's
-Response Level; test users are `mehul.sen+testN@verkada.com`; the alarm
+Response Level; test users are plus-addressed variants of the owner's email; the alarm
 response may only ever be Self-Monitored). The org was left clean: only the
 two existing users, Global Site Admin off, no API keys, no access admin
 roles on the session user.
