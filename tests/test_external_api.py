@@ -20,7 +20,10 @@ class _Resp:
 
 
 class _Session:
-    """Records requests and answers from a {path: [pages]} script."""
+    """Records requests and answers from a {path: [pages]} script.
+
+    A page may be a ready _Resp (to script an error status).
+    """
 
     def __init__(self, pages):
         self.pages = pages
@@ -29,7 +32,8 @@ class _Session:
     def request(self, method, url, json=None, params=None, headers=None):
         self.calls.append((method, url, dict(params or {})))
         token = (params or {}).get("page_token")
-        return _Resp(self.pages[url][int(token) if token else 0])
+        page = self.pages[url][int(token) if token else 0]
+        return page if isinstance(page, _Resp) else _Resp(page)
 
 
 def _client(pages, region="api"):
@@ -94,6 +98,35 @@ def test_access_group_calls_use_the_client_region(region):
         f"{base}/access_groups/group/user",
         f"{base}/credentials/license_plate",
     }
+
+
+_PLATE = "https://api.verkada.com/access/v1/credentials/license_plate"
+_USER = "https://api.verkada.com/access/v1/access_users/user"
+_IN_USE = _Resp({"message": "This license plate number is already in use"}, 400)
+
+
+def test_license_plate_already_on_the_user_is_success():
+    client = _client(
+        {
+            _PLATE: [_IN_USE],
+            _USER: [{"license_plates": [{"license_plate_number": "vctest1"}]}],
+        }
+    )
+    assert client.add_license_plate_to_user("u1", "VCTEST1") == "VCTEST1"
+    assert client.session.calls[-1] == ("GET", _USER, {"user_id": "u1"})
+
+
+def test_license_plate_in_use_by_someone_else_still_fails():
+    client = _client({_PLATE: [_IN_USE], _USER: [{"license_plates": []}]})
+    with pytest.raises(ConnectionError, match="already in use"):
+        client.add_license_plate_to_user("u1", "VCTEST1")
+
+
+def test_other_license_plate_errors_are_not_looked_up():
+    client = _client({_PLATE: [_Resp({"message": "invalid plate"}, 400)]})
+    with pytest.raises(ConnectionError, match="invalid plate"):
+        client.add_license_plate_to_user("u1", "??")
+    assert [url for _, url, _ in client.session.calls] == [_PLATE]
 
 
 @pytest.mark.parametrize("region", ["evil.com", "api/../x", "api.eu/x", "API"])

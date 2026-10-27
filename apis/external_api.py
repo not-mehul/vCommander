@@ -503,6 +503,12 @@ class VerkadaExternalAPIClient:
             user_id: The access user to credential.
             license_plate: The license plate number.
 
+        Idempotent: a plate can belong to one user only, so re-running
+        Commission against a user who kept it (Decommission never deletes
+        Command users) gets "already in use". That case succeeds when the
+        plate is on this user already, and still fails when it is someone
+        else's.
+
         Returns:
             The license plate number echoed back by the API.
 
@@ -511,13 +517,27 @@ class VerkadaExternalAPIClient:
                 license_plate_number.
         """
         url = f"https://{self.region}.verkada.com/access/v1/credentials/license_plate"
-        data = self._request(
-            "POST",
-            url,
-            params={"user_id": user_id},
-            json={"active": True, "license_plate_number": license_plate},
-            error_context=f"add_license_plate_to_user user={user_id}",
-        )
+        try:
+            data = self._request(
+                "POST",
+                url,
+                params={"user_id": user_id},
+                json={"active": True, "license_plate_number": license_plate},
+                error_context=f"add_license_plate_to_user user={user_id}",
+            )
+        except ConnectionError as ex:
+            if "already in use" not in str(ex) or not self._user_has_plate(
+                user_id, license_plate
+            ):
+                raise
+            log_api_call(
+                "POST",
+                f"{self.region}.verkada.com/access/v1/credentials/license_plate",
+                f'{{"user_id": "{user_id}", "license_plate_number": "{license_plate}"}}',
+                "400",
+                "already on this user",
+            )
+            return license_plate
 
         plate = data.get("license_plate_number")
         if not plate:
@@ -534,6 +554,19 @@ class VerkadaExternalAPIClient:
             f'{{"license_plate_number": "{plate}"}}',
         )
         return plate
+
+    def _user_has_plate(self, user_id: str, license_plate: str) -> bool:
+        """Whether the access user already holds this license plate."""
+        data = self._request(
+            "GET",
+            f"https://{self.region}.verkada.com/access/v1/access_users/user",
+            params={"user_id": user_id},
+            error_context=f"get access user {user_id}",
+        )
+        return any(
+            str(p.get("license_plate_number", "")).upper() == license_plate.upper()
+            for p in data.get("license_plates") or []
+        )
 
     # ------------------------------------------------------------------
     # Delete methods
