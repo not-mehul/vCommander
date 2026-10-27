@@ -28,8 +28,9 @@ class FakeOrg:
 
     org_short_name, public_api_region, user_id = "lab", "api", "me"
 
-    def __init__(self, assets, *, fail_ids=(), scan_error=None):
+    def __init__(self, assets, *, fail_ids=(), scan_error=None, roles=()):
         self.store = {c: [dict(i) for i in items] for c, items in assets.items()}
+        self.roles = set(roles)  # org roles the user already holds
         self.fail_ids = set(fail_ids)
         self.scan_error = scan_error
         self.calls = []
@@ -49,8 +50,14 @@ class FakeOrg:
     def disable_global_site_admin(self):
         self.calls.append("gsa_off")
 
-    def enable_access_admin(self):
-        self.calls.append("access_admin_on")
+    def get_org_role_keys(self):
+        return set(self.roles)
+
+    def enable_access_admin(self, roles):
+        self.calls.append("access_admin_on:" + ",".join(roles))
+
+    def disable_access_admin(self, roles):
+        self.calls.append("access_admin_off:" + ",".join(roles))
 
     # -- dispatch ------------------------------------------------------------
     def _list(self, category):
@@ -81,6 +88,10 @@ class FakeOrg:
             category = _DELETER_TO_CATEGORY[name]
             return lambda item_id, *rest: self._delete(category, item_id)
         raise AttributeError(name)
+
+
+_BOTH = "ACCESS_CONTROL_SYSTEM_ADMIN,ACCESS_CONTROL_USER_ADMIN"
+_ROLES_ON, _ROLES_OFF = f"access_admin_on:{_BOTH}", f"access_admin_off:{_BOTH}"
 
 
 def _items(prefix, n):
@@ -203,8 +214,9 @@ def test_org_is_released_after_a_delete_run(make, page, fail):
     _scan(view, page)
     _delete(view, page)
     # Reverted whatever the outcome (previously only after a clean run).
-    assert org.calls[-2:] == ["gsa_off", "delete_key:kid"]
+    assert org.calls[-3:] == ["gsa_off", _ROLES_OFF, "delete_key:kid"]
     assert ("done", "Global Site Admin turned back off") in view._cleanup
+    assert ("done", "Access admin roles revoked") in view._cleanup
     assert session._active_run is None
 
 
@@ -213,7 +225,7 @@ def test_org_is_released_when_the_scan_fails(make, page):
     _scan(view, page)
     assert view._state == dv.SCAN
     assert org.calls == [
-        "create_key", "gsa_on", "access_admin_on", "gsa_off", "delete_key:kid"
+        "create_key", "gsa_on", _ROLES_ON, "gsa_off", _ROLES_OFF, "delete_key:kid"
     ]
     assert page.dialogs  # "Scan Failed" alert
     assert session._active_run is None
@@ -228,7 +240,7 @@ def test_org_is_released_when_leaving_after_a_scan(make, page):
         await asyncio.sleep(0.05)  # let the spawned cleanup run
 
     asyncio.run(scan_then_leave())
-    assert org.calls[-2:] == ["gsa_off", "delete_key:kid"]
+    assert org.calls[-3:] == ["gsa_off", _ROLES_OFF, "delete_key:kid"]
     assert not org.deleted
 
 
@@ -246,5 +258,27 @@ def test_cancelling_mid_run_skips_the_rest_and_still_releases(make, page):
     assert org.deleted == [("Cameras", "cam0")]
     assert view._cancelled_at == "Cameras"
     assert view._results["Sites"] == (0, 2)
-    assert org.calls[-2:] == ["gsa_off", "delete_key:kid"]
+    assert org.calls[-3:] == ["gsa_off", _ROLES_OFF, "delete_key:kid"]
     assert view._state == dv.COMPLETE
+
+
+def test_roles_the_user_already_held_are_neither_granted_nor_revoked(make, page):
+    view, org = make(
+        {"Cameras": _items("cam", 1)}, roles={"ACCESS_CONTROL_SYSTEM_ADMIN"}
+    )
+    _scan(view, page)
+    _delete(view, page)
+    assert "access_admin_on:ACCESS_CONTROL_USER_ADMIN" in org.calls
+    assert "access_admin_off:ACCESS_CONTROL_USER_ADMIN" in org.calls
+    assert not [c for c in org.calls if "SYSTEM_ADMIN" in c]
+
+
+def test_no_role_calls_when_the_user_holds_both(make, page):
+    view, org = make(
+        {"Cameras": _items("cam", 1)},
+        roles={"ACCESS_CONTROL_SYSTEM_ADMIN", "ACCESS_CONTROL_USER_ADMIN"},
+    )
+    _scan(view, page)
+    _delete(view, page)
+    assert not [c for c in org.calls if c.startswith("access_admin")]
+    assert org.calls[-2:] == ["gsa_off", "delete_key:kid"]

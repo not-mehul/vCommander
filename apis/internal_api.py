@@ -11,6 +11,7 @@ from apis.endpoints import (
     _DOOR_CREATE_CONFIGS,
     _DOOR_CREATE_IOS,
     _DOOR_EVENT,
+    _DOOR_MFA_CREATE_CONFIGS,
     _LPR_DOOR_CREATE_CONFIGS,
     _MFA_DOOR_EVENT,
     DEFAULT_SHARD,
@@ -33,6 +34,13 @@ from constants import (
     SEARCH_DURATION,
 )
 from utils.logger import log_api_call
+
+# Access-control admin roles Decommission needs: role key -> (endpoint key
+# prefix, label).
+ACCESS_ADMIN_ROLES = {
+    "ACCESS_CONTROL_SYSTEM_ADMIN": ("permissions.access_system_admin", "Access System Admin"),
+    "ACCESS_CONTROL_USER_ADMIN": ("permissions.access_user_admin", "Access User Admin"),
+}
 
 
 class OrgNotFoundError(ValueError):
@@ -1133,28 +1141,50 @@ class VerkadaInternalAPIClient:
         """Disable globalSiteAdmin: per-site grants required."""
         self._set_global_site_admin(False)
 
-    def enable_access_admin(self) -> None:
+    def get_org_role_keys(self) -> set[str]:
+        """
+        The current user's org-level role keys (e.g. ACCESS_CONTROL_USER_ADMIN).
+
+        Read through set_user_permissions with nothing to grant or revoke and
+        returnPermissions on: the response lists the user's role grants.
+        """
+        data, _ = self._request(
+            "permissions.user_roles.get",
+            json={
+                "organizationId": self.org_id,
+                "targetUserId": self.user_id,
+                "returnPermissions": True,
+                "grant": [],
+                "revoke": [],
+            },
+            error_context="Failed to read the user's roles",
+            log_request=f'{{"targetUserId": "{self.user_id}"}}',
+        )
+        return {
+            g["roleKey"]
+            for g in data.get("roleGrant") or []
+            if g.get("roleKey") and g.get("targetEntityType", "organization") == "organization"
+        }
+
+    def enable_access_admin(self, roles: list[str] | None = None) -> None:
         """
         Grant the current user the elevated access-control admin roles
-        (ACCESS_CONTROL_SYSTEM_ADMIN + ACCESS_CONTROL_USER_ADMIN) required
-        to delete certain access control hardware.
+        (ACCESS_CONTROL_SYSTEM_ADMIN + ACCESS_CONTROL_USER_ADMIN, or the
+        given subset) required to delete certain access control hardware.
 
-        Two API calls — atomicity note: if the second fails, the user is
-        left with SYSTEM_ADMIN but not USER_ADMIN. There's no rollback;
-        the caller surfaces the failure and retries.
+        One API call per role — atomicity note: if the second fails, the
+        user is left with the first only. There's no rollback; the caller
+        surfaces the failure and retries.
         """
-        self._set_user_permission(
-            "permissions.access_system_admin.enable",
-            "ACCESS_CONTROL_SYSTEM_ADMIN",
-            grant=True,
-            label="Access System Admin",
-        )
-        self._set_user_permission(
-            "permissions.access_user_admin.enable",
-            "ACCESS_CONTROL_USER_ADMIN",
-            grant=True,
-            label="Access User Admin",
-        )
+        for role in roles if roles is not None else ACCESS_ADMIN_ROLES:
+            key, label = ACCESS_ADMIN_ROLES[role]
+            self._set_user_permission(f"{key}.enable", role, grant=True, label=label)
+
+    def disable_access_admin(self, roles: list[str] | None = None) -> None:
+        """Revoke the access-control admin roles (or the given subset)."""
+        for role in roles if roles is not None else ACCESS_ADMIN_ROLES:
+            key, label = ACCESS_ADMIN_ROLES[role]
+            self._set_user_permission(f"{key}.disable", role, grant=False, label=label)
 
     # ------------------------------------------------------------------
     # Org Roles/Agreements
@@ -2264,6 +2294,8 @@ class VerkadaInternalAPIClient:
         access_controller_id: str,
         door_name: str,
         floor_id: str,
+        *,
+        mfa: bool = False,
     ) -> str:
         """
         Creates the door served by an Access Station Pro. Returns door_id.
@@ -2273,13 +2305,20 @@ class VerkadaInternalAPIClient:
         controller, so the door is created with doorType "moody_as_acu"
         and the Access Station Pro config profile (which already carries
         face-unlock-enabled).
+
+        Args:
+            mfa: When True, the door is created with all three two-factor
+                modes on (card + code, face + card, face + code), as the
+                Command web app does, instead of three door/config/set
+                calls afterwards.
         """
+        configs = _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS
         return self._create_door(
             "access_station_pro.door.create",
             access_controller_id=access_controller_id,
             door_name=door_name,
             floor_id=floor_id,
-            configs=_ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS,
+            configs=configs + _DOOR_MFA_CREATE_CONFIGS if mfa else configs,
             door_type="moody_as_acu",
         )
 

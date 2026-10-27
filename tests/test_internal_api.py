@@ -398,3 +398,58 @@ def test_create_or_reuse_building_falls_back_to_any_floor_of_it():
         floors=[{"id": "f1", "name": "Basement", "building_id": "b1"}],
     )
     assert client.create_or_reuse_building("HQ", None, ["G"]) == "f1"
+
+
+# -- door/create ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mfa", [False, True])
+def test_access_station_pro_door_mfa_configs(monkeypatch, mfa):
+    client = _client()
+    sent = {}
+
+    def fake_request(key, json=None, **kw):
+        sent.update(json)
+        return {"doors": [{"doorId": "d1"}]}, 200
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    assert client.create_access_station_pro_door("ac", "Door", "f", mfa=mfa) == "d1"
+    configs = {c["paramName"]: c["paramValue"] for c in sent["configs"]}
+    assert configs["face-unlock-enabled"] == "True"
+    modes = ("mfa-card-code-enabled", "mfa-face-card-enabled", "mfa-face-code-enabled")
+    assert all(configs.get(m) == ("True" if mfa else None) for m in modes)
+
+
+def test_org_role_keys_come_from_role_grants(monkeypatch):
+    client = _client()
+    sent = {}
+
+    def fake_request(key, json=None, **kw):
+        sent.update(key=key, **json)
+        grants = [
+            {"roleKey": "ACCESS_CONTROL_USER_ADMIN", "targetEntityType": "organization"},
+            {"roleKey": "SITE_ADMIN", "targetEntityType": "site"},
+        ]
+        return {"roleGrant": grants}, 200
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    assert client.get_org_role_keys() == {"ACCESS_CONTROL_USER_ADMIN"}
+    assert sent["key"] == "permissions.user_roles.get"
+    assert sent["grant"] == sent["revoke"] == [] and sent["returnPermissions"] is True
+
+
+def test_access_admin_grant_and_revoke_use_their_endpoints(monkeypatch):
+    client = _client()
+    sent = []
+    monkeypatch.setattr(
+        client, "_request", lambda key, json=None, **kw: sent.append((key, json)) or ({}, 200)
+    )
+    client.enable_access_admin(["ACCESS_CONTROL_USER_ADMIN"])
+    client.disable_access_admin()
+    assert [k for k, _ in sent] == [
+        "permissions.access_user_admin.enable",
+        "permissions.access_system_admin.disable",
+        "permissions.access_user_admin.disable",
+    ]
+    assert sent[0][1]["grant"][0]["permission"] == "ACCESS_CONTROL_USER_ADMIN"
+    assert sent[1][1]["revoke"][0]["permission"] == "ACCESS_CONTROL_SYSTEM_ADMIN"

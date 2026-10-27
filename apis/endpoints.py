@@ -194,6 +194,15 @@ _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS = [
     {"paramName": "face-unlock-enabled", "paramValue": "True"},
 ]
 
+# Two-factor modes a door accepts once a 2FA schedule applies. The Command
+# web app sends them with door/create (its defaults: face + card and face +
+# code on, card + code off) instead of setting them afterwards.
+_DOOR_MFA_CREATE_CONFIGS = [
+    {"paramName": "mfa-card-code-enabled", "paramValue": "True"},
+    {"paramName": "mfa-face-card-enabled", "paramValue": "True"},
+    {"paramName": "mfa-face-code-enabled", "paramValue": "True"},
+]
+
 _DOOR_CREATE_CONFIGS = [
     {"paramName": "default-unlock-time", "paramValue": "10"},
     {"paramName": "assa-extended-unlock-time", "paramValue": "20"},
@@ -496,6 +505,32 @@ ENDPOINTS: dict[str, Endpoint] = {
             "settings": {"globalSiteAdmin": False},
         },
         response={},
+    ),
+    # Read-only use of set_user_permissions: nothing granted or revoked, and
+    # returnPermissions on, so the response lists the user's roles
+    # (roleGrant[].roleKey) and permissions.
+    "permissions.user_roles.get": Endpoint(
+        method="POST",
+        subdomain="vprovision",
+        path="org/set_user_permissions",
+        payload={
+            "organizationId": "<org_id>",
+            "targetUserId": "<user_id>",
+            "returnPermissions": True,
+            "grant": [],
+            "revoke": [],
+        },
+        response={
+            "roleGrant": [
+                {
+                    "roleKey": "ACCESS_CONTROL_SYSTEM_ADMIN",
+                    "targetEntityType": "organization",
+                    "entityId": "<org_id>",
+                },
+            ],
+            "role": [{"key": "ACCESS_CONTROL_SYSTEM_ADMIN", "roleId": "<role_id>"}],
+            "permissions": [{"permission": "ADMIN", "entityId": "<entity_id>"}],
+        },
     ),
     "permissions.access_system_admin.enable": Endpoint(
         method="POST",

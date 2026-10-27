@@ -15,6 +15,7 @@ class FakeInternal:
 
     def __init__(self, fail=(), key_error=None):
         self.fail, self.key_error, self.calls = set(fail), key_error, []
+        self.args = {}
 
     def create_external_api_key(self):
         self.calls.append("create_external_api_key")
@@ -23,8 +24,9 @@ class FakeInternal:
         return ExternalApiKey("secret", "kid")
 
     def __getattr__(self, name):
-        def call(*args):
+        def call(*args, **kwargs):
             self.calls.append(name)
+            self.args[name] = (args, kwargs)
             if name in self.fail:
                 raise ConnectionError(f"{name} broke")
             return f"{name}-id"
@@ -139,6 +141,21 @@ def test_access_station_pro_door_needs_no_separate_face_unlock(
     assert "create_access_station_pro_door" in client.calls
     assert "enable_door_face_unlock" not in client.calls
     assert view._steps_failed == 0
+
+
+def test_acsl_creates_the_door_with_its_mfa_modes(view, page, monkeypatch):
+    client = FakeInternal()
+    _run(view, page, client, monkeypatch, template="ACSL")
+    assert client.args["create_access_station_pro_door"][1] == {"mfa": True}
+    assert not [c for c in client.calls if c.startswith("enable_door_mfa")]
+    assert "create_mfa_schedule" in client.calls
+
+
+def test_as_strobe_goes_on_output_1(view, page, monkeypatch):
+    # pinNum is 0-based: Command shows pinNum 0 as the panel's "Output 1".
+    client = FakeInternal()
+    _run(view, page, client, monkeypatch, template="AS")
+    assert client.args["create_wired_output"][0][-1] == 0
 
 
 def test_access_station_pro_door_configs_carry_face_unlock():

@@ -167,7 +167,8 @@ AS_INSTRUCTOR_KEYCODE_NAME = "VCE Instructor Keycode"
 AS_INSTRUCTOR_KEYCODE = "123456"
 AS_BUILDING_NAME = "HQ"
 AS_STROBE_OUTPUT_NAME = "Strobe Light"
-AS_STROBE_OUTPUT_PIN = 1
+# pinNum is 0-based: 0 is the panel's "Output 1" in Command.
+AS_STROBE_OUTPUT_PIN = 0
 AS_FLOORS = ["G"]
 AS_ADDRESS = (
     "406 E 3rd Ave, San Mateo, CA 94401, USA",

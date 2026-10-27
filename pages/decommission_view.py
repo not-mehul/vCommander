@@ -22,6 +22,7 @@ import flet as ft
 
 import theme
 from apis.external_api import VerkadaExternalAPIClient
+from apis.internal_api import ACCESS_ADMIN_ROLES
 from components import (
     ProgressHeader,
     Stepper,
@@ -173,6 +174,8 @@ class DecommissionView(ToolView):
         self._ext_client = None
         self._api_key = None
         self._gsa_enabled = False
+        # Access admin roles the scan granted (not ones the user already had).
+        self._granted_roles: list[str] = []
         # True while a scan or delete run owns the org; that run releases
         # the org itself when it finishes.
         self._busy = False
@@ -248,12 +251,12 @@ class DecommissionView(ToolView):
             spawn(self._release_org())
 
     async def _release_org(self) -> None:
-        """Turn Global Site Admin back off and delete the temporary API key.
+        """Undo the scan's org changes: Global Site Admin back off, the access
+        admin roles it granted revoked, the temporary API key deleted.
 
         Idempotent: each change is forgotten before it is undone, so a second
-        call is a no-op. Access System/User Admin, also granted by the scan,
-        are deliberately left in place. Results are logged and collected in
-        self._cleanup for the report.
+        call is a no-op. Results are logged and collected in self._cleanup
+        for the report.
         """
         client = self._int_client
         loop = asyncio.get_running_loop()
@@ -268,6 +271,18 @@ class DecommissionView(ToolView):
                 log_system(f"Could not disable Global Site Admin: {ex}", level="WARN")
                 self._cleanup.append(
                     ("partial", f"Global Site Admin could not be turned off: {ex}")
+                )
+
+        roles, self._granted_roles = self._granted_roles, []
+        if roles and client is not None:
+            try:
+                await loop.run_in_executor(_executor, client.disable_access_admin, roles)
+                log_system("Revoked the access admin roles granted for the scan.")
+                self._cleanup.append(("done", "Access admin roles revoked"))
+            except Exception as ex:
+                log_system(f"Could not revoke access admin roles: {ex}", level="WARN")
+                self._cleanup.append(
+                    ("partial", f"Access admin roles could not be revoked: {ex}")
                 )
 
         key, self._api_key = self._api_key, None
@@ -415,18 +430,26 @@ class DecommissionView(ToolView):
             # access controllers, alarm sites, and similar can be silently
             # missing from the scan results.
             #
-            # Global Site Admin is org-wide, so _release_org() turns it back
-            # off whenever the flow ends. Access System/User Admin only
-            # affect the running user and are left granted. The flag is set
-            # before the call: a request that times out may still have
-            # applied, and turning GSA off again is harmless either way.
+            # _release_org() undoes both whenever the flow ends: Global Site
+            # Admin goes back off, and the access admin roles the user did
+            # not already hold are revoked. The flags are set before the
+            # calls: a request that times out may still have applied, and
+            # undoing a change that didn't happen is harmless.
             self._gsa_enabled = True
             await self._prep_step(
                 page, "Enabling Global Site Admin", client.enable_global_site_admin
             )
-            await self._prep_step(
-                page, "Granting Access System Admin", client.enable_access_admin
+            held = await self._prep_step(
+                page, "Checking access roles", client.get_org_role_keys
             )
+            self._granted_roles = [r for r in ACCESS_ADMIN_ROLES if r not in held]
+            if self._granted_roles:
+                await self._prep_step(
+                    page,
+                    "Granting Access System Admin",
+                    client.enable_access_admin,
+                    self._granted_roles,
+                )
 
             # Serials that should be filtered out of the Cameras list:
             # Intercoms and Access Station Pros are both surfaced by the

@@ -889,34 +889,18 @@ class CommissionView(ToolView):
             )
             door_id = None
             if access_station_pro_controller_id:
+                # Face unlock and the three two-factor modes (card + code,
+                # face + card, face + code) come with the door's create
+                # configs, as in the Command web app.
                 door_id = await step(
                     "Creating Door",
-                    client.create_access_station_pro_door,
+                    functools.partial(client.create_access_station_pro_door, mfa=True),
                     access_station_pro_controller_id,
                     ACSL_ACCESS_STATION_PRO_DOOR_NAME,
                     floor_id,
                 )
 
-            # Face unlock comes with the door's create configs (see ESS).
             if door_id and access_station_pro_controller_id:
-                _ = await step(
-                    "Enabling Card + Code",
-                    client.enable_door_mfa_card_code,
-                    door_id,
-                )
-
-                _ = await step(
-                    "Enabling Face + Card",
-                    client.enable_door_mfa_face_card,
-                    door_id,
-                )
-
-                _ = await step(
-                    "Enabling Face + Code",
-                    client.enable_door_mfa_face_code,
-                    door_id,
-                )
-
                 _ = await step(
                     "Creating MFA Door Schedule",
                     client.create_mfa_schedule,
