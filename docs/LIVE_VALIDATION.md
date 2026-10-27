@@ -3,6 +3,83 @@
 Results of running vCommander against a real test org with the scripts in
 `tools/live/`. Newest first.
 
+## 2026-10-27 (part 2) — Owner's answers, remaining actions, internal-API database
+
+Follow-up to the section below, after the owner answered its questions
+(GSA lives under Modify Default Roles; Self-Monitored is the Response tab's
+Response Level; test users are `mehul.sen+testN@verkada.com`; the alarm
+response may only ever be Self-Monitored). The org was left clean: only the
+two existing users, Global Site Admin off, no API keys, no access admin
+roles on the session user.
+
+### Newly recorded (web app vs. vCommander)
+
+| Action | vCommander | Web app | Status |
+|---|---|---|---|
+| Global Site Admin on/off | `vprovision org/settings/update {globalSiteAdmin}` | same (Modify Default Roles → Global Site Admin) | match |
+| Self-Monitored response level | `vagent response/config/update` (`RESPONSE_LEVEL_SELF_MONITORED`) | same (Response → Response Level → Self-Monitored) | match |
+| Invite user | `vprovision org/invite` | same keys (`orgAdmin`, `commandUserAdmin`, `inviteFf`) | match |
+| Grant / revoke org roles | `org/set_user_permissions`, one call per role | same endpoint, all roles of a dialog in one call; Org Admin is `ORG_MANAGER` | **improved** (batched) |
+| Command group create / add member / delete | `vauth security_entity_group/create`, `/members/add`, `/delete` | same | match |
+| Delete user | public API `DELETE core/v1/user` (Decommission) | `vcorgi org/{id}/users/delete {userIds}` (batch, asynchronous) | changed; registered as `user.delete.batch`, verified live |
+| Command Connector setup | `vprovision vfortress/update_box` | same keys | match |
+| Standard controller setup | `vcerberus access/v2/user/access_device/setup` | first `vcerberus access/v2/user/roles/modify` (Access Site Admin on the site); 400 "Unknown entity" stops the setup | web app could not finish; vCommander unaffected |
+| Standard door create | `api door/create` | same; web adds default face-unlock/MFA configs, omits `polling-frequency-ms` | **improved** (`polling-frequency-ms` dropped) |
+| Access level delete | `DELETE vcerberus access/v2/user/schedules/{id}` | same | match |
+| Access group create / add user / delete | public API (VSSL) | `api user_groups/add_group`, `user_groups/bulk_add_users`, `user_groups/remove_group` | **improved** (VSSL now internal) |
+| License plate add / remove | public API `credentials/license_plate` | `GET api access/v2/user/license_plate/{plate}`, then `POST api access/v2/user/license_plate` (201); `POST …/license_plate/delete` | **improved** (VSSL now internal) |
+| Keypad setup | `vproconfig unassigned_device/set_up_alarm_device` | same keys | match |
+| Wired input | `vproconfig device/create_wired_input` | same keys | match |
+| Mailroom trial / site | `vdoorman package_org/preferences/{id}`, `package_site/org/{id}` | same; the web app first creates a Command site "<name> Mailroom" | match |
+| LPR mode | `user/camera/feature/set` + `user/camera/config/set` | same, after `camera/rotate {rotate:"0"}` | match |
+
+Not recorded: LPR Unlock pairing on a door (the toggle doesn't appear for
+an offline LPR camera; vCommander's `door/{id}/device_io` works), camera
+partitions (need an online camera), PTZ Set Up through the web (the site
+menu wouldn't select headlessly; same three camera calls as the Bullet),
+persons of interest, intercoms, sensors, visits/visitors and scenarios (no
+such devices or data in the org).
+
+### Changes
+
+| Change | Commit |
+|---|---|
+| AS strobe on the panel's Output 1 (`pinNum` 0; it was 1 = Output 2). Verified on the panel wiring page. | `20895ed` |
+| ACSL creates its door with the three two-factor modes in the create configs (three calls fewer). Verified: all three ticked in the web app. | `20895ed` |
+| Decommission reads the user's roles first (`permissions.user_roles.get`), grants only the missing access admin roles and revokes exactly those at release. Verified live. | `20895ed` |
+| Commission needs no public-API key: VSSL's access group, member and plate go through the internal API, as in the web app. Every template saves the key create/connect/delete. Verified: VSSL 22/22, AS 23/23, no key or token call. | `bb05295` |
+| Access admin roles granted / revoked in one call each. Verified live. | `bb05295` |
+| Standard/LPR doors no longer send `polling-frequency-ms` (the default). Verified: still 10000 in the create response. | `cb0b091` |
+| Registry: 14 endpoints added from the web recordings (`user.delete.batch`, `user.license_plate.get/delete`, `permissions.user_roles.get/set`, `org.features.get`, `access_controller.list.v4`, `door.list.v4`, `door.set_nearby_cameras`, `access.roles.modify`, `camera.rotate`, `camera.recommended_settings.apply`, `camera.create.ptz_install.web`, `alarm.keycode.generate`); 163 in total, none removed. | `bb05295`, `cb0b091` |
+
+Steps per template now: ESS 18, ACSL 9, ACSE 2, VSSL 22, VSSE 12, AS 23
+(before this run: 21, 15, 4, 24, 14, 25).
+
+### Found along the way
+
+- **Claiming an access controller or Access Station Pro makes Command
+  grant the claiming user Access System Admin and Access User Admin.** So
+  after any Commission with access hardware the instructor holds both
+  roles, and Decommission (which only revokes what it granted itself)
+  leaves them. Without them the user can't even list access controllers.
+- The web app's user delete is asynchronous (`operationId`); the user list
+  shows the user for a few more seconds.
+- Verkada-employee emails default to a Temporary User in Add User; a full
+  user needs the acknowledgement checkbox.
+
+### Open questions
+
+1. Should Decommission also revoke the access admin roles that Command
+   granted at claim time (i.e. always revoke both at the end)? It would
+   also remove them from someone who held them before vCommander ran.
+2. Decommission still uses a temporary public-API key for cameras, persons
+   of interest, guest sites, access groups and user deletes. Internal
+   equivalents exist for all but persons of interest (`GET vdoorman
+   site/org/{id}`, `user_groups/get` / `remove_group`, `user.delete.batch`,
+   `camera.list`). Want Decommission moved off the public API too?
+3. Device claims: one `batch/commission` call for all devices (web app) or
+   one per device (current, clearer per-device result)?
+
 ## 2026-10-27 — Web app vs. vCommander, action by action
 
 Procedure: [`LIVE_VALIDATION_RUNBOOK.md`](LIVE_VALIDATION_RUNBOOK.md), same
