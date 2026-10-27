@@ -135,9 +135,12 @@ See `docs/LIVE_VALIDATION.md`. In short:
 ### Phase 0: access
 
 1. Run `python tools/live/check.py` and expect `session OK`.
-2. Run `web/probe.js` and expect no 401s and no blocked logout. If
-   `feature_flags/init` returns 401, the identity headers are missing.
-   `session.js` adds them from `X_VERKADA_*`; confirm those are set.
+2. Run `web/probe.js` and expect no 401s. One or two blocked
+   `POST /user/logout` are normal: the web app tries them on every fresh
+   load, `session.js` aborts them, and the session survives (re-run
+   `check.py` to confirm). If `feature_flags/init` returns 401, the
+   identity headers are missing. `session.js` adds them from
+   `X_VERKADA_*`; confirm those are set.
 
 ### Phase 1: record what vCommander actually sends
 
@@ -145,10 +148,9 @@ See `docs/LIVE_VALIDATION.md`. In short:
 drifted from what the code really sends. So first record vCommander's real
 requests:
 
-- Add a recorder to `tools/live/harness.py` that wraps
-  `client.session.request` (and the external client's session). It should
-  append `{method, host, path, body, status}` to a JSON file in `LIVE_OUT`,
-  in the same format as `session.js`, and redact the body.
+- Set `LIVE_RECORD=<name>.vc.json` on any harness script
+  (`harness.record()` wraps `requests.Session.send`, so it covers the
+  internal and public clients; secrets are scrubbed by JSON key).
 - Record each action from the catalogue below with vCommander, using
   `commission.py`, `decommission.py` or a direct client call.
 
@@ -156,11 +158,14 @@ requests:
 
 For each catalogue row:
 
-1. Write a Playwright script in `tools/live/web/actions/<action>.js` that
-   uses `open()` from `session.js`. It should navigate to the Command page
-   and click through the UI the way an admin would. Discover selectors from
-   screenshots and `page.accessibility.snapshot()`, and prefer role and
-   label selectors. Save the result with `save('<action>.web.json')`.
+1. Write a Playwright script in `tools/live/web/actions/<action>.js`
+   (exporting `async (s, ui, ...args)`) and run it with `web/run.js`. It
+   should navigate to the Command page and click through the UI the way an
+   admin would. Discover selectors with `web/explore.js` (screenshots and
+   the aria tree; `page.accessibility` is gone from current Playwright, use
+   `locator.ariaSnapshot()`), and prefer role and label selectors. Mark
+   the step that changes the org with `ui.mark()`. Existing actions cover
+   the rows recorded on 2026-10-26/27 (see `docs/LIVE_VALIDATION.md`).
 2. Use the same names and inputs as vCommander where you can, such as site
    "HQ" and the template device names in `constants.py`, so payloads are
    comparable.
@@ -184,9 +189,11 @@ For each action, compare the vCommander recording with the web recording:
 - **Errors:** how the web app handles conflicts, for example duplicate
   names.
 
-`python tools/live/compare.py <vcommander.json> <web.json>` gives the
-registry-level view. Extend it, or write a per-action diff, to compare the
-two recordings directly.
+`python tools/live/compare.py <recordings>` gives the registry-level view;
+`python tools/live/compare.py --diff <vc.json,...> <web.json,...>` compares
+the two recordings directly. Endpoints that share a path (e.g. PTZ and LPR
+`user/camera/config/set`, schedule create and delete) show up under each
+other's keys; read the bodies before calling that a difference.
 
 ### Phase 4: improvements, changes, updates
 
