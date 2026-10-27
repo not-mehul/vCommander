@@ -842,21 +842,15 @@ class CommissionView(ToolView):
                 ESS_ADDRESS
             )
 
-            door_id = None
+            # No separate face-unlock step: the Access Station Pro door is
+            # created with face-unlock-enabled (as the Command web app does).
             if access_station_pro_controller_id:
-                door_id = await step(
+                _ = await step(
                     "Creating Door",
                     client.create_access_station_pro_door,
                     access_station_pro_controller_id,
                     ESS_ACCESS_STATION_PRO_DOOR_NAME,
                     floor_id,
-                )
-
-            if door_id and access_station_pro_controller_id:
-                _ = await step(
-                    "Enabling Face-Unlock on Door",
-                    client.enable_door_face_unlock,
-                    door_id,
                 )
 
     async def _run_acsl_flow(self, step, page, client) -> None:
@@ -903,13 +897,8 @@ class CommissionView(ToolView):
                     floor_id,
                 )
 
+            # Face unlock comes with the door's create configs (see ESS).
             if door_id and access_station_pro_controller_id:
-                _ = await step(
-                    "Enabling Face-Unlock on Door",
-                    client.enable_door_face_unlock,
-                    door_id,
-                )
-
                 _ = await step(
                     "Enabling Card + Code",
                     client.enable_door_mfa_card_code,

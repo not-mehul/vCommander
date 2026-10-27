@@ -128,6 +128,25 @@ def test_cancel_skips_remaining_steps_but_still_deletes_the_key(
     assert client.calls[-1] == "delete_external_api_key"
 
 
+@pytest.mark.parametrize("template", ["ESS", "ACSL"])
+def test_access_station_pro_door_needs_no_separate_face_unlock(
+    view, page, monkeypatch, template
+):
+    # The door is created with face-unlock-enabled in its configs, as the
+    # Command web app does; the old follow-up door/config/set was redundant.
+    client = FakeInternal()
+    _run(view, page, client, monkeypatch, template=template)
+    assert "create_access_station_pro_door" in client.calls
+    assert "enable_door_face_unlock" not in client.calls
+    assert view._steps_failed == 0
+
+
+def test_access_station_pro_door_configs_carry_face_unlock():
+    from apis.endpoints import _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS as configs
+
+    assert {"paramName": "face-unlock-enabled", "paramValue": "True"} in configs
+
+
 def test_second_run_is_refused_while_one_is_registered(view, page, monkeypatch):
     from utils.cancellation import CancellationToken
 
