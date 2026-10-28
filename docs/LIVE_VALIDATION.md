@@ -3,6 +3,42 @@
 Results of running vCommander against a real test org with the scripts in
 `tools/live/`. Newest first.
 
+## 2026-10-28 — Batching: several devices, users and deletes at once
+
+What the Command web app does when it handles several items, recorded live,
+and what vCommander now does. Two spare serials were added for same-type
+batches (`Dome2`, `Access_Controller2`; redacted like the others).
+
+| Operation | Web app | vCommander before | vCommander now |
+|---|---|---|---|
+| Claim N devices | one `batch/commission` with all N (names included); response lists `successfulDevices` / `failedSerials` | one call per device | one call per template (`add_devices`), one progress row per device; a rejected serial fails only its row |
+| Set up N cameras (Batch Setup) | one `camera/site/batch/set` and one `recommended_default_settings/apply` for all; `camera/location/set` per camera | name + site + location per camera | `configure_cameras`: one site call, locations in parallel, no rename (the claim's name sticks, verified) |
+| Invite N users | one `org/invite` per user (no bulk Command invite; the CSV import `users/async_upload_csv` creates access users without a Command invite) | sequential | four at a time, one row each (Users tool and Commission) |
+| Delete N devices | one delete call per device, all sent at once | sequential | four at a time per category; alarm devices, partitions, alarm sites and schedules stay sequential |
+| Delete N users | one `vcorgi org/{id}/users/delete` with all ids (asynchronous) | public API, one call per user | one internal call (`delete_users`), never including the signed-in user |
+
+**Measured on the test org** (recorded calls / wall time, same templates):
+
+| Template | Before | After |
+|---|---|---|
+| ESS | 30 calls, 28.7 s | 24 calls, 22.9 s |
+| VSSL | 34 calls, 24.4 s | 25 calls, 18.8 s |
+| VSSE | 25 calls, 14.1 s | 15 calls, 9.6 s |
+| AS | 33 calls, 25.1 s | 26 calls, 18.8 s |
+| ACSL | 18 calls, 17.3 s | 11 calls, 13.3 s |
+
+Three camera deletes finished within 6 ms of each other; four invites
+within 7 ms; two and four test users were deleted with one call each while
+the owner's accounts stayed.
+
+**Changes:** `02fb289` (claims, camera setup, invites), `f966bb1`
+(Decommission deletes, user batch delete).
+
+**Next candidate:** Decommission's scan is now most of its time (47 of 69
+calls are list reads, made one category at a time). The reads are
+independent and could run in parallel, except that Cameras are de-duplicated
+against Intercoms / Access Station Pro, which would need to be listed first.
+
 ## 2026-10-27 (part 2) — Owner's answers, remaining actions, internal-API database
 
 Follow-up to the section below, after the owner answered its questions
