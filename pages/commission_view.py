@@ -15,10 +15,12 @@ import asyncio
 import csv
 import functools
 import os
+from typing import Any
 
 import flet as ft
 
 import theme
+from apis.internal_api import PARALLEL_REQUESTS, normalize_serial
 from components import (
     ProgressHeader,
     RawLogPanel,
@@ -679,25 +681,14 @@ class CommissionView(ToolView):
 
         site_id = await step("Creating Site", client.create_or_reuse_site, ESS_SITE_NAME)
 
-        camera_id = await step(
-            f"Adding Camera ({dome_serial})",
-            client.add_device,
-            ESS_CAMERA_NAME,
-            dome_serial,
-        )
-
-        panel_id = await step(
-            f"Adding Alarm Panel ({panel_serial})",
-            client.add_device,
-            ESS_PANEL_NAME,
-            panel_serial,
-        )
-
-        access_station_pro_id = await step(
-            f"Adding Access Station Pro ({access_station_pro_serial})",
-            client.add_device,
-            ESS_ACCESS_STATION_PRO_NAME,
-            access_station_pro_serial,
+        camera_id, panel_id, access_station_pro_id = await self._add_devices(
+            step,
+            client,
+            [
+                (f"Adding Camera ({dome_serial})", ESS_CAMERA_NAME, dome_serial),
+                (f"Adding Alarm Panel ({panel_serial})", ESS_PANEL_NAME, panel_serial),
+                (f"Adding Access Station Pro ({access_station_pro_serial})", ESS_ACCESS_STATION_PRO_NAME, access_station_pro_serial),
+            ],
         )
 
         floor_id = await step(
@@ -714,9 +705,8 @@ class CommissionView(ToolView):
         if camera_id and site_id:
             _ = await step(
                 "Configuring Camera",
-                client.configure_camera,
-                camera_id,
-                ESS_CAMERA_NAME,
+                client.configure_cameras,
+                [camera_id],
                 site_id,
                 ESS_ADDRESS,
             )
@@ -863,32 +853,15 @@ class CommissionView(ToolView):
 
         site_id = await step("Creating Site", client.create_or_reuse_site, VSS_SITE_NAME)
 
-        bullet_id = await step(
-            f"Adding Camera ({bullet_serial})",
-            client.add_device,
-            VSS_BULLET_NAME,
-            bullet_serial,
-        )
-
-        ptz_id = await step(
-            f"Adding PTZ ({ptz_serial})",
-            client.add_device,
-            VSS_PTZ_NAME,
-            ptz_serial,
-        )
-
-        connector_id = await step(
-            f"Adding Command Connector ({connector_serial})",
-            client.add_device,
-            VSS_CONNECTOR_NAME,
-            connector_serial,
-        )
-
-        controller_id = await step(
-            f"Adding Access Controller ({controller_serial})",
-            client.add_device,
-            VSS_CONTROLLER_NAME,
-            controller_serial,
+        bullet_id, ptz_id, connector_id, controller_id = await self._add_devices(
+            step,
+            client,
+            [
+                (f"Adding Camera ({bullet_serial})", VSS_BULLET_NAME, bullet_serial),
+                (f"Adding PTZ ({ptz_serial})", VSS_PTZ_NAME, ptz_serial),
+                (f"Adding Command Connector ({connector_serial})", VSS_CONNECTOR_NAME, connector_serial),
+                (f"Adding Access Controller ({controller_serial})", VSS_CONTROLLER_NAME, controller_serial),
+            ],
         )
 
         floor_id = await step(
@@ -902,22 +875,12 @@ class CommissionView(ToolView):
         self._progress_note(page, "Waiting for building to provision...")
         await asyncio.sleep(BUILDING_PROVISION_SECONDS)
 
-        if bullet_id and site_id:
+        cameras = [c for c in (bullet_id, ptz_id) if c]
+        if cameras and site_id:
             _ = await step(
-                "Configuring Bullet",
-                client.configure_camera,
-                bullet_id,
-                VSS_BULLET_NAME,
-                site_id,
-                VSS_ADDRESS,
-            )
-
-        if ptz_id and site_id:
-            _ = await step(
-                "Configuring PTZ",
-                client.configure_camera,
-                ptz_id,
-                VSS_PTZ_NAME,
+                f"Configuring cameras ({len(cameras)})",
+                client.configure_cameras,
+                cameras,
                 site_id,
                 VSS_ADDRESS,
             )
@@ -1031,41 +994,25 @@ class CommissionView(ToolView):
             "Creating Site", client.create_or_reuse_site, VSS_EXAM_SITE_NAME
         )
 
-        dome_id = await step(
-            f"Adding Dome ({dome_serial})",
-            client.add_device,
-            VSS_EXAM_DOME_NAME,
-            dome_serial,
+        dome_id, bullet_id, fisheye_id = await self._add_devices(
+            step,
+            client,
+            [
+                (f"Adding Dome ({dome_serial})", VSS_EXAM_DOME_NAME, dome_serial),
+                (f"Adding Bullet ({bullet_serial})", VSS_EXAM_BULLET_NAME, bullet_serial),
+                (f"Adding Fisheye ({fisheye_serial})", VSS_EXAM_FISHEYE_NAME, fisheye_serial),
+            ],
         )
 
-        bullet_id = await step(
-            f"Adding Bullet ({bullet_serial})",
-            client.add_device,
-            VSS_EXAM_BULLET_NAME,
-            bullet_serial,
-        )
-
-        fisheye_id = await step(
-            f"Adding Fisheye ({fisheye_serial})",
-            client.add_device,
-            VSS_EXAM_FISHEYE_NAME,
-            fisheye_serial,
-        )
-
-        for cam_id, cam_name in (
-            (dome_id, VSS_EXAM_DOME_NAME),
-            (fisheye_id, VSS_EXAM_FISHEYE_NAME),
-            (bullet_id, VSS_EXAM_BULLET_NAME),
-        ):
-            if cam_id and site_id:
-                _ = await step(
-                    f"Configuring {cam_name.lower()}",
-                    client.configure_camera,
-                    cam_id,
-                    cam_name,
-                    site_id,
-                    VSS_ADDRESS,
-                )
+        cameras = [c for c in (dome_id, fisheye_id, bullet_id) if c]
+        if cameras and site_id:
+            _ = await step(
+                f"Configuring cameras ({len(cameras)})",
+                client.configure_cameras,
+                cameras,
+                site_id,
+                VSS_ADDRESS,
+            )
 
         _ = await step(
             "Enabling Org Features",
@@ -1096,32 +1043,15 @@ class CommissionView(ToolView):
 
         site_id = await step("Creating Site", client.create_or_reuse_site, AS_SITE_NAME)
 
-        dome_id = await step(
-            f"Adding Camera ({dome_serial})",
-            client.add_device,
-            AS_DOME_NAME,
-            dome_serial,
-        )
-
-        controller_id = await step(
-            f"Adding Access Controller ({controller_serial})",
-            client.add_device,
-            AS_CONTROLLER_NAME,
-            controller_serial,
-        )
-
-        panel_id = await step(
-            f"Adding Alarm Panel ({panel_serial})",
-            client.add_device,
-            AS_PANEL_NAME,
-            panel_serial,
-        )
-
-        keypad_id = await step(
-            f"Adding Alarm Keypad ({keypad_serial})",
-            client.add_device,
-            AS_KEYPAD_NAME,
-            keypad_serial,
+        dome_id, controller_id, panel_id, keypad_id = await self._add_devices(
+            step,
+            client,
+            [
+                (f"Adding Camera ({dome_serial})", AS_DOME_NAME, dome_serial),
+                (f"Adding Access Controller ({controller_serial})", AS_CONTROLLER_NAME, controller_serial),
+                (f"Adding Alarm Panel ({panel_serial})", AS_PANEL_NAME, panel_serial),
+                (f"Adding Alarm Keypad ({keypad_serial})", AS_KEYPAD_NAME, keypad_serial),
+            ],
         )
 
         floor_id = await step(
@@ -1181,9 +1111,8 @@ class CommissionView(ToolView):
         if dome_id and site_id:
             _ = await step(
                 "Configuring Camera",
-                client.configure_camera,
-                dome_id,
-                AS_DOME_NAME,
+                client.configure_cameras,
+                [dome_id],
                 site_id,
                 AS_ADDRESS,
             )
@@ -1265,15 +1194,22 @@ class CommissionView(ToolView):
     # ------------------------------------------------------------------
 
     async def _invite_supporting_users(self, step, client, role: str) -> None:
-        """Invite every complete supporting-user row (validated on Review)."""
-        for first, last, email in self._collect_supporting_users():
-            await step(
-                f"Adding user {first} {last}",
-                client.invite_user,
-                email,
-                first,
-                last,
-                role,
+        """Invite every complete supporting-user row (validated on Review),
+        PARALLEL_REQUESTS at a time, one progress row each."""
+        users = self._collect_supporting_users()
+        for start in range(0, len(users), PARALLEL_REQUESTS):
+            await asyncio.gather(
+                *(
+                    step(
+                        f"Adding user {first} {last}",
+                        client.invite_user,
+                        email,
+                        first,
+                        last,
+                        role,
+                    )
+                    for first, last, email in users[start : start + PARALLEL_REQUESTS]
+                )
             )
 
     # ------------------------------------------------------------------
@@ -1427,6 +1363,39 @@ class CommissionView(ToolView):
         self._progress_header.set_progress(
             self._steps_done, failed=self._steps_failed
         )
+
+    async def _add_devices(self, step, client, devices) -> list:
+        """
+        Claim a template's devices with one batch/commission call, as the
+        Command web app does, while keeping one progress row per device.
+
+        `devices` is [(row label, device name, serial)]. The first row makes
+        the call; every row then reports its own device from the result.
+        Returns the device ids in order (None for a device that failed).
+        """
+        batch: dict[str, Any] = {}
+
+        def claim_all():
+            if "error" in batch:
+                raise batch["error"]
+            if "result" not in batch:
+                try:
+                    batch["result"] = client.add_devices([(n, s) for _, n, s in devices])
+                except Exception as ex:
+                    batch["error"] = ex
+                    raise
+            return batch["result"]
+
+        ids = []
+        for label, _name, serial in devices:
+            def one(serial=serial):
+                outcome = claim_all()[normalize_serial(serial)]
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+            ids.append(await step(label, one))
+        return ids
 
     async def _run_step(self, page, label: str, fn, *args):
         """

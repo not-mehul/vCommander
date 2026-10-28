@@ -10,7 +10,7 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const ORG = process.env.VERKADA_ORG;
-const SECRETS = [ORG, process.env.VERKADA_EMAIL, ...['Access_Controller','Access_Station_Pro','Alarm_Panel','Bullet','Command_Connector','Dome','Fisheye','Keypad','PTZ'].map(k => process.env[k])].filter(Boolean);
+const SECRETS = [ORG, process.env.VERKADA_EMAIL, ...['Access_Controller','Access_Controller2','Access_Station_Pro','Alarm_Panel','Bullet','Command_Connector','Dome','Dome2','Fisheye','Keypad','PTZ'].map(k => process.env[k])].filter(Boolean);
 // A secret as a case-insensitive pattern; serials also match with or
 // without dashes ("ABCD-EFGH" == "ABCDEFGH"), as Command shows them dashed.
 function secretRx(v) {
@@ -40,7 +40,7 @@ async function open({ record } = {}) {
   const block = route => {
     const q = route.request(), u = new URL(q.url());
     console.log('BLOCKED', q.method(), red(u.pathname));
-    log.push({ t: Date.now(), method: q.method(), host: red(u.hostname), path: red(u.pathname), body: '', status: 'blocked', resp: '' });
+    log.push({ t: Date.now(), t0: started.get(q), method: q.method(), host: red(u.hostname), path: red(u.pathname), body: '', status: 'blocked', resp: '' });
     return route.abort();
   };
   await ctx.route(/logout|sign_?out/i, block);
@@ -53,12 +53,15 @@ async function open({ record } = {}) {
     route.continue({ headers: h });
   });
   const page = await ctx.newPage();
+  // Start time of each request, to tell parallel calls from sequential ones.
+  const started = new WeakMap();
+  page.on('request', q => started.set(q, Date.now()));
   page.on('requestfinished', async q => {
     const u = new URL(q.url());
     if (!u.pathname.startsWith('/__v/') && !u.hostname.startsWith('api.')) return;
     let status = 0, resp = '';
     try { const r = await q.response(); status = r.status(); resp = await r.text(); } catch {}
-    log.push({ t: Date.now(), method: q.method(), host: red(u.hostname), path: red(u.pathname + u.search),
+    log.push({ t: Date.now(), t0: started.get(q), method: q.method(), host: red(u.hostname), path: red(u.pathname + u.search),
                body: red(q.postData() || ''), status, resp: red(resp).slice(0, 4000) });
   });
   page.on('dialog', d => d.dismiss().catch(() => {}));

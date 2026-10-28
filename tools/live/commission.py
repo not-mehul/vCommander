@@ -16,7 +16,10 @@ from harness import SERIAL_VARS, Event, FakePage, make_client, redact
 import pages.commission_view as cv
 
 TEMPLATE = sys.argv[1]
-FIELD_TO_VAR = {label: var for var, label in SERIAL_VARS.items()}
+# First variable per field: Dome2 / Access_Controller2 are spares, not used here.
+FIELD_TO_VAR: dict[str, str] = {}
+for var, label in SERIAL_VARS.items():
+    FIELD_TO_VAR.setdefault(label, var)
 
 client, _ = make_client()
 page = FakePage()

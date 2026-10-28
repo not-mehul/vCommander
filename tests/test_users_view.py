@@ -52,7 +52,9 @@ def test_connect_flags_an_unknown_source_org(page, monkeypatch):
     assert view._current_step == 0
 
 
-def test_stopping_an_invite_batch_skips_the_rest(page, monkeypatch):
+def test_stopping_an_invite_batch_skips_the_next_chunks(page, monkeypatch):
+    # Invites go out PARALLEL_REQUESTS at a time; a stop takes effect before
+    # the next chunk (the chunk in flight completes).
     invited = []
 
     class FakeInternal:
@@ -64,15 +66,42 @@ def test_stopping_an_invite_batch_skips_the_rest(page, monkeypatch):
     monkeypatch.setattr(uv, "get_internal_client", lambda: FakeInternal())
     view = uv.UsersView(lambda route: None)
     view.page = page
-    for n in range(3):
+    n = uv.PARALLEL_REQUESTS + 2
+    for i in range(n):
         view._participants_column.controls.append(
-            view._create_participant_row("First", f"{n}", f"p{n}@x.com")
+            view._create_participant_row("First", f"{i}", f"p{i}@x.com")
         )
     asyncio.run(view._on_invite_all(Event(page)))
-    assert invited == ["p0@x.com"]
+    assert sorted(invited) == sorted(f"p{i}@x.com" for i in range(uv.PARALLEL_REQUESTS))
     texts = [row.text for row in view._invite_progress.controls if hasattr(row, "text")]
-    assert "Skipped p1@x.com (cancelled)" in texts
+    assert f"Skipped p{n - 1}@x.com (cancelled)" in texts
     assert session._active_run is None
+
+
+def test_invites_are_sent_in_parallel(page, monkeypatch):
+    import threading
+    import time
+
+    lock, state = threading.Lock(), {"now": 0, "max": 0}
+
+    class FakeInternal:
+        def invite_user(self, email, first, last):
+            with lock:
+                state["now"] += 1
+                state["max"] = max(state["max"], state["now"])
+            time.sleep(0.05)
+            with lock:
+                state["now"] -= 1
+            return {"user_id": f"id-{email}"}
+
+    monkeypatch.setattr(uv, "get_internal_client", lambda: FakeInternal())
+    view = _view_with_participants(
+        page, *[("A", str(i), f"a{i}@x.com") for i in range(4)]
+    )
+    view._add_to_group_switch.value = False
+    asyncio.run(view._on_invite_all(Event(page)))
+    assert state["max"] > 1
+    assert [r[2] for r in view._invited_records] == [f"a{i}@x.com" for i in range(4)]
 
 
 def _view_with_participants(page, *rows):

@@ -6,7 +6,7 @@ import pytest
 from conftest import Event
 
 import pages.commission_view as cv
-from apis.internal_api import ExternalApiKey
+from apis.internal_api import ExternalApiKey, normalize_serial
 from utils import session
 
 
@@ -22,6 +22,18 @@ class FakeInternal:
         if self.key_error:
             raise ConnectionError(self.key_error)
         return ExternalApiKey("secret", "kid")
+
+    def add_devices(self, devices):
+        self.calls.append("add_devices")
+        self.args["add_devices"] = ((devices,), {})
+        if "add_devices" in self.fail:
+            raise ConnectionError("add_devices broke")
+        return {
+            normalize_serial(serial): (
+                ConnectionError(f"{name} rejected") if serial in self.fail else f"{name}-id"
+            )
+            for name, serial in devices
+        }
 
     def __getattr__(self, name):
         def call(*args, **kwargs):
@@ -196,3 +208,36 @@ def test_review_counts_exactly_who_will_be_invited(view, page):
     view._on_review(Event(page))
     assert view._stepper._current == 1
     assert view._collect_supporting_users() == [("Ada", "Lovelace", "ada@x.com")]
+
+
+def test_devices_are_claimed_in_one_call_with_a_row_each(view, page, monkeypatch):
+    client = FakeInternal()
+    _run(view, page, client, monkeypatch, template="AS")
+    assert client.calls.count("add_devices") == 1
+    (devices,), _ = client.args["add_devices"]
+    assert len(devices) == 4
+    assert sum(line.startswith("[ok]   Adding") for line in view._run_log) == 4
+
+
+def test_one_rejected_serial_fails_only_its_own_row(view, page, monkeypatch):
+    client = FakeInternal()
+    _fill(view, page, "VSSE")
+    view._device_fields["Fisheye"].value = "FISH-0000-0001"
+    client.fail.add("FISH-0000-0001")
+    monkeypatch.setattr(cv, "get_internal_client", lambda: client)
+    asyncio.run(view._on_commission(Event(page)))
+    assert [label for label, _ in view._failures] == ["Adding Fisheye (FISH-0000-0001)"]
+    assert client.calls.count("add_devices") == 1
+    (cameras, *_), _ = client.args["configure_cameras"]
+    assert len(cameras) == 2  # the rejected camera isn't configured
+
+
+def test_a_failed_claim_call_fails_every_device_row_once(view, page, monkeypatch):
+    client = FakeInternal(fail={"add_devices"})
+    _run(view, page, client, monkeypatch, template="VSSE")
+    assert client.calls.count("add_devices") == 1
+    assert [label.split(" (")[0] for label, _ in view._failures] == [
+        "Adding Dome",
+        "Adding Bullet",
+        "Adding Fisheye",
+    ]

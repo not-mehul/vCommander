@@ -38,6 +38,8 @@ SERIAL_VARS = {
     "Bullet": "Bullet",
     "Command_Connector": "Command Connector",
     "Dome": "Dome",
+    "Dome2": "Dome",
+    "Access_Controller2": "Access Controller",
     "Fisheye": "Fisheye",
     "Keypad": "Keypad",
     "PTZ": "PTZ",

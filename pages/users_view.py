@@ -16,7 +16,11 @@ import flet as ft
 
 import theme
 from apis.external_api import VerkadaExternalAPIClient
-from apis.internal_api import OrgNotFoundError, validate_org_short_name
+from apis.internal_api import (
+    PARALLEL_REQUESTS,
+    OrgNotFoundError,
+    validate_org_short_name,
+)
 from components import (
     ProgressHeader,
     Stepper,
@@ -550,21 +554,31 @@ class UsersView(ToolView):
         total = len(people)
         self._invite_header.set_progress(0, total)
 
-        for done, (first, last, email_val) in enumerate(people, start=1):
+        # Invites go out PARALLEL_REQUESTS at a time (one progress row each,
+        # in list order); cancelling stops before the next chunk.
+        done = 0
+        for start in range(0, total, PARALLEL_REQUESTS):
+            chunk = people[start : start + PARALLEL_REQUESTS]
             if token.is_cancelled:
-                row = StepRow(email_val)
-                row.skip(f"Skipped {email_val} (cancelled)")
-                self._invite_progress.controls.append(row)
+                for _first, _last, email_val in chunk:
+                    row = StepRow(email_val)
+                    row.skip(f"Skipped {email_val} (cancelled)")
+                    self._invite_progress.controls.append(row)
                 continue
 
-            ok, user_id = await self._run_invite_step(
-                page, client, first, last, email_val
+            results = await asyncio.gather(
+                *(
+                    self._run_invite_step(page, client, first, last, email_val)
+                    for first, last, email_val in chunk
+                )
             )
-            if ok:
-                success_count += 1
-                self._invited_records.append((first, last, email_val))
-                if user_id:
-                    invited_user_ids.append(user_id)
+            for (first, last, email_val), (ok, user_id) in zip(chunk, results, strict=True):
+                done += 1
+                if ok:
+                    success_count += 1
+                    self._invited_records.append((first, last, email_val))
+                    if user_id:
+                        invited_user_ids.append(user_id)
             self._invite_header.set_progress(
                 done, total, failed=done - success_count
             )

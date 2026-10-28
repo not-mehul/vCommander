@@ -501,3 +501,58 @@ def test_standard_door_configs_leave_polling_frequency_at_its_default():
 
     for configs in (_DOOR_CREATE_CONFIGS, _LPR_DOOR_CREATE_CONFIGS):
         assert "polling-frequency-ms" not in {c["paramName"] for c in configs}
+
+
+# -- batch claims / camera setup --------------------------------------------------
+
+
+def test_add_devices_claims_all_in_one_call_and_maps_results(monkeypatch):
+    client = _client()
+    sent = []
+
+    def fake_request(key, json=None, **kw):
+        sent.append(json)
+        return {
+            "successfulDevices": [{"serialNumber": "AAAABBBBCCCC", "deviceId": "d1"}],
+            "failedSerials": ["DDDD-EEEE-FFFF"],
+        }, 200
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    out = client.add_devices([("Cam", "aaaa-bbbb-cccc"), ("Panel", "DDDD-EEEE-FFFF")])
+    assert len(sent) == 1 and [d["name"] for d in sent[0]["devices"]] == ["Cam", "Panel"]
+    assert out["AAAABBBBCCCC"] == "d1"
+    assert isinstance(out["DDDDEEEEFFFF"], ConnectionError)
+    with pytest.raises(ConnectionError, match="Panel"):
+        client.add_device("Panel", "DDDD-EEEE-FFFF")
+
+
+def test_configure_cameras_sets_the_site_once_and_no_names(monkeypatch):
+    client = _client()
+    sent = []
+    monkeypatch.setattr(
+        client, "_request", lambda key, json=None, **kw: sent.append((key, json)) or ({}, 200)
+    )
+    client.configure_cameras(["c1", "c2", "c3"], "s1", ("Addr", 1.0, 2.0))
+    keys = [k for k, _ in sent]
+    assert keys.count("camera.create.site") == 1 and "camera.create.name" not in keys
+    assert sent[0][1]["cameraIds"] == ["c1", "c2", "c3"]
+    assert sorted(j["cameraId"] for k, j in sent if k == "camera.create.location") == [
+        "c1",
+        "c2",
+        "c3",
+    ]
+
+
+def test_parallel_runs_everything_then_raises_the_first_failure():
+    done = []
+
+    def work(i):
+        done.append(i)
+        if i == 2:
+            raise ConnectionError("two")
+        return i * 10
+
+    with pytest.raises(ConnectionError, match="two"):
+        VerkadaInternalAPIClient._parallel(work, [1, 2, 3, 4])
+    assert sorted(done) == [1, 2, 3, 4]
+    assert VerkadaInternalAPIClient._parallel(lambda i: i + 1, [1, 2]) == [2, 3]

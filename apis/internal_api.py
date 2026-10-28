@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, NamedTuple
 
 import requests
@@ -34,6 +35,15 @@ from constants import (
     SEARCH_DURATION,
 )
 from utils.logger import log_api_call
+
+# Independent calls sent at once (claims' locations, deletes, invites).
+PARALLEL_REQUESTS = 4
+
+
+def normalize_serial(serial: str) -> str:
+    """Serials compare without dashes or case ("abcd-efgh" == "ABCDEFGH")."""
+    return serial.replace("-", "").strip().upper()
+
 
 # Access-control admin roles Decommission needs: role key -> label.
 ACCESS_ADMIN_ROLES = {
@@ -576,6 +586,30 @@ class VerkadaInternalAPIClient:
 
         return data_dict, response.status_code
 
+    @staticmethod
+    def _parallel(fn, items, max_workers: int = PARALLEL_REQUESTS) -> list:
+        """
+        Run fn(item) for every item concurrently (the web app sends
+        independent calls in parallel too) and return the results in order.
+        Every call runs to completion; the first failure, if any, is raised
+        after all have finished.
+        """
+        items = list(items)
+        if len(items) <= 1:
+            return [fn(item) for item in items]
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+            futures = [pool.submit(fn, item) for item in items]
+        results, error = [], None
+        for future in futures:
+            try:
+                results.append(future.result())
+            except Exception as ex:  # noqa: BLE001 — re-raised below
+                results.append(None)
+                error = error or ex
+        if error:
+            raise error
+        return results
+
     def _log(
         self,
         endpoint_key: str,
@@ -810,13 +844,17 @@ class VerkadaInternalAPIClient:
     # Devices
     # ------------------------------------------------------------------
 
-    def add_device(self, device_name: str, serial_number: str) -> str:
+    def add_devices(self, devices: list[tuple[str, str]]) -> dict[str, Any]:
         """
-        Commissions a new device into the organization by serial number.
+        Claims several devices with one batch/commission call, as the Command
+        web app does. `devices` is [(name, serial)]; the name is applied at
+        claim time (no rename call is needed afterwards).
 
-        Returns:
-            The device ID string on success.
+        Returns {normalized serial: device_id, or the ConnectionError for a
+        serial Command rejected} — see normalize_serial(). Raises only when
+        the request itself fails.
         """
+        names = ", ".join(n for n, _ in devices)
         data, status = self._request(
             "org.add_device",
             json={
@@ -824,38 +862,61 @@ class VerkadaInternalAPIClient:
                 "devices": [
                     {
                         "deferUpdate": True,
-                        "name": device_name,
-                        "serialNumber": serial_number,
+                        "name": name,
+                        "serialNumber": serial,
                         "updateSchedule": None,
                     }
+                    for name, serial in devices
                 ],
             },
-            error_context=f"Failed to add device '{device_name}'",
-            log_request=f'{{"serialNumber": "{serial_number}", "name": "{device_name}"}}',
+            error_context=f"Failed to add devices ({names})",
+            log_request=f'{{"devices": {[s for _, s in devices]}}}',
             auto_log=False,
         )
-
-        successful = data.get("successfulDevices", [])
-        if not successful:
-            failed = data.get("failedSerials", [])
-            raise ConnectionError(
-                f"Failed to add device '{device_name}': "
-                f"no successful devices returned. Failed serials: {failed}"
-            )
-        device_id = successful[0].get("deviceId")
-        if not device_id:
-            raise ConnectionError(
-                f"Failed to add device '{device_name}': "
-                "successful response missing deviceId."
-            )
-
+        results: dict[str, Any] = {}
+        for item in data.get("successfulDevices") or []:
+            if item.get("serialNumber") and item.get("deviceId"):
+                results[normalize_serial(item["serialNumber"])] = item["deviceId"]
+        reasons = {}
+        for item in data.get("failedSerials") or []:
+            if isinstance(item, dict):
+                serial = item.get("serialNumber") or item.get("serial") or ""
+                reasons[normalize_serial(serial)] = item.get("reason") or item.get("message")
+            else:
+                reasons[normalize_serial(str(item))] = None
+        for name, serial in devices:
+            key = normalize_serial(serial)
+            if key not in results:
+                reason = reasons.get(key) or (
+                    "rejected; it may still be claimed in another org"
+                    if key in reasons
+                    else "missing from the response"
+                )
+                results[key] = ConnectionError(f"Failed to add device '{name}': {reason}")
         self._log(
             "org.add_device",
             status,
-            log_request=f'{{"serialNumber": "{serial_number}", "name": "{device_name}"}}',
-            log_response=f'{{"deviceId": "{device_id}"}}',
+            log_request=f'{{"devices": {len(devices)}}}',
+            log_response=(
+                f'{{"added": {sum(isinstance(v, str) for v in results.values())}, '
+                f'"failed": {sum(not isinstance(v, str) for v in results.values())}}}'
+            ),
         )
-        return device_id
+        return results
+
+    def add_device(self, device_name: str, serial_number: str) -> str:
+        """
+        Commissions a new device into the organization by serial number.
+
+        Returns:
+            The device ID string on success.
+        """
+        result = self.add_devices([(device_name, serial_number)])[
+            normalize_serial(serial_number)
+        ]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     def get_unassigned_device(self) -> list[dict[str, Any]]:
         return self._fetch_list(
@@ -1400,6 +1461,38 @@ class VerkadaInternalAPIClient:
             },
             error_context=f"Failed to set location for camera '{camera_name}'",
             log_request=log_req,
+        )
+
+    def configure_cameras(
+        self, camera_ids: list[str], site_id: str, address: Address
+    ) -> None:
+        """
+        Puts freshly claimed cameras on a site and sets their location, as
+        the web app's Batch Setup does: one site call for all cameras, then
+        one location call per camera (sent in parallel). Names were set by
+        the claim (add_devices), so there is no rename call.
+        """
+        addr = address if isinstance(address, Address) else Address(*address)
+        self._request(
+            "camera.create.site",
+            json={"cameraIds": list(camera_ids), "destinationSiteId": site_id},
+            error_context="Failed to assign cameras to site",
+            log_request=f'{{"cameraIds": {list(camera_ids)}}}',
+        )
+        self._parallel(
+            lambda camera_id: self._request(
+                "camera.create.location",
+                json={
+                    "cameraId": camera_id,
+                    "angle": 0,
+                    "label": addr.label,
+                    "lat": addr.latitude,
+                    "lon": addr.longitude,
+                },
+                error_context=f"Failed to set location for camera '{camera_id}'",
+                log_request=f'{{"cameraId": "{camera_id}"}}',
+            ),
+            camera_ids,
         )
 
     def delete_camera(self, camera_id: str) -> None:

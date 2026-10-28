@@ -7,6 +7,11 @@ module.exports = async (s, ui, name = 'HQ CD62', site = 'HQ', address = '406 E 3
   await ui.go(s, '/devices');
   await ui.click(s.page, new RegExp(`^${name}\\b`), { wait: 3000 });
   await ui.click(s.page, 'Set Up', { wait: 3000 });
+  await fillAndApply(s, ui, name, site, address);
+};
+
+// Fill the open Set Up dialog (single device or Batch Setup) and Apply.
+async function fillAndApply(s, ui, name, site, address) {
   const dlg = s.page.getByRole('dialog').filter({ has: s.page.getByRole('button', { name: 'Apply' }) });
   await dlg.getByRole('button', { name: 'Open menu of options for Site' }).click();
   await s.page.waitForTimeout(1000);
@@ -38,4 +43,6 @@ module.exports = async (s, ui, name = 'HQ CD62', site = 'HQ', address = '406 E 3
   console.log(s.red(await dlg.ariaSnapshot()).split('\n').filter(l => /switch|textbox|Apply/.test(l)).join('\n'));
   ui.mark(s, `camera setup ${name}`);
   await ui.clickLast(s.page, 'Apply', { wait: 8000 });
-};
+}
+
+module.exports.fillAndApply = fillAndApply;
