@@ -1,7 +1,11 @@
+import copy
 import json
+import json as _json
 import re
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any, NamedTuple
 
 import requests
@@ -38,6 +42,11 @@ from utils.logger import log_api_call
 
 # Independent calls sent at once (claims' locations, deletes, invites).
 PARALLEL_REQUESTS = 4
+
+
+def _is_read(endpoint_key: str, method: str) -> bool:
+    """A request that only reads: safe to share within read_cache()."""
+    return method == "GET" or endpoint_key.endswith((".list", ".get", ".list.v4"))
 
 
 def normalize_serial(serial: str) -> str:
@@ -235,6 +244,10 @@ class VerkadaInternalAPIClient:
         # factory adds retry on transient failures + a default timeout.
         self.session = build_session()
 
+        # Shared reads while read_cache() is active (a Decommission scan).
+        self._read_cache: dict | None = None
+        self._read_cache_lock = threading.Lock()
+
         # Populated by _parse_login_response() after successful auth
         self.auth_data: dict[str, str] | None = None
 
@@ -250,6 +263,20 @@ class VerkadaInternalAPIClient:
     # ------------------------------------------------------------------
     # Identity helpers
     # ------------------------------------------------------------------
+
+    @contextmanager
+    def read_cache(self):
+        """
+        Within this block, identical read requests (GETs and *.list / *.get
+        endpoints) are sent once and their answer reused — e.g. the alarm
+        categories of a scan all share one alarm_system/list and one
+        get_devices per system. Writes are never cached.
+        """
+        self._read_cache = {}
+        try:
+            yield
+        finally:
+            self._read_cache = None
 
     @property
     def host_shard(self) -> OrgShard:
@@ -535,6 +562,33 @@ class VerkadaInternalAPIClient:
         endpoint, formatted_path = resolve(endpoint_key, path_params)
         url = build_url(endpoint, self.org_short_name, formatted_path, self.host_shard)
 
+        cache = self._read_cache
+        if cache is not None and _is_read(endpoint_key, endpoint.method):
+            # Inside read_cache(): identical reads are sent once, and callers
+            # asking at the same time wait for that one request.
+            key = (endpoint.method, url, _json.dumps(json, sort_keys=True, default=str))
+            with self._read_cache_lock:
+                future = cache.get(key)
+                owner = future is None
+                if owner:
+                    future = cache[key] = Future()
+            if owner:
+                try:
+                    future.set_result(
+                        self._send(endpoint, url, json, error_context, endpoint_key,
+                                   formatted_path, log_request, log_response, auto_log)
+                    )
+                except Exception as ex:  # noqa: BLE001 — re-raised for every caller
+                    future.set_exception(ex)
+            data, status = future.result()
+            return copy.deepcopy(data), status
+
+        return self._send(endpoint, url, json, error_context, endpoint_key,
+                          formatted_path, log_request, log_response, auto_log)
+
+    def _send(self, endpoint, url, json, error_context, endpoint_key,
+              formatted_path, log_request, log_response, auto_log) -> tuple[dict, int]:
+        """Send one request and decode it (the body of _request)."""
         try:
             response = self.session.request(
                 endpoint.method,

@@ -7,6 +7,7 @@ internal API only (no public-API key).
 """
 
 import asyncio
+import contextlib
 
 import pytest
 from conftest import Event
@@ -31,6 +32,8 @@ class FakeOrg:
         self.scan_error = scan_error
         self.calls = []
         self.deleted = []
+        self.caching = False
+        self.listed_while_caching = []  # categories listed inside read_cache
 
     # -- org settings / key ------------------------------------------------
     def create_external_api_key(self):
@@ -56,6 +59,8 @@ class FakeOrg:
 
     # -- dispatch ------------------------------------------------------------
     def _list(self, category):
+        if self.caching:
+            self.listed_while_caching.append(category)
         if category == self.scan_error:
             raise ConnectionError("boom")
         items = list(self.store.get(category, []))
@@ -81,6 +86,14 @@ class FakeOrg:
 
     def rename_site(self, site_id, name):
         self.calls.append(f"rename:{site_id}")
+
+    @contextlib.contextmanager
+    def read_cache(self):
+        self.caching = True
+        try:
+            yield
+        finally:
+            self.caching = False
 
     def __getattr__(self, name):
         if name in _GETTER_TO_CATEGORY:
@@ -329,3 +342,30 @@ def test_persons_of_interest_are_deleted_in_one_call(make, page):
     _delete(view, page)
     assert "delete_poi:6" in org.calls
     assert view._results["Persons of Interest"] == (6, 6)
+
+
+def test_scan_lists_every_category_inside_the_read_cache(make, page):
+    view, org = make({"Cameras": _items("cam", 2), "Sites": _items("s", 1)})
+    _scan(view, page)
+    assert view._state == dv.REVIEW
+    listed = set(org.listed_while_caching)
+    assert {"Cameras", "Sites"} <= listed
+    assert not org.caching  # released after the scan
+
+
+def test_intercom_cameras_are_not_listed_twice(make, page):
+    intercom = {"id": "ic1", "name": "Door", "serial_number": "SER1"}
+    view, org = make(
+        {
+            "Intercoms": [intercom],
+            "Cameras": [
+                {"id": "cam-ic", "name": "Door cam", "serial_number": "SER1"},
+                {"id": "cam2", "name": "Lobby", "serial_number": "SER2"},
+            ],
+        }
+    )
+    _scan(view, page)
+    assert [c["id"] for c in view._assets["Cameras"]] == ["cam2"]
+    # Cameras are listed after Intercoms so the dedup serials are known.
+    order = org.listed_while_caching
+    assert order.index("Cameras") > order.index("Intercoms")

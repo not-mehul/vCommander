@@ -421,31 +421,51 @@ class DecommissionView(ToolView):
             # categories. Without this filter, decommission tries to
             # delete the same device twice (and the second attempt fails
             # because it's already gone or uses the wrong endpoint).
+            # Every category is listed at once (the shared executor runs four
+            # requests at a time), sharing repeated reads through the client's
+            # read cache. Cameras and Access Controllers go last: they are
+            # de-duplicated against Intercoms and Access Station Pros.
             camera_dedup_serials: set[str] = set()
             total = len(ASSET_CATEGORIES)
+            done = 0
             self._scan_progress_box.visible = True
             self._scan_progress.set_progress(0, total, prefix="Starting scan")
             page.update()
-            for i, category in enumerate(ASSET_CATEGORIES):
+
+            async def scan(category: str):
+                nonlocal done
                 if token.is_cancelled:
                     raise _ScanCancelled
-                # Surface which category is being scanned before the (blocking)
-                # request so the bar + status update as the scan progresses.
-                self._scan_progress.set_progress(
-                    i, total, prefix=f"Scanning {category}"
-                )
-                page.update()
-                await asyncio.sleep(0)
                 items = await self._scan_category(
                     loop, client, category, camera_dedup_serials
                 )
-                if category in ("Intercoms", "Access Station Pro"):
+                done += 1
+                self._scan_progress.set_progress(
+                    done, total, prefix=f"Scanned {category}"
+                )
+                page.update()
+                return category, items
+
+            async def scan_all(categories) -> list:
+                results = await asyncio.gather(
+                    *(scan(c) for c in categories), return_exceptions=True
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+                return results
+
+            later = [c for c in ASSET_CATEGORIES if c in ("Cameras", "Access Controllers")]
+            with client.read_cache():
+                found = dict(await scan_all([c for c in ASSET_CATEGORIES if c not in later]))
+                for category in ("Intercoms", "Access Station Pro"):
                     camera_dedup_serials |= {
                         item["serial_number"]
-                        for item in items
+                        for item in found.get(category, [])
                         if item.get("serial_number")
                     }
-                self._assets[category] = items
+                found.update(await scan_all(later))
+            self._assets = {category: found[category] for category in ASSET_CATEGORIES}
 
             self._scan_progress.set_progress(total, total, prefix="Scan complete")
             # Everything deletable starts selected; the user narrows it down.
