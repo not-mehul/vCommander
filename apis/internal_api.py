@@ -1056,6 +1056,25 @@ class VerkadaInternalAPIClient:
             },
         )
 
+    def delete_users(self, user_ids: list[str]) -> None:
+        """
+        Deletes several users with one call, as the Command web app does
+        (vcorgi org/{id}/users/delete). The deletion is asynchronous: user
+        lists can show them for a few seconds more. Never deletes the
+        running user.
+        """
+        if self.user_id in user_ids:
+            raise ValueError("Refusing to delete the signed-in user.")
+        if not user_ids:
+            return
+        self._request(
+            "user.delete.batch",
+            path_params={"org_id": self.org_id},
+            json={"userIds": list(user_ids)},
+            error_context=f"Failed to delete {len(user_ids)} user(s)",
+            log_request=f'{{"userIds": {list(user_ids)}}}',
+        )
+
     def delete_user(self, user_id: str) -> None:
         self._delete(
             "user.delete",

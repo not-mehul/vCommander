@@ -22,7 +22,7 @@ import flet as ft
 
 import theme
 from apis.external_api import VerkadaExternalAPIClient
-from apis.internal_api import ACCESS_ADMIN_ROLES
+from apis.internal_api import ACCESS_ADMIN_ROLES, PARALLEL_REQUESTS
 from components import (
     ProgressHeader,
     Stepper,
@@ -57,6 +57,7 @@ from constants import (
     PRIMARY,
     READ_ONLY_CATEGORIES,
     SECONDARY,
+    SEQUENTIAL_DELETE_CATEGORIES,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     WARNING,
@@ -1381,16 +1382,35 @@ class DecommissionView(ToolView):
             # after each pass until nothing new comes back, so assets past
             # the first page are deleted too.
             page_full = self._drains(category)
+            # Command Users go in one batch call; other categories delete
+            # PARALLEL_REQUESTS items at a time (one at a time for the
+            # SEQUENTIAL ones). A cancel stops before the next chunk.
+            width = 1 if category in SEQUENTIAL_DELETE_CATEGORIES else PARALLEL_REQUESTS
             for _ in range(_MAX_DRAIN_PASSES):
-                for item in batch:
+                chunks = (
+                    [batch]
+                    if category == "Command Users"
+                    else [batch[i : i + width] for i in range(0, len(batch), width)]
+                )
+                for chunk in chunks:
                     if token.is_cancelled:
                         cancelled = True
                         self._cancelled_at = category
                         break
-                    if await self._delete_one(
-                        page, loop, int_client, ext_client, category, item
-                    ):
-                        success += 1
+                    if category == "Command Users":
+                        success += await self._delete_users_batch(
+                            page, loop, int_client, chunk
+                        )
+                    else:
+                        results = await asyncio.gather(
+                            *(
+                                self._delete_one(
+                                    page, loop, int_client, ext_client, category, item
+                                )
+                                for item in chunk
+                            )
+                        )
+                        success += sum(results)
                     self._progress_header.set_progress(
                         deleted_total + success,
                         grand_total,
@@ -1555,6 +1575,40 @@ class DecommissionView(ToolView):
                 f"{category}: FAILED to delete {descriptor} — {ex}", level="ERROR"
             )
             return False
+
+    async def _delete_users_batch(self, page, loop, int_client, items) -> int:
+        """Delete Command users with one call (as the web app does), with a
+        status row per user. Returns how many were deleted."""
+        cat_row = self._category_rows.get("Command Users")
+        rows = []
+        for item in items:
+            label = item.get("name") or item.get("email") or item.get("id")
+            step_row = StepRow(f"Deleting {label}...", compact=True)
+            rows.append((step_row, label))
+            if cat_row is not None:
+                cat_row["items"].controls.append(step_row)
+        page.update()
+        await asyncio.sleep(0)
+        ids = [item.get("id") for item in items]
+        log_system(f"Command Users: deleting {len(ids)} user(s) in one call")
+        try:
+            await loop.run_in_executor(_executor, int_client.delete_users, ids)
+        except Exception as ex:
+            for step_row, label in rows:
+                step_row.fail(f"Failed: {label} — {ex}")
+            if cat_row is not None:
+                cat_row["failed"] += len(items)
+            page.update()
+            log_system(f"Command Users: FAILED to delete {len(ids)} user(s) — {ex}", level="ERROR")
+            return 0
+        for step_row, label in rows:
+            step_row.succeed(f"Deleted {label}")
+        if cat_row is not None:
+            cat_row["success"] += len(items)
+            cat_row["counter"].value = f"{cat_row['success']} / {cat_row['total']}"
+        page.update()
+        log_system(f"Command Users: deleted {len(ids)} user(s)")
+        return len(items)
 
     async def _rename_site_fallback(
         self,

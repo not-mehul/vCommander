@@ -7,6 +7,7 @@ Usage:
   python tools/live/decommission.py delete ["Category,Category"]
       DELETES FOR REAL: rescan and delete everything the scan pre-selects,
       except the listed categories (e.g. "Command Users"), as if unticked.
+      Command users are only ever deleted when named "VC Test…".
 """
 
 import asyncio
@@ -44,6 +45,14 @@ async def main():
     if MODE == "delete" and view._state == dv.REVIEW:
         for cat in KEEP:
             view._selected[cat] = set()
+        # Safety: only test users ("VC Test…") are ever deleted, whatever the
+        # keep list says — never the owner's or the session's accounts.
+        users = view._assets.get("Command Users") or []
+        view._selected["Command Users"] = {
+            i
+            for i in view._selected.get("Command Users", set())
+            if str(users[i].get("name") or "").startswith("VC Test")
+        }
         print(f"kept (unticked): {KEEP}")
         if not view._deletion_plan():
             # _on_delete returns early on an empty plan without releasing the

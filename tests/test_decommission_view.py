@@ -77,6 +77,11 @@ class FakeOrg:
     def get_users(self, exclude_user_id=None, exclude_email=None):
         return self._list("Command Users")
 
+    def delete_users(self, user_ids):
+        self.calls.append(f"delete_users:{len(user_ids)}")
+        for user_id in user_ids:
+            self._delete("Command Users", user_id)
+
     def rename_site(self, site_id, name):
         self.calls.append(f"rename:{site_id}")
 
@@ -245,7 +250,10 @@ def test_org_is_released_when_leaving_after_a_scan(make, page):
 
 
 def test_cancelling_mid_run_skips_the_rest_and_still_releases(make, page):
-    view, org = make({"Cameras": _items("cam", 3), "Sites": _items("site", 2)})
+    # Deletes go out PARALLEL_REQUESTS at a time; a cancel stops before the
+    # next chunk, so the chunk in flight completes.
+    n = dv.PARALLEL_REQUESTS + 2
+    view, org = make({"Cameras": _items("cam", n), "Sites": _items("site", 2)})
     original = org._delete
 
     def delete_then_cancel(category, item_id):
@@ -255,7 +263,9 @@ def test_cancelling_mid_run_skips_the_rest_and_still_releases(make, page):
     org._delete = delete_then_cancel
     _scan(view, page)
     _delete(view, page)
-    assert org.deleted == [("Cameras", "cam0")]
+    assert sorted(i for _, i in org.deleted) == sorted(
+        f"cam{i}" for i in range(dv.PARALLEL_REQUESTS)
+    )
     assert view._cancelled_at == "Cameras"
     assert view._results["Sites"] == (0, 2)
     assert org.calls[-3:] == ["gsa_off", _ROLES_OFF, "delete_key:kid"]
@@ -282,3 +292,36 @@ def test_no_role_calls_when_the_user_holds_both(make, page):
     _delete(view, page)
     assert not [c for c in org.calls if c.startswith("access_admin")]
     assert org.calls[-2:] == ["gsa_off", "delete_key:kid"]
+
+
+def test_command_users_are_deleted_in_one_call(make, page):
+    view, org = make({"Command Users": _items("user", 5), "Cameras": _items("cam", 1)})
+    _scan(view, page)
+    _delete(view, page)
+    assert "delete_users:5" in org.calls
+    assert view._results["Command Users"] == (5, 5)
+    assert not org.store["Command Users"]
+
+
+def test_alarm_categories_are_deleted_one_at_a_time(make, page, monkeypatch):
+    import threading
+    import time
+
+    lock, state = threading.Lock(), {"now": 0, "max": {}}
+    view, org = make({"Wired Outputs": _items("out", 4), "Cameras": _items("cam", 4)})
+    original = org._delete
+
+    def timed(category, item_id):
+        with lock:
+            state["now"] += 1
+            state["max"][category] = max(state["max"].get(category, 0), state["now"])
+        time.sleep(0.03)
+        with lock:
+            state["now"] -= 1
+        original(category, item_id)
+
+    org._delete = timed
+    _scan(view, page)
+    _delete(view, page)
+    assert state["max"]["Wired Outputs"] == 1
+    assert state["max"]["Cameras"] > 1

@@ -519,6 +519,28 @@ _INTERNAL_DELETERS = {
     "Alarm Sites": "delete_alarm_site",
 }
 
+# Categories deleted one item at a time: alarm devices share their alarm
+# system's configuration, and schedules are written back as a set. Every
+# other category deletes PARALLEL_REQUESTS items at once, as the Command web
+# app's bulk delete does.
+SEQUENTIAL_DELETE_CATEGORIES = frozenset(
+    {
+        "Schedules",
+        "Keypads",
+        "Expanders",
+        "Wireless Contact Sensors",
+        "Wireless Panic Buttons",
+        "Wireless Universal Transmitters",
+        "Wired Inputs",
+        "Wired Outputs",
+        "Guards",
+        "Partitions",
+        "Alarm Panels",
+        "Alarm Systems",
+        "Alarm Sites",
+    }
+)
+
 _EXTERNAL_GETTERS = {
     "Cameras": "get_cameras",
     "Persons of Interest": "get_person_of_interest",
@@ -526,6 +548,8 @@ _EXTERNAL_GETTERS = {
     "Access Groups": "get_access_groups",
 }
 
+# Command Users are deleted by the internal client in one call
+# (delete_users); see DecommissionView._delete_users_batch.
 _EXTERNAL_DELETERS = {
     "Command Users": "delete_access_user",
     "Persons of Interest": "delete_persons_of_interest",
