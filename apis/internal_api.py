@@ -1110,6 +1110,15 @@ class VerkadaInternalAPIClient:
             },
         )
 
+    def get_user_ids_by_email(self) -> dict[str, str]:
+        """{lower-cased email: user id} for every active or invited org user.
+
+        One user list call, so a batch of invites can skip the people
+        already in the org instead of sending an invite that is refused
+        (cannot_invite_existing) for each of them.
+        """
+        return {u["email"].lower(): u["id"] for u in self.get_user() if u.get("email")}
+
     def get_command_users(self) -> list[dict[str, Any]]:
         """Org users for Decommission ({id, name, email}), never including the
         signed-in user."""

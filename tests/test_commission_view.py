@@ -241,3 +241,18 @@ def test_a_failed_claim_call_fails_every_device_row_once(view, page, monkeypatch
         "Adding Bullet",
         "Adding Fisheye",
     ]
+
+
+def test_supporting_users_already_in_the_org_are_not_reinvited(view, page, monkeypatch):
+    client = FakeInternal()
+    client.get_user_ids_by_email = lambda: {"ada@x.com": "id-ada"}
+    invited = []
+    client.invite_user = lambda email, *rest: invited.append(email)
+    monkeypatch.setattr(cv, "get_internal_client", lambda: client)
+    _fill(view, page, "AS")
+    _add_user(view, page, "Ada", "Lovelace", "Ada@x.com")
+    _add_user(view, page, "Alan", "Turing", "alan@x.com")
+    asyncio.run(view._on_commission(Event(page)))
+    assert invited == ["alan@x.com"]
+    assert "[ok]   Adding user Ada Lovelace" in view._run_log
+    assert view._failures == []

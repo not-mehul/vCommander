@@ -58,6 +58,9 @@ def test_stopping_an_invite_batch_skips_the_next_chunks(page, monkeypatch):
     invited = []
 
     class FakeInternal:
+        def get_user_ids_by_email(self):
+            return {}
+
         def invite_user(self, email, first, last):
             invited.append(email)
             session.cancel_run()  # user chose "Stop and continue" mid-batch
@@ -85,6 +88,9 @@ def test_invites_are_sent_in_parallel(page, monkeypatch):
     lock, state = threading.Lock(), {"now": 0, "max": 0}
 
     class FakeInternal:
+        def get_user_ids_by_email(self):
+            return {}
+
         def invite_user(self, email, first, last):
             with lock:
                 state["now"] += 1
@@ -137,6 +143,9 @@ def test_back_buttons_step_backwards(page):
 
 def test_invite_progress_reaches_the_total(page, monkeypatch):
     class FakeInternal:
+        def get_user_ids_by_email(self):
+            return {}
+
         def invite_user(self, email, first, last):
             return {"user_id": None}
 
@@ -148,3 +157,33 @@ def test_invite_progress_reaches_the_total(page, monkeypatch):
     asyncio.run(view._on_invite_all(Event(page)))
     assert view._invite_header.label == "2 / 2"
     assert view._invite_result.visible
+
+
+def test_people_already_in_the_org_are_not_reinvited_but_join_the_group(page, monkeypatch):
+    invited, grouped = [], []
+
+    class FakeInternal:
+        def get_user_ids_by_email(self):
+            return {"old@x.com": "id-old"}
+
+        def invite_user(self, email, first, last):
+            invited.append(email)
+            return {"user_id": f"id-{email}"}
+
+        def get_group(self):
+            return [{"id": "g1", "name": uv.COMMAND_GROUP_NAME}]
+
+        def add_users_to_group(self, user_ids, group_id):
+            grouped.extend(user_ids)
+
+    monkeypatch.setattr(uv, "get_internal_client", lambda: FakeInternal())
+    view = _view_with_participants(
+        page, ("Old", "One", "Old@x.com"), ("New", "One", "new@x.com")
+    )
+    view._add_to_group_switch.value = True
+    asyncio.run(view._on_invite_all(Event(page)))
+    assert invited == ["new@x.com"]
+    assert sorted(grouped) == ["id-new@x.com", "id-old"]
+    assert view._invite_header.label == "2 / 2"
+    texts = [row.text for row in view._invite_progress.controls if hasattr(row, "text")]
+    assert "Already in the org: Old One (Old@x.com)" in texts

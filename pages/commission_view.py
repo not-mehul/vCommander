@@ -668,7 +668,7 @@ class CommissionView(ToolView):
             await self._run_as_flow(step, page, client)
 
         # ── Supporting users — shared across all templates ──
-        await self._invite_supporting_users(step, client, "Org Admin")
+        await self._invite_supporting_users(step, page, client, "Org Admin")
 
     # ------------------------------------------------------------------
     # Per-template flows
@@ -1193,11 +1193,26 @@ class CommissionView(ToolView):
     # Supporting steps
     # ------------------------------------------------------------------
 
-    async def _invite_supporting_users(self, step, client, role: str) -> None:
+    async def _invite_supporting_users(self, step, page, client, role: str) -> None:
         """Invite every complete supporting-user row (validated on Review),
-        PARALLEL_REQUESTS at a time, one progress row each."""
+        PARALLEL_REQUESTS at a time, one progress row each. People already
+        in the org (one user list call) are reported, not re-invited."""
         users = self._collect_supporting_users()
-        for start in range(0, len(users), PARALLEL_REQUESTS):
+        if not users:
+            return
+        existing = await step("Checking for existing users", client.get_user_ids_by_email)
+        to_invite = []
+        for first, last, email in users:
+            if email.lower() in (existing or {}):
+                label = f"Adding user {first} {last}"
+                row = StepRow(label)
+                row.succeed(f"{label} — already in the org")
+                self._progress_column.controls.append(row)
+                self._record_step(label, ok=True)
+            else:
+                to_invite.append((first, last, email))
+        page.update()
+        for start in range(0, len(to_invite), PARALLEL_REQUESTS):
             await asyncio.gather(
                 *(
                     step(
@@ -1208,7 +1223,7 @@ class CommissionView(ToolView):
                         last,
                         role,
                     )
-                    for first, last, email in users[start : start + PARALLEL_REQUESTS]
+                    for first, last, email in to_invite[start : start + PARALLEL_REQUESTS]
                 )
             )
 

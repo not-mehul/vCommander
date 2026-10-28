@@ -553,11 +553,42 @@ class UsersView(ToolView):
                 people.append(tuple(_strip(f.value) for f in fields))
         total = len(people)
         self._invite_header.set_progress(0, total)
+        done = 0
+
+        # People already in the org (one user list call) are not re-invited
+        # — the invite would be refused — but still join the Command group.
+        # If the lookup fails, everyone is invited as before.
+        already_count = 0
+        if people:
+            ok, existing = await self._progress_step(
+                page,
+                "Checking for existing users",
+                "Checked for existing users",
+                "Could not check for existing users",
+                client.get_user_ids_by_email,
+            )
+            existing = (existing or {}) if ok else {}
+            remaining = []
+            for first, last, email_val in people:
+                user_id = existing.get(email_val.lower())
+                if user_id is None:
+                    remaining.append((first, last, email_val))
+                    continue
+                who = f"{first} {last}".strip()
+                row = StepRow(email_val)
+                row.succeed(f"Already in the org: {who} ({email_val})")
+                self._invite_progress.controls.append(row)
+                invited_user_ids.append(user_id)
+                done += 1
+                success_count += 1
+                already_count += 1
+            people = remaining
+            self._invite_header.set_progress(done, total)
+            page.update()
 
         # Invites go out PARALLEL_REQUESTS at a time (one progress row each,
         # in list order); cancelling stops before the next chunk.
-        done = 0
-        for start in range(0, total, PARALLEL_REQUESTS):
+        for start in range(0, len(people), PARALLEL_REQUESTS):
             chunk = people[start : start + PARALLEL_REQUESTS]
             if token.is_cancelled:
                 for _first, _last, email_val in chunk:
@@ -613,6 +644,12 @@ class UsersView(ToolView):
         elif token.is_cancelled:
             summary = f"Stopped: {success_count}/{total} invited before cancelling."
             kind = "warning"
+        elif success_count == total and already_count:
+            summary = (
+                f"{total - already_count} invited; {already_count} already in "
+                f"the org."
+            )
+            kind = "success"
         elif success_count == total:
             summary, kind = f"All {total} participants invited.", "success"
         else:

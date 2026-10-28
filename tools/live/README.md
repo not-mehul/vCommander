@@ -36,6 +36,7 @@ redacted: no tokens, ids, emails, org name or serials.
 | `python tools/live/check.py` | read-only: shard, session validity, API keys left, which serials are in the org |
 | `python tools/live/commission.py VSSL` | runs a Commission template (changes the org) |
 | `python tools/live/decommission.py scan` | scan only, then release the org |
+| `python tools/live/invite.py 1 2 3` | Users-tool invite batch for "VC Test <n>" at plus addresses of `VERKADA_EMAIL` (changes the org) |
 | `python tools/live/decommission.py delete "Command Users"` | deletes everything selected, keeping the listed categories |
 | `NODE_PATH=$(npm root -g) node tools/live/web/probe.js` | opens Command headlessly, reports failed calls, records them |
 | `LIVE_RECORD=ESS.vc.json python tools/live/commission.py ESS` | any script above, recording every vCommander call (internal and public API) to `$LIVE_OUT` |
