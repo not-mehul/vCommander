@@ -2681,6 +2681,36 @@ ENDPOINTS: dict[str, Endpoint] = {
         payload={"siteId": "<site_id>"},
         response={},
     ),
+    "alarm.sites.list": Endpoint(
+        # Every response site in the org with its response configs, in one
+        # call (siteIds: [] = all); the web app's Alarm Sites list uses it.
+        method="POST",
+        subdomain="vagent",
+        path="response/site/list",
+        payload={"includeResponseConfigs": True, "siteIds": []},
+        response={
+            "responseSites": [
+                {
+                    "id": "<alarm_site_id>",
+                    "siteId": "<site_id>",
+                    "orgId": "<org_id>",
+                    "businessName": "<business_name>",
+                    "locationId": "<location_id>",
+                    "alarmSystemId": "<alarm_system_id>",
+                    "dispatchEnabled": True,
+                }
+            ],
+            "locations": [{"id": "<location_id>", "street1": "<street>"}],
+            "responseConfigs": [
+                {
+                    "id": "<response_config_id>",
+                    "responseSiteId": "<alarm_site_id>",
+                    "responseLevel": "RESPONSE_LEVEL_SELF_MONITORED",
+                    "name": "Default Response",
+                }
+            ],
+        },
+    ),
     "alarm.site.list": Endpoint(
         method="POST",
         subdomain="vagent",

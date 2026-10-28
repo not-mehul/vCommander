@@ -570,3 +570,50 @@ def test_api_key_secret_is_never_logged(monkeypatch):
     key = client.create_external_api_key()
     assert key.key == "SECRET-KEY"
     assert logged and not any("SECRET-KEY" in line for line in logged)
+
+
+def test_alarm_sites_are_listed_in_one_call_with_their_configs():
+    client = _client()
+    calls = []
+
+    def request(endpoint_key, json=None, **kwargs):
+        calls.append(endpoint_key)
+        return {
+            "responseSites": [
+                {"id": "as1", "siteId": "s1", "businessName": "Verkada"},
+                {"id": "as2", "siteId": "s2", "businessName": "Other"},
+            ],
+            "responseConfigs": [
+                {"id": "rc2", "responseSiteId": "as2"},
+                {"id": "rc1", "responseSiteId": "as1"},
+            ],
+        }, 200
+
+    client._request = request
+    sites = client.get_alarm_site()
+    assert calls == ["alarm.sites.list"]
+    assert [(s["site_id"], s["alarm_site_id"], s["response_config_id"]) for s in sites] == [
+        ("s1", "as1", "rc1"),
+        ("s2", "as2", "rc2"),
+    ]
+
+
+def test_read_cache_sends_identical_reads_once_and_never_caches_writes():
+    client = _client()
+    sent = []
+
+    def send(endpoint, url, json, *rest):
+        sent.append(url)
+        return {"n": len(sent)}, 200
+
+    client._send = send
+    with client.read_cache():
+        first, _ = client._request("alarm.sites.list", json={"siteIds": []}, error_context="x")
+        first["n"] = "changed by the caller"
+        again, _ = client._request("alarm.sites.list", json={"siteIds": []}, error_context="x")
+        client._request("alarm.site.create", json={}, error_context="x")
+        client._request("alarm.site.create", json={}, error_context="x")
+    assert again == {"n": 1}  # shared, and a copy
+    assert len(sent) == 3
+    client._request("alarm.sites.list", json={"siteIds": []}, error_context="x")
+    assert len(sent) == 4  # no caching outside the block

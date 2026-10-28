@@ -422,7 +422,6 @@ READ_ONLY_CATEGORIES = frozenset({"Unassigned Devices"})
 PAGED_CATEGORIES = frozenset({"Visits", "Visitors", "Archives", "Incidents"})
 
 ROLE_PROPAGATION_SECONDS = 3
-BUILDING_PROVISION_SECONDS = 3
 
 # Default HTTP timeout for every internal-API request (seconds).
 DEFAULT_TIMEOUT = 30

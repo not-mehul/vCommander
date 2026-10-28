@@ -61,7 +61,6 @@ from constants import (
     AS_STROBE_OUTPUT_NAME,
     AS_STROBE_OUTPUT_PIN,
     BORDER,
-    BUILDING_PROVISION_SECONDS,
     CARD_PADDING,
     ERROR,
     ESS_ACCESS_STATION_PRO_DOOR_NAME,
@@ -699,9 +698,6 @@ class CommissionView(ToolView):
             ESS_FLOORS,
         )
 
-        self._progress_note(page, "Waiting for building to provision...")
-        await asyncio.sleep(BUILDING_PROVISION_SECONDS)
-
         if camera_id and site_id:
             _ = await step(
                 "Configuring Camera",
@@ -871,9 +867,6 @@ class CommissionView(ToolView):
             VSS_ADDRESS,
             VSS_FLOORS,
         )
-
-        self._progress_note(page, "Waiting for building to provision...")
-        await asyncio.sleep(BUILDING_PROVISION_SECONDS)
 
         cameras = [c for c in (bullet_id, ptz_id) if c]
         if cameras and site_id:
@@ -1061,9 +1054,6 @@ class CommissionView(ToolView):
             AS_ADDRESS,
             AS_FLOORS,
         )
-
-        self._progress_note(page, "Waiting for building to provision...")
-        await asyncio.sleep(BUILDING_PROVISION_SECONDS)
 
         door_id = None
         access_controller_id = None

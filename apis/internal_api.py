@@ -2820,58 +2820,33 @@ class VerkadaInternalAPIClient:
 
     def get_alarm_site(self) -> list[dict[str, Any]]:
         """
-        Lists alarm (response) sites across the org.
-
-        v2 has no org-wide alarm-site endpoint — alarm.site.list resolves
-        one site by siteId — so enumerate the org's sites (site.list) and
-        probe each, keeping those that resolve to a response site. Sites
-        without an alarm site are skipped silently.
+        Lists alarm (response) sites across the org with one
+        response/site/list call (siteIds: [] returns every site), as the
+        web app does — rather than listing the org's sites and probing each
+        with alarm.site.list.
 
         response_config_id is surfaced in the mapping for callers that
         need it (e.g. set_alarm_self_monitored / partition assignment).
         """
-        site_ids = self._fetch_list(
-            "site.list",
-            response_key="sites",
-            payload={"orgId": self.org_id},
-            mapping_func=lambda x: x.get("siteId"),
+        data, _ = self._request(
+            "alarm.sites.list",
+            json={"includeResponseConfigs": True, "siteIds": []},
+            error_context="Failed to list alarm sites",
         )
-
-        results: list[dict[str, Any]] = []
-        for site_id in site_ids:
-            if not site_id:
-                continue
-            try:
-                data, _ = self._request(
-                    "alarm.site.list",
-                    json={
-                        "includeMonthlyAlarmCounts": True,
-                        "includePsapInfo": True,
-                        "siteId": site_id,
-                    },
-                    error_context=f"Failed to fetch alarm site for '{site_id}'",
-                    log_request=f'{{"siteId": "{site_id}"}}',
-                )
-            except APIError:
-                # Site has no alarm site — skip.
-                continue
-            response_site = data.get("responseSite") or {}
-            if not response_site.get("id"):
-                continue
-            response_configs = data.get("responseConfigs") or []
-            response_config_id = (
-                response_configs[0].get("id") if response_configs else None
-            )
-            results.append(
-                {
-                    "id": response_site.get("id"),
-                    "site_id": response_site.get("siteId"),
-                    "alarm_site_id": response_site.get("id"),
-                    "name": response_site.get("businessName"),
-                    "response_config_id": response_config_id,
-                }
-            )
-        return results
+        config_ids: dict[str, str] = {}
+        for config in data.get("responseConfigs") or []:
+            config_ids.setdefault(config.get("responseSiteId"), config.get("id"))
+        return [
+            {
+                "id": response_site["id"],
+                "site_id": response_site.get("siteId"),
+                "alarm_site_id": response_site["id"],
+                "name": response_site.get("businessName"),
+                "response_config_id": config_ids.get(response_site["id"]),
+            }
+            for response_site in data.get("responseSites") or []
+            if response_site.get("id")
+        ]
 
     def delete_alarm_site(self, alarm_site_id: str, site_id: str) -> None:
         """

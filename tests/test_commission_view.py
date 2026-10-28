@@ -49,7 +49,6 @@ class FakeInternal:
 @pytest.fixture
 def view(page, monkeypatch):
     monkeypatch.setattr(cv, "ROLE_PROPAGATION_SECONDS", 0)
-    monkeypatch.setattr(cv, "BUILDING_PROVISION_SECONDS", 0)
     v = cv.CommissionView(lambda r: None)
     v.page = page
     return v

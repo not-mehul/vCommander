@@ -1,7 +1,8 @@
 """Run vCommander's real Commission flow headlessly for one template.
 
 Usage: python tools/live/commission.py <ESS|ACSL|ACSE|VSSL|VSSE|AS>
-CHANGES THE ORG: claims devices and applies the template's org settings.
+LIVE_NO_WAIT=1 skips the fixed role-propagation wait (to test whether it
+is needed). CHANGES THE ORG: claims devices and applies the template's org settings.
 """
 
 import asyncio
@@ -21,6 +22,8 @@ FIELD_TO_VAR: dict[str, str] = {}
 for var, label in SERIAL_VARS.items():
     FIELD_TO_VAR.setdefault(label, var)
 
+if os.environ.get("LIVE_NO_WAIT"):
+    cv.ROLE_PROPAGATION_SECONDS = 0
 client, _ = make_client()
 page = FakePage()
 cv.get_internal_client = lambda: client
