@@ -1,19 +1,17 @@
 """Integrity of the decommission category tables (string-dispatched)."""
 
 import constants as C
-from apis.external_api import VerkadaExternalAPIClient
 from apis.internal_api import VerkadaInternalAPIClient
 
-_GETTERS = set(C._INTERNAL_GETTERS) | set(C._EXTERNAL_GETTERS) | {"Command Users"}
-_DELETERS = set(C._INTERNAL_DELETERS) | set(C._EXTERNAL_DELETERS)
+_GETTERS = set(C._INTERNAL_GETTERS)
+_DELETERS = set(C._INTERNAL_DELETERS) | set(C._BATCH_DELETERS)
 
 
 def test_dispatch_names_resolve_to_client_methods():
     for mapping, cls in (
         (C._INTERNAL_GETTERS, VerkadaInternalAPIClient),
         (C._INTERNAL_DELETERS, VerkadaInternalAPIClient),
-        (C._EXTERNAL_GETTERS, VerkadaExternalAPIClient),
-        (C._EXTERNAL_DELETERS, VerkadaExternalAPIClient),
+        (C._BATCH_DELETERS, VerkadaInternalAPIClient),
     ):
         missing = {k: v for k, v in mapping.items() if not hasattr(cls, v)}
         assert not missing
@@ -63,3 +61,16 @@ def test_paged_categories_are_internal_getters():
 
 def test_template_tables_agree():
     assert set(C.TEMPLATE_FIELDS) == set(C.TEMPLATE_DISPLAY_NAMES)
+
+
+def test_decommission_does_not_use_the_public_api():
+    import pages.decommission_view as dv
+
+    assert not hasattr(C, "_EXTERNAL_GETTERS") and not hasattr(C, "_EXTERNAL_DELETERS")
+    assert "VerkadaExternalAPIClient" not in vars(dv)
+
+
+def test_persons_of_interest_go_before_cameras():
+    # videntity refuses people calls once no camera is left in the org.
+    order = C.DELETION_ORDER
+    assert order.index("Persons of Interest") < order.index("Cameras")

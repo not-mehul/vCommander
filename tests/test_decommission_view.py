@@ -2,7 +2,8 @@
 
 Covers: read-only categories, Confirm == Processing totals, item-level
 selection + search, draining one-page categories, and reverting Global
-Site Admin / deleting the temporary API key on every exit.
+Site Admin / the access admin roles on every exit. Decommission uses the
+internal API only (no public-API key).
 """
 
 import asyncio
@@ -12,15 +13,10 @@ from conftest import Event
 
 import constants as C
 import pages.decommission_view as dv
-from apis.internal_api import ExternalApiKey
 from utils import session
 
 _GETTER_TO_CATEGORY = {**{v: k for k, v in C._INTERNAL_GETTERS.items()}}
-_EXT_GETTER_TO_CATEGORY = {v: k for k, v in C._EXTERNAL_GETTERS.items()}
-_DELETER_TO_CATEGORY = {
-    **{v: k for k, v in C._INTERNAL_DELETERS.items()},
-    **{v: k for k, v in C._EXTERNAL_DELETERS.items()},
-}
+_DELETER_TO_CATEGORY = {v: k for k, v in C._INTERNAL_DELETERS.items()}
 
 
 class FakeOrg:
@@ -38,8 +34,7 @@ class FakeOrg:
 
     # -- org settings / key ------------------------------------------------
     def create_external_api_key(self):
-        self.calls.append("create_key")
-        return ExternalApiKey("secret", "kid")
+        raise AssertionError("Decommission must not create a public-API key")
 
     def delete_external_api_key(self, key_id):
         self.calls.append(f"delete_key:{key_id}")
@@ -74,8 +69,10 @@ class FakeOrg:
         self.store[category] = [i for i in self.store[category] if i["id"] != item_id]
         self.deleted.append((category, item_id))
 
-    def get_users(self, exclude_user_id=None, exclude_email=None):
-        return self._list("Command Users")
+    def delete_persons_of_interest(self, person_ids):
+        self.calls.append(f"delete_poi:{len(person_ids)}")
+        for person_id in person_ids:
+            self._delete("Persons of Interest", person_id)
 
     def delete_users(self, user_ids):
         self.calls.append(f"delete_users:{len(user_ids)}")
@@ -86,8 +83,8 @@ class FakeOrg:
         self.calls.append(f"rename:{site_id}")
 
     def __getattr__(self, name):
-        if name in _GETTER_TO_CATEGORY or name in _EXT_GETTER_TO_CATEGORY:
-            category = _GETTER_TO_CATEGORY.get(name) or _EXT_GETTER_TO_CATEGORY[name]
+        if name in _GETTER_TO_CATEGORY:
+            category = _GETTER_TO_CATEGORY[name]
             return lambda: self._list(category)
         if name in _DELETER_TO_CATEGORY:
             category = _DELETER_TO_CATEGORY[name]
@@ -108,7 +105,6 @@ def make(page, monkeypatch):
     def _make(assets, **kw):
         org = FakeOrg(assets, **kw)
         monkeypatch.setattr(dv, "get_internal_client", lambda: org)
-        monkeypatch.setattr(dv, "VerkadaExternalAPIClient", lambda *a: org)
         view = dv.DecommissionView(lambda route: None)
         view.page = page
         return view, org
@@ -219,7 +215,7 @@ def test_org_is_released_after_a_delete_run(make, page, fail):
     _scan(view, page)
     _delete(view, page)
     # Reverted whatever the outcome (previously only after a clean run).
-    assert org.calls[-3:] == ["gsa_off", _ROLES_OFF, "delete_key:kid"]
+    assert org.calls[-2:] == ["gsa_off", _ROLES_OFF]
     assert ("done", "Global Site Admin turned back off") in view._cleanup
     assert ("done", "Access admin roles revoked") in view._cleanup
     assert session._active_run is None
@@ -230,7 +226,7 @@ def test_org_is_released_when_the_scan_fails(make, page):
     _scan(view, page)
     assert view._state == dv.SCAN
     assert org.calls == [
-        "create_key", "gsa_on", _ROLES_ON, "gsa_off", _ROLES_OFF, "delete_key:kid"
+        "gsa_on", _ROLES_ON, "gsa_off", _ROLES_OFF
     ]
     assert page.dialogs  # "Scan Failed" alert
     assert session._active_run is None
@@ -245,7 +241,7 @@ def test_org_is_released_when_leaving_after_a_scan(make, page):
         await asyncio.sleep(0.05)  # let the spawned cleanup run
 
     asyncio.run(scan_then_leave())
-    assert org.calls[-3:] == ["gsa_off", _ROLES_OFF, "delete_key:kid"]
+    assert org.calls[-2:] == ["gsa_off", _ROLES_OFF]
     assert not org.deleted
 
 
@@ -268,7 +264,7 @@ def test_cancelling_mid_run_skips_the_rest_and_still_releases(make, page):
     )
     assert view._cancelled_at == "Cameras"
     assert view._results["Sites"] == (0, 2)
-    assert org.calls[-3:] == ["gsa_off", _ROLES_OFF, "delete_key:kid"]
+    assert org.calls[-2:] == ["gsa_off", _ROLES_OFF]
     assert view._state == dv.COMPLETE
 
 
@@ -291,7 +287,7 @@ def test_no_role_calls_when_the_user_holds_both(make, page):
     _scan(view, page)
     _delete(view, page)
     assert not [c for c in org.calls if c.startswith("access_admin")]
-    assert org.calls[-2:] == ["gsa_off", "delete_key:kid"]
+    assert org.calls[-1:] == ["gsa_off"]
 
 
 def test_command_users_are_deleted_in_one_call(make, page):
@@ -325,3 +321,11 @@ def test_alarm_categories_are_deleted_one_at_a_time(make, page, monkeypatch):
     _delete(view, page)
     assert state["max"]["Wired Outputs"] == 1
     assert state["max"]["Cameras"] > 1
+
+
+def test_persons_of_interest_are_deleted_in_one_call(make, page):
+    view, org = make({"Persons of Interest": _items("poi", 6)})
+    _scan(view, page)
+    _delete(view, page)
+    assert "delete_poi:6" in org.calls
+    assert view._results["Persons of Interest"] == (6, 6)

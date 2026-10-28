@@ -1056,6 +1056,20 @@ class VerkadaInternalAPIClient:
             },
         )
 
+    def get_command_users(self) -> list[dict[str, Any]]:
+        """Org users for Decommission ({id, name, email}), never including the
+        signed-in user."""
+        return [
+            {
+                "id": u["id"],
+                "name": " ".join(p for p in (u.get("first_name"), u.get("last_name")) if p)
+                or u.get("email"),
+                "email": u.get("email"),
+            }
+            for u in self.get_user()
+            if u["id"] != self.user_id
+        ]
+
     def delete_users(self, user_ids: list[str]) -> None:
         """
         Deletes several users with one call, as the Command web app does
@@ -1073,6 +1087,60 @@ class VerkadaInternalAPIClient:
             json={"userIds": list(user_ids)},
             error_context=f"Failed to delete {len(user_ids)} user(s)",
             log_request=f'{{"userIds": {list(user_ids)}}}',
+        )
+
+    def get_person_of_interest(self) -> list[dict[str, Any]]:
+        """
+        Persons of interest ({id, name}), from videntity like the web app's
+        People pages. Identities tied to an access user (accessId) are that
+        user's face credential, not a person of interest, and are left out.
+        """
+        people: list[dict[str, Any]] = []
+        token = None
+        for _ in range(100):  # cursor paging guard
+            paging: dict[str, Any] = {"limit": 5000}
+            if token:
+                paging["nextToken"] = token
+            data, status = self._request(
+                "poi.list",
+                json={
+                    "organizationId": self.org_id,
+                    "filter": {"isHidden": False},
+                    "sort": {"field": "created", "sortDirection": "desc"},
+                    "skipAuditLogAdd": True,
+                    "paging": paging,
+                },
+                error_context="Failed to fetch from poi.list",
+                auto_log=False,
+            )
+            people += [
+                {"id": x["personId"], "name": x.get("name")}
+                for x in data.get("identities") or []
+                if x.get("personId") and not x.get("accessId")
+            ]
+            token = (data.get("paging") or {}).get("nextToken")
+            if not token:
+                break
+        self._log("poi.list", status, log_response=f'{{"count": {len(people)}}}')
+        return people
+
+    def delete_persons_of_interest(self, person_ids: list[str]) -> None:
+        """Deletes several persons of interest with one call."""
+        if person_ids:
+            self._request(
+                "poi.delete",
+                json={"organizationId": self.org_id, "personIds": list(person_ids)},
+                error_context=f"Failed to delete {len(person_ids)} person(s) of interest",
+                log_request=f'{{"personIds": {list(person_ids)}}}',
+            )
+
+    def get_guest_site(self) -> list[dict[str, Any]]:
+        """Guest sites ({id, name}); id is the Command site id the delete takes."""
+        return self._fetch_list(
+            "guest.list",
+            response_key="sites",
+            path_params={"org_id": self.org_id},
+            mapping_func=lambda x: {"id": x["siteId"], "name": x.get("siteName")},
         )
 
     def delete_user(self, user_id: str) -> None:
@@ -1142,7 +1210,8 @@ class VerkadaInternalAPIClient:
             status,
             path_params={"org_id": self.org_id},
             log_request=log_request,
-            log_response=f'{{"apiKey": "{api_key}", "apiKeyId": "{key_id}"}}',
+            # The key is a credential: never written to api_calls.log.
+            log_response=f'{{"apiKey": "***", "apiKeyId": "{key_id}"}}',
         )
         if not key_id:
             # Best effort: the key already exists, so a failed lookup must not

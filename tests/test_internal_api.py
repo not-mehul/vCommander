@@ -556,3 +556,17 @@ def test_parallel_runs_everything_then_raises_the_first_failure():
         VerkadaInternalAPIClient._parallel(work, [1, 2, 3, 4])
     assert sorted(done) == [1, 2, 3, 4]
     assert VerkadaInternalAPIClient._parallel(lambda i: i + 1, [1, 2]) == [2, 3]
+
+
+def test_api_key_secret_is_never_logged(monkeypatch):
+    import apis.internal_api as ia
+
+    client = _client()
+    logged = []
+    monkeypatch.setattr(
+        client, "_request", lambda *a, **kw: ({"apiKey": "SECRET-KEY", "apiKeyId": "k1"}, 200)
+    )
+    monkeypatch.setattr(ia, "log_api_call", lambda *a, **kw: logged.append(" ".join(map(str, a))))
+    key = client.create_external_api_key()
+    assert key.key == "SECRET-KEY"
+    assert logged and not any("SECRET-KEY" in line for line in logged)

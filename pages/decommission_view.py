@@ -7,9 +7,10 @@ constants.py). The order matters — e.g. intercoms must be deleted before
 the cameras/access controllers they're paired with, alarm devices before
 alarm sites, users before the hardware they're tied to.
 
-Scanning temporarily changes the org: it creates a public-API key and
-turns on Global Site Admin so every site-scoped asset is visible. Both are
-undone whenever the flow ends — after a delete run (any outcome), a failed
+Everything goes through the internal API, as the Command web app does (no
+public-API key). Scanning temporarily changes the org: it turns on Global
+Site Admin and grants any missing access admin roles so every asset is
+visible. Both are undone whenever the flow ends — after a delete run (any outcome), a failed
 or cancelled scan, or when the user leaves the screen.
 """
 
@@ -21,7 +22,6 @@ import os
 import flet as ft
 
 import theme
-from apis.external_api import VerkadaExternalAPIClient
 from apis.internal_api import ACCESS_ADMIN_ROLES, PARALLEL_REQUESTS
 from components import (
     ProgressHeader,
@@ -42,8 +42,7 @@ from components import (
     text_field,
 )
 from constants import (
-    _EXTERNAL_DELETERS,
-    _EXTERNAL_GETTERS,
+    _BATCH_DELETERS,
     _INTERNAL_DELETERS,
     _INTERNAL_GETTERS,
     ASSET_CATEGORIES,
@@ -172,8 +171,6 @@ class DecommissionView(ToolView):
         self._cancelled_at: str | None = None
         # What the scan changed in the org, released by _release_org().
         self._int_client = None
-        self._ext_client = None
-        self._api_key = None
         self._gsa_enabled = False
         # Access admin roles the scan granted (not ones the user already had).
         self._granted_roles: list[str] = []
@@ -252,8 +249,8 @@ class DecommissionView(ToolView):
             spawn(self._release_org())
 
     async def _release_org(self) -> None:
-        """Undo the scan's org changes: Global Site Admin back off, the access
-        admin roles it granted revoked, the temporary API key deleted.
+        """Undo the scan's org changes: Global Site Admin back off and the
+        access admin roles it granted revoked.
 
         Idempotent: each change is forgotten before it is undone, so a second
         call is a no-op. Results are logged and collected in self._cleanup
@@ -285,26 +282,6 @@ class DecommissionView(ToolView):
                 self._cleanup.append(
                     ("partial", f"Access admin roles could not be revoked: {ex}")
                 )
-
-        key, self._api_key = self._api_key, None
-        if key is not None and client is not None:
-            if not key.key_id:
-                self._cleanup.append(
-                    ("partial", "Temporary API key could not be identified — "
-                     "delete it under Org Settings > API Keys.")
-                )
-            else:
-                try:
-                    await loop.run_in_executor(
-                        _executor, client.delete_external_api_key, key.key_id
-                    )
-                    log_system("Deleted temporary API key.")
-                    self._cleanup.append(("done", "Temporary API key deleted"))
-                except Exception as ex:
-                    log_system(f"Could not delete temporary API key: {ex}", level="WARN")
-                    self._cleanup.append(
-                        ("partial", f"Temporary API key could not be deleted: {ex}")
-                    )
 
     # ------------------------------------------------------------------
     # SCAN state
@@ -411,20 +388,6 @@ class DecommissionView(ToolView):
         try:
             loop = asyncio.get_running_loop()
 
-            # Short-lived public-API key for the external client. Deleted by
-            # _release_org() when the flow ends.
-            self._api_key = await self._prep_step(
-                page, "Creating temporary API key", client.create_external_api_key
-            )
-            self._ext_client = await self._prep_step(
-                page,
-                "Connecting to the public API",
-                VerkadaExternalAPIClient,
-                self._api_key.key,
-                client.org_short_name,
-                client.public_api_region,
-            )
-
             # Pre-scan permission elevation. Both calls grant the running
             # user the ability to see and delete site-scoped resources that
             # the standard org-admin role might not surface. Without these,
@@ -474,7 +437,7 @@ class DecommissionView(ToolView):
                 page.update()
                 await asyncio.sleep(0)
                 items = await self._scan_category(
-                    loop, client, self._ext_client, category, camera_dedup_serials
+                    loop, client, category, camera_dedup_serials
                 )
                 if category in ("Intercoms", "Access Station Pro"):
                     camera_dedup_serials |= {
@@ -507,51 +470,30 @@ class DecommissionView(ToolView):
         self,
         loop: asyncio.AbstractEventLoop,
         client,
-        ext_client,
         category: str,
         camera_dedup_serials: set[str],
     ) -> list[dict]:
-        """Fetch one category of assets.
+        """Fetch one category of assets (internal API only).
 
         camera_dedup_serials accumulates serials of devices (intercoms,
         Access Station Pros) that also appear in the Cameras / Access
         Controllers lists; we filter them out so the same device isn't
         deleted twice through different endpoints.
         """
+        getter_name = _INTERNAL_GETTERS.get(category)
+        if not getter_name:
+            return []
         try:
-            if category in _INTERNAL_GETTERS:
-                getter = getattr(client, _INTERNAL_GETTERS[category])
-                items = await loop.run_in_executor(_executor, getter)
-                if category == "Access Controllers" and camera_dedup_serials:
-                    items = [
-                        item
-                        for item in items
-                        if item.get("serial_number") not in camera_dedup_serials
-                    ]
-                return items
-
-            if category == "Command Users":
-                return await loop.run_in_executor(
-                    _executor, ext_client.get_users, client.user_id, None
-                )
-
-            method_name = _EXTERNAL_GETTERS.get(category)
-            if not method_name:
-                return []
-            getter = getattr(ext_client, method_name)
-            items = await loop.run_in_executor(_executor, getter)
-
-            # The external Cameras endpoint also returns intercoms and
-            # Access Station Pros; dedup so they're only deleted once.
-            if category == "Cameras" and camera_dedup_serials:
-                items = [
-                    item
-                    for item in items
-                    if item.get("serial_number") not in camera_dedup_serials
-                ]
-            return items
+            items = await loop.run_in_executor(_executor, getattr(client, getter_name))
         except Exception as ex:
             raise ConnectionError(f"Failed to scan {category}: {ex}") from ex
+        if category in ("Cameras", "Access Controllers") and camera_dedup_serials:
+            items = [
+                item
+                for item in items
+                if item.get("serial_number") not in camera_dedup_serials
+            ]
+        return items
 
     # ------------------------------------------------------------------
     # Selection model helpers
@@ -1345,7 +1287,6 @@ class DecommissionView(ToolView):
 
     async def _run_deletions(self, page, plan: list[tuple[str, list[dict]]]):
         int_client = self._int_client
-        ext_client = self._ext_client
         loop = asyncio.get_running_loop()
         token = self._cancel_token
 
@@ -1382,14 +1323,15 @@ class DecommissionView(ToolView):
             # after each pass until nothing new comes back, so assets past
             # the first page are deleted too.
             page_full = self._drains(category)
-            # Command Users go in one batch call; other categories delete
+            # Batch categories (Command Users, Persons of Interest) go in one
+            # call; other categories delete
             # PARALLEL_REQUESTS items at a time (one at a time for the
             # SEQUENTIAL ones). A cancel stops before the next chunk.
             width = 1 if category in SEQUENTIAL_DELETE_CATEGORIES else PARALLEL_REQUESTS
             for _ in range(_MAX_DRAIN_PASSES):
                 chunks = (
                     [batch]
-                    if category == "Command Users"
+                    if category in _BATCH_DELETERS
                     else [batch[i : i + width] for i in range(0, len(batch), width)]
                 )
                 for chunk in chunks:
@@ -1397,15 +1339,15 @@ class DecommissionView(ToolView):
                         cancelled = True
                         self._cancelled_at = category
                         break
-                    if category == "Command Users":
-                        success += await self._delete_users_batch(
-                            page, loop, int_client, chunk
+                    if category in _BATCH_DELETERS:
+                        success += await self._delete_batch(
+                            page, loop, int_client, category, chunk
                         )
                     else:
                         results = await asyncio.gather(
                             *(
                                 self._delete_one(
-                                    page, loop, int_client, ext_client, category, item
+                                    page, loop, int_client, category, item
                                 )
                                 for item in chunk
                             )
@@ -1420,7 +1362,7 @@ class DecommissionView(ToolView):
                     break
                 try:
                     fresh = await self._scan_category(
-                        loop, int_client, ext_client, category, set()
+                        loop, int_client, category, set()
                     )
                 except Exception as ex:
                     log_system(f"--- {category}: re-list failed, stopping: {ex}", level="WARN")
@@ -1487,7 +1429,6 @@ class DecommissionView(ToolView):
         page,
         loop: asyncio.AbstractEventLoop,
         int_client,
-        ext_client,
         category: str,
         item: dict,
     ) -> bool:
@@ -1510,30 +1451,25 @@ class DecommissionView(ToolView):
         log_system(f"{category}: deleting {descriptor}")
 
         try:
-            if category in _INTERNAL_DELETERS:
-                # Most deleters take a single id. Two need extra data, so
-                # special-case them to keep the rest of the client API uniform:
-                #   - delete_alarm_site takes (alarm_site_id, site_id);
-                #     item["id"] from get_alarm_site is the responseSite.id
-                #     (alarm_site_id), which the body's responseSiteId expects.
-                #   - delete_schedule takes the full raw schedule object(s)
-                #     (an upsert PUT echoes them back with deleted=True),
-                #     bundled by get_schedule into item["delete_objects"].
-                deleter = getattr(int_client, _INTERNAL_DELETERS[category])
-                if category == "Alarm Sites":
-                    await loop.run_in_executor(
-                        _executor, deleter, item.get("id"), item.get("site_id")
-                    )
-                elif category == "Schedules":
-                    await loop.run_in_executor(
-                        _executor, deleter, item.get("delete_objects") or []
-                    )
-                else:
-                    await loop.run_in_executor(_executor, deleter, item_id)
+            # Most deleters take a single id. Two need extra data, so
+            # special-case them to keep the rest of the client API uniform:
+            #   - delete_alarm_site takes (alarm_site_id, site_id);
+            #     item["id"] from get_alarm_site is the responseSite.id
+            #     (alarm_site_id), which the body's responseSiteId expects.
+            #   - delete_schedule takes the full raw schedule object(s)
+            #     (an upsert PUT echoes them back with deleted=True),
+            #     bundled by get_schedule into item["delete_objects"].
+            deleter = getattr(int_client, _INTERNAL_DELETERS[category])
+            if category == "Alarm Sites":
+                await loop.run_in_executor(
+                    _executor, deleter, item.get("id"), item.get("site_id")
+                )
+            elif category == "Schedules":
+                await loop.run_in_executor(
+                    _executor, deleter, item.get("delete_objects") or []
+                )
             else:
-                method_name = _EXTERNAL_DELETERS[category]
-                delete_fn = getattr(ext_client, method_name)
-                await loop.run_in_executor(_executor, delete_fn, item_id)
+                await loop.run_in_executor(_executor, deleter, item_id)
 
             step_row.succeed(f"Deleted {row_label}")
             if cat_row is not None:
@@ -1576,10 +1512,11 @@ class DecommissionView(ToolView):
             )
             return False
 
-    async def _delete_users_batch(self, page, loop, int_client, items) -> int:
-        """Delete Command users with one call (as the web app does), with a
-        status row per user. Returns how many were deleted."""
-        cat_row = self._category_rows.get("Command Users")
+    async def _delete_batch(self, page, loop, int_client, category, items) -> int:
+        """Delete a whole batch with one call taking all ids (Command users,
+        persons of interest — as the web app does), with a status row per
+        item. Returns how many were deleted."""
+        cat_row = self._category_rows.get(category)
         rows = []
         for item in items:
             label = item.get("name") or item.get("email") or item.get("id")
@@ -1590,16 +1527,17 @@ class DecommissionView(ToolView):
         page.update()
         await asyncio.sleep(0)
         ids = [item.get("id") for item in items]
-        log_system(f"Command Users: deleting {len(ids)} user(s) in one call")
+        deleter = getattr(int_client, _BATCH_DELETERS[category])
+        log_system(f"{category}: deleting {len(ids)} item(s) in one call")
         try:
-            await loop.run_in_executor(_executor, int_client.delete_users, ids)
+            await loop.run_in_executor(_executor, deleter, ids)
         except Exception as ex:
             for step_row, label in rows:
                 step_row.fail(f"Failed: {label} — {ex}")
             if cat_row is not None:
                 cat_row["failed"] += len(items)
             page.update()
-            log_system(f"Command Users: FAILED to delete {len(ids)} user(s) — {ex}", level="ERROR")
+            log_system(f"{category}: FAILED to delete {len(ids)} item(s) — {ex}", level="ERROR")
             return 0
         for step_row, label in rows:
             step_row.succeed(f"Deleted {label}")
@@ -1607,7 +1545,7 @@ class DecommissionView(ToolView):
             cat_row["success"] += len(items)
             cat_row["counter"].value = f"{cat_row['success']} / {cat_row['total']}"
         page.update()
-        log_system(f"Command Users: deleted {len(ids)} user(s)")
+        log_system(f"{category}: deleted {len(ids)} item(s)")
         return len(items)
 
     async def _rename_site_fallback(

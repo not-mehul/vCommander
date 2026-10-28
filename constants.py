@@ -359,6 +359,10 @@ DELETION_ORDER = [
     "Command Users",
     # Security entity groups — after Command Users, before Doors.
     "Groups",
+    # Persons of Interest first among the camera assets: the internal
+    # people endpoints (videntity) refuse every call once the org has no
+    # cameras left (403 "Insufficient permissions", even with GSA on).
+    "Persons of Interest",
     # Access devices that must precede Cameras
     "Doors",
     "Access Station Pro",
@@ -367,9 +371,6 @@ DELETION_ORDER = [
     "Desk Stations",
     "Sensors",
     "Cameras",
-    # Persons of Interest are a camera-tied watchlist (public API); delete
-    # alongside Cameras.
-    "Persons of Interest",
     "Command Connectors",
     # Footage / investigations — after Command Connectors, before Guest
     # Sites. Incidents reference footage, so delete them before Archives;
@@ -442,6 +443,10 @@ _INTERNAL_GETTERS = {
     "Archives": "get_archive",
     "Alerts": "get_alert",
     "Mailroom Sites": "get_mailroom_site",
+    "Cameras": "get_camera",
+    "Persons of Interest": "get_person_of_interest",
+    "Guest Sites": "get_guest_site",
+    "Command Users": "get_command_users",
     # Access Control
     "Doors": "get_door",
     "Access Station Pro": "get_access_station_pro",
@@ -454,6 +459,7 @@ _INTERNAL_GETTERS = {
     "Schedules": "get_schedule",
     "Access Levels": "get_access_level",
     "Scenarios": "get_scenario",
+    "Access Groups": "get_access_group",
     # Sites (camera groups)
     "Sites": "get_site",
     # Alarms (org-wide aggregators — no system/site arg)
@@ -501,6 +507,7 @@ _INTERNAL_DELETERS = {
     "Schedules": "delete_schedule",
     "Access Levels": "delete_access_level",
     "Scenarios": "delete_scenario",
+    "Access Groups": "delete_access_group",
     # Sites (camera groups) — _delete_one falls back to rename_site
     # ("<name>-<mm/dd/yy>") when the delete is rejected.
     "Sites": "delete_site",
@@ -541,17 +548,9 @@ SEQUENTIAL_DELETE_CATEGORIES = frozenset(
     }
 )
 
-_EXTERNAL_GETTERS = {
-    "Cameras": "get_cameras",
-    "Persons of Interest": "get_person_of_interest",
-    "Guest Sites": "get_guest_sites",
-    "Access Groups": "get_access_groups",
-}
-
-# Command Users are deleted by the internal client in one call
-# (delete_users); see DecommissionView._delete_users_batch.
-_EXTERNAL_DELETERS = {
-    "Command Users": "delete_access_user",
+# Categories deleted many-at-once by one internal call taking a list of ids
+# (as the Command web app does): category -> client method.
+_BATCH_DELETERS = {
+    "Command Users": "delete_users",
     "Persons of Interest": "delete_persons_of_interest",
-    "Access Groups": "delete_access_group",
 }

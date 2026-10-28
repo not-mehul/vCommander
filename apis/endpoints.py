@@ -2111,7 +2111,15 @@ ENDPOINTS: dict[str, Endpoint] = {
             }
         },
     ),
-    # "guest.list" - Handled by External API Call
+    "guest.list": Endpoint(
+        # Guest sites, as the Guest app lists them (internal; replaces the
+        # public API's guest/v1/sites for Decommission).
+        method="GET",
+        subdomain="vdoorman",
+        path="site/org/{org_id}",
+        payload={},
+        response={"sites": [{"siteId": "<site_id>", "siteName": "<site_name>"}]},
+    ),
     "guest.delete": Endpoint(
         method="DELETE",
         subdomain="vdoorman",
@@ -3537,5 +3545,45 @@ ENDPOINTS: dict[str, Endpoint] = {
         path="keycode/generate",
         payload={"alarmSystemId": "<alarm_system_id>"},
         response={"code": "<6 digits>"},
+    ),
+    # ── Persons of interest (videntity), as Cameras → People uses them ──
+    "poi.list": Endpoint(
+        method="POST",
+        subdomain="videntity",
+        path="identity/list",
+        payload={
+            "organizationId": "<org_id>",
+            "filter": {"isHidden": False},
+            "sort": {"field": "created", "sortDirection": "desc"},
+            "skipAuditLogAdd": True,
+            "paging": {"limit": 5000},
+        },
+        response={
+            "identities": [
+                {
+                    "personId": "<person_id>",
+                    "name": "<label>",
+                    "accessId": None,
+                    "guestId": None,
+                    "identityListIds": ["<list_id>"],
+                }
+            ],
+            "paging": {"nextToken": None, "totalItems": 1},
+        },
+    ),
+    "poi.delete": Endpoint(
+        # Several people per call (People → person → Remove this person).
+        method="POST",
+        subdomain="videntity",
+        path="identity/delete",
+        payload={"organizationId": "<org_id>", "personIds": ["<person_id>"]},
+        response={},
+    ),
+    "poi.lists": Endpoint(
+        method="POST",
+        subdomain="videntity",
+        path="identity_list/bulk",
+        payload={"organizationId": "<org_id>"},
+        response={"lists": [{"listId": "<list_id>", "name": "People of Interest"}]},
     ),
 }
