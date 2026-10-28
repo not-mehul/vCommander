@@ -3,6 +3,78 @@
 Results of running vCommander against a real test org with the scripts in
 `tools/live/`. Newest first.
 
+## 2026-10-28 (part 2) — Log review, internal-only Decommission, faster scan
+
+Driven by the owner's `api_calls.log` (1,110 calls over 8 days, five
+commissions, each into a fresh org) and by timing Decommission. The org was
+left clean: no devices, no API keys, test users deleted, Global Site Admin
+off, no access admin roles on the session user.
+
+### What the log showed
+
+| Finding | Effect | Change |
+|---|---|---|
+| Deletes were the most frequent calls: 87 public-API `DELETE core/v1/user`, 39 public-API POI deletes (two timed out), one call per item | slow, needed a temporary API key | Decommission is internal-API only (`465abf7`): users and POIs are deleted in one call each, and no key is created |
+| 10 temporary API key secrets were written to `api_calls.log` | secrets in a local file | the key is masked in the log (`465abf7`); the keys had already been deleted |
+| 11 "User already exists in this org" errors in one re-invite | an invite sent and refused for each person, and they never joined the group | invites skip people already in the org (`ba4a70f`) |
+| The scan listed categories one at a time and repeated reads (`alarm_system/list` ×10, `alarm_system/get_devices` ×8) | about 55 calls before anything is deleted | parallel scan with shared reads (`b111a0c`) |
+| `response/site/get` once per site to find alarm sites | one call per site | one `response/site/list` call (`4e6032d`) |
+| Every login starts with a 400 (MFA required), then MFA | expected | none |
+
+### Decommission
+
+- **Internal API only.** Command Users and Persons of Interest are deleted
+  with one call each (`vcorgi org/{id}/users/delete`, `videntity
+  identity/delete`). Persons of Interest now come before Cameras: videntity
+  answers 403 once the org has no cameras, even with Global Site Admin on.
+  Verified live.
+- **Scan.** All categories are listed at once, four requests at a time.
+  Identical reads within one scan are sent once (`client.read_cache()`, for
+  GETs and `*.list` / `*.get` endpoints only, never writes). Cameras and
+  Access Controllers are listed last, so they can be de-duplicated against
+  Intercoms and Access Station Pros.
+
+| Scan of an AS org | Calls | Wall time (incl. login) |
+|---|---|---|
+| before (sequential) | 55 | 15.6 s |
+| after | 33 | 8.4 s |
+
+Every endpoint is now called once per scan. A full Decommission of an AS
+org (scan, delete 11 categories, release) took 11.5 s and 44 calls, with 0
+failures.
+
+### Invites
+
+One user list call before a batch. People already in the org get an
+"Already in the org" row instead of an invite that Command refuses. In the
+Users tool they still join the Command group. This applies to the Users tool
+and to Commission's supporting users. Live (`tools/live/invite.py`): two test
+users were invited, then a batch of three that included them. The second
+batch made 3 calls (validate, user list, one invite) and reported
+"1 invited; 2 already in the org", with no errors.
+
+### Commission waits
+
+| Wait | Result | Change |
+|---|---|---|
+| 3 s "Waiting for building to provision" (ESS, VSS, AS) | VSSL, AS and ESS ran without it: no failed steps; doors on the new floor created normally | removed; AS 20.9 s → 15.7 s of API time, 26 calls |
+| 3 s role propagation after `custom_roles/enable` | `custom_roles/enable` returns `{}`, and nothing shows whether custom roles were already on. The test org has had them on for a while, so a fresh org's propagation can't be tested here | kept |
+
+### Notes
+
+- **Guest trial limit.** One ESS run failed at "Creating Guest Site":
+  `site/software_trial/create` answered "Site creation is limited". The
+  guest site was created; only the trial was refused. The test org has run
+  many guest-site create/delete cycles. The web app doesn't call the trial
+  endpoint (see question 4 of 2026-10-27).
+- **VSSL access groups** are created on the internal API, which needs
+  Access User Admin. Command grants that role when the controller is
+  claimed, earlier in the same run.
+- **Access admin roles at release.** Decommission revokes only the roles it
+  granted. Roles Command grants at a controller claim stay. After these
+  runs, both were revoked from the session user by hand to restore the
+  earlier state. Open question: should Decommission always revoke both?
+
 ## 2026-10-28 — Batching: several devices, users and deletes at once
 
 What the Command web app does when it handles several items, recorded live,
@@ -38,6 +110,7 @@ the owner's accounts stayed.
 calls are list reads, made one category at a time). The reads are
 independent and could run in parallel, except that Cameras are de-duplicated
 against Intercoms / Access Station Pro, which would need to be listed first.
+(Done in part 2 above.)
 
 ## 2026-10-27 (part 2) — Owner's answers, remaining actions, internal-API database
 
