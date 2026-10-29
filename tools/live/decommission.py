@@ -3,7 +3,7 @@
 Usage:
   python tools/live/decommission.py scan
       Scan, print the review list, then release the org (Global Site Admin
-      off, temporary API key deleted). Deletes nothing.
+      off, access admin roles revoked). Deletes nothing.
   python tools/live/decommission.py delete ["Category,Category"]
       DELETES FOR REAL: rescan and delete everything the scan pre-selects,
       except the listed categories (e.g. "Command Users"), as if unticked.
@@ -28,6 +28,8 @@ page = FakePage()
 dv.get_internal_client = lambda: client
 view = dv.DecommissionView(lambda route: None)
 view.page = page
+# A failed scan shows an alert; print it (the headless page has no UI).
+dv.show_alert = lambda page, title, message: print(f"ALERT {title}: {redact(message)[:300]}")
 
 
 async def main():

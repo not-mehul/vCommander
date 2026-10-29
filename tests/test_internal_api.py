@@ -749,3 +749,46 @@ def test_user_ids_by_email_is_case_insensitive_and_skips_missing_emails():
         {"id": "3", "email": ""},
     ]
     assert client.get_user_ids_by_email() == {"ada@x.com": "1"}
+
+
+def _poi_client(cameras):
+    from apis.internal_api import APIError
+
+    client = _client()
+
+    def request(endpoint_key, **kwargs):
+        raise APIError("Insufficient permissions", status_code=403)
+
+    client._request = request
+    client._log = lambda *a, **k: None
+    client.get_camera = lambda: cameras
+    return client, APIError
+
+
+def test_persons_of_interest_are_none_in_an_org_without_cameras():
+    client, _ = _poi_client(cameras=[])
+    assert client.get_person_of_interest() == []
+
+
+def test_a_poi_403_with_cameras_present_is_raised():
+    client, APIError = _poi_client(cameras=[{"id": "c1"}])
+    with pytest.raises(APIError):
+        client.get_person_of_interest()
+
+
+@pytest.mark.parametrize("sites, expect_error", [([], False), ([{"id": "s1"}], True)])
+def test_a_camera_403_means_none_only_when_the_org_has_no_sites(sites, expect_error):
+    from apis.internal_api import APIError
+
+    client = _client()
+
+    def refuse():
+        raise APIError("User has no site permission for any device type.", status_code=403)
+
+    client._list_cameras = refuse
+    client.get_site = lambda: sites
+    if expect_error:
+        with pytest.raises(APIError):
+            client.get_camera()
+    else:
+        assert client.get_camera() == []

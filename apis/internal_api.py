@@ -946,7 +946,7 @@ class VerkadaInternalAPIClient:
             key = normalize_serial(serial)
             if key not in results:
                 reason = reasons.get(key) or (
-                    "rejected; it may still be claimed in another org"
+                    "Command rejected the serial (check it, or release it from its other org)"
                     if key in reasons
                     else "missing from the response"
                 )
@@ -1161,6 +1161,7 @@ class VerkadaInternalAPIClient:
         Persons of interest ({id, name}), from videntity like the web app's
         People pages. Identities tied to an access user (accessId) are that
         user's face credential, not a person of interest, and are left out.
+        An org without cameras has none (videntity refuses the list there).
         """
         people: list[dict[str, Any]] = []
         token = None
@@ -1168,18 +1169,27 @@ class VerkadaInternalAPIClient:
             paging: dict[str, Any] = {"limit": 5000}
             if token:
                 paging["nextToken"] = token
-            data, status = self._request(
-                "poi.list",
-                json={
-                    "organizationId": self.org_id,
-                    "filter": {"isHidden": False},
-                    "sort": {"field": "created", "sortDirection": "desc"},
-                    "skipAuditLogAdd": True,
-                    "paging": paging,
-                },
-                error_context="Failed to fetch from poi.list",
-                auto_log=False,
-            )
+            try:
+                data, status = self._request(
+                    "poi.list",
+                    json={
+                        "organizationId": self.org_id,
+                        "filter": {"isHidden": False},
+                        "sort": {"field": "created", "sortDirection": "desc"},
+                        "skipAuditLogAdd": True,
+                        "paging": paging,
+                    },
+                    error_context="Failed to fetch from poi.list",
+                    auto_log=False,
+                )
+            except APIError as e:
+                # videntity answers 403 in an org without cameras (persons of
+                # interest can be neither listed nor deleted there). Only
+                # then is it "none"; a 403 with cameras present is real.
+                if e.status_code == 403 and not people and not self.get_camera():
+                    self._log("poi.list", 403, log_response='{"count": 0, "cameras": 0}')
+                    return []
+                raise
             people += [
                 {"id": x["personId"], "name": x.get("name")}
                 for x in data.get("identities") or []
@@ -1559,7 +1569,19 @@ class VerkadaInternalAPIClient:
         Paging is fixed at size=1000: orgs with more than 1000 cameras
         will silently truncate. The endpoint supports cursor paging
         (searchAfter); wire it up if/when the cap becomes a real ceiling.
+
+        An org without sites has no cameras: the search answers 403 ("no
+        site permission for any device type") there, even with Global Site
+        Admin on. Only then is the 403 read as "none".
         """
+        try:
+            return self._list_cameras()
+        except APIError as e:
+            if e.status_code == 403 and not self.get_site():
+                return []
+            raise
+
+    def _list_cameras(self) -> list[dict[str, Any]]:
         return self._fetch_list(
             "camera.list",
             response_key="devices",

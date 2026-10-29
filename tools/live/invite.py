@@ -2,7 +2,8 @@
 
 Usage: python tools/live/invite.py 1 2 3
 Invites "VC Test <n>" at the plus address <user>+test<n>@<domain> of
-VERKADA_EMAIL for each number given. LIVE_GROUP=1 also runs the group step.
+VERKADA_EMAIL for each number given. LIVE_GROUP=1 also runs the group step;
+LIVE_UPPER=1 upper-cases the addresses (Command matches emails without case).
 CHANGES THE ORG: invites users (decommission.py deletes "VC Test" users).
 """
 
@@ -25,7 +26,12 @@ view = uv.UsersView(lambda route: None)
 view.page = page
 for n in sys.argv[1:]:
     view._participants_column.controls.append(
-        view._create_participant_row("VC Test", n, f"{local}+test{n}@{domain}")
+        view._create_participant_row(
+            "VC Test",
+            n,
+            (f"{local}+test{n}@{domain}".upper() if os.environ.get("LIVE_UPPER")
+             else f"{local}+test{n}@{domain}"),
+        )
     )
 view._add_to_group_switch.value = bool(os.environ.get("LIVE_GROUP"))
 
