@@ -178,7 +178,7 @@ Spins up a populated org from a template.
 3. **Review/override** the device serials and the supporting-user list inline if needed.
 4. Click **Review** to see a summary of what will be created, then **Commission Organization**. Watch the progress — sites, buildings, devices, and users are created in dependency-safe order, and the report lists any failed step.
 
-The run creates a temporary public-API key at the start and deletes it when the run ends (whatever the outcome), so keys don't pile up against Verkada's 10-key limit.
+The run uses only the internal API (no public-API key). Devices are claimed with one batch call, and supporting users already in the org are reported rather than re-invited.
 
 <p align="center">
   <img src="docs/screenshots/Commission-Templates.png" alt="Selecting a commission template" width="48%" />
@@ -233,9 +233,9 @@ Inventories the entire org, lets you select what to wipe, then deletes it all in
 
 > 🛡 **Safety net:** Nothing is deleted until you both tick boxes *and* confirm on the Confirm step. Only ticked assets are deleted.
 
-> 🔐 **What the scan changes, and how it's undone:** to see every site-scoped asset, the scan creates a temporary public-API key, turns on **Global Site Admin** (an org-wide setting), and grants your user **Access System Admin** and **Access User Admin**. When the flow ends — after a delete run with any outcome, a failed or cancelled scan, or when you leave the screen after scanning — Global Site Admin is turned back off and the API key is deleted. The two Access Admin roles stay granted.
+> 🔐 **What the scan changes, and how it's undone:** to see every site-scoped asset, the scan turns on **Global Site Admin** (an org-wide setting) and grants your user whichever of **Access System Admin** and **Access User Admin** it lacks. When the flow ends — after a delete run with any outcome, a failed or cancelled scan, or when you leave the screen after scanning — Global Site Admin is turned back off and both Access Admin roles are revoked, including ones you held before (Command grants them to whoever claims an access controller, so a commissioned org leaves them behind). Decommission uses only the internal API; no API key is created.
 
-> 📄 **Large orgs:** Visits, Visitors, Archives and Incidents list at most 99 items per scan (shown as `99+`). If you delete a whole category, vCommander re-lists it after each pass and keeps deleting until none are left. All public-API lists (cameras, users, persons of interest, guest sites, guest visits) are fully paginated.
+> 📄 **Large orgs:** Visits, Visitors, Archives and Incidents list at most 99 items per scan (shown as `99+`). If you delete a whole category, vCommander re-lists it after each pass and keeps deleting until none are left. Persons of interest are fully paginated; cameras and users list up to 1,000 each.
  
 ---
 
@@ -444,13 +444,12 @@ SHOT_VIEW=decommission SHOT_STATE=select SHOT_THEME=light SHOT_PORT=8700 python 
 - Mimics browser behavior using session cookies and CSRF tokens.
 - Accesses internal/private APIs for comprehensive device management.
 - Handles login, MFA verification, and privilege escalation.
-- Dynamically generates temporary API keys with a 1-hour TTL, and deletes them again when the run that created them ends.
 - Every request goes to the org's shard: `https://<service>.<shard domain>/__v/<org>/…` (see below).
 **`VerkadaExternalAPIClient`** (`apis/external_api.py`)
 - Uses the standard public API endpoints documented at [`apidocs.verkada.com`](https://apidocs.verkada.com).
 - Automatic token generation (refreshed on 401/403) and full pagination of list endpoints.
 - Used for guest-visit pulls and cross-org user invitations.
-The Decommission tool uses a **hybrid architecture** — combining the internal client (for assets the public API doesn't expose) with the external client (for everything else) to get full coverage.
+Commission and Decommission use only the internal client. Independent calls run four at a time, and a Decommission scan sends each identical read once.
 
 Both clients share `apis/http.py`: every request has a default timeout, and transient failures are retried — but a `POST` (create site, claim device, invite user) is only retried when the server provably did nothing (connection never opened, or HTTP 429), so a retry can never create a duplicate.
 
@@ -506,11 +505,11 @@ Open the log file (path is printed on startup, also see [Where Data Lives](#wher
 </details>
 <details>
 <summary><b>A delete from Decommission silently does nothing.</b></summary>
-Check that the category is wired up in `_INTERNAL_DELETERS` or `_EXTERNAL_DELETERS` in `constants.py`, and that its items were ticked on the Select step. Note: "Unassigned Devices" has no delete endpoint by design — Verkada does not expose one.
+Check that the category is wired up in `_INTERNAL_DELETERS` or `_BATCH_DELETERS` in `constants.py`, and that its items were ticked on the Select step. Note: "Unassigned Devices" has no delete endpoint by design — Verkada does not expose one.
 </details>
 <details>
 <summary><b>"Exceeded 10 API Keys Limit"</b></summary>
-vCommander deletes the temporary key it creates when each commission or decommission run ends (the report's **Cleanup** section confirms it), so this should only happen if the org already holds 10 keys, or an older version of vCommander left keys behind (they expire after 1 hour). Delete unused keys under Org Settings > API Keys and try again.
+Commission and Decommission no longer create API keys. Keys left by an older version of vCommander expire after 1 hour; delete unused keys under Org Settings > API Keys.
 </details>
 <details>
 <summary><b>macOS says the app "is damaged and can't be opened."</b></summary>
@@ -534,8 +533,8 @@ Credentials are stored locally in a SQLite file on your computer (see [Where Dat
 ## Security Considerations
  
 - Login credentials are stored locally in a SQLite file. Delete `vcommander.db` to wipe.
-- Temporary public-API keys expire after 1 hour and are deleted when the run that created them ends.
-- Decommission's scan turns on Global Site Admin and turns it back off when the flow ends (see [Decommission Tool](#decommission-tool)).
+- Commission and Decommission create no API keys. The Users tool uses the source org's API key you enter.
+- Decommission's scan turns on Global Site Admin and the Access Admin roles, and turns them back off when the flow ends (see [Decommission Tool](#decommission-tool)).
 - MFA is supported and recommended.
 - The tool requires Organization Admin privileges.
 - All deletions are permanent and cannot be undone.

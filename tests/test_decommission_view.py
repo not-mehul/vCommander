@@ -281,26 +281,38 @@ def test_cancelling_mid_run_skips_the_rest_and_still_releases(make, page):
     assert view._state == dv.COMPLETE
 
 
-def test_roles_the_user_already_held_are_neither_granted_nor_revoked(make, page):
+def test_roles_the_user_already_held_are_not_granted_but_are_revoked(make, page):
     view, org = make(
         {"Cameras": _items("cam", 1)}, roles={"ACCESS_CONTROL_SYSTEM_ADMIN"}
     )
     _scan(view, page)
     _delete(view, page)
-    assert "access_admin_on:ACCESS_CONTROL_USER_ADMIN" in org.calls
-    assert "access_admin_off:ACCESS_CONTROL_USER_ADMIN" in org.calls
-    assert not [c for c in org.calls if "SYSTEM_ADMIN" in c]
+    assert [c for c in org.calls if c.startswith("access_admin")] == [
+        "access_admin_on:ACCESS_CONTROL_USER_ADMIN",
+        _ROLES_OFF,
+    ]
 
 
-def test_no_role_calls_when_the_user_holds_both(make, page):
+def test_roles_held_before_the_scan_are_revoked_with_one_call(make, page):
     view, org = make(
         {"Cameras": _items("cam", 1)},
         roles={"ACCESS_CONTROL_SYSTEM_ADMIN", "ACCESS_CONTROL_USER_ADMIN"},
     )
     _scan(view, page)
     _delete(view, page)
-    assert not [c for c in org.calls if c.startswith("access_admin")]
-    assert org.calls[-1:] == ["gsa_off"]
+    assert [c for c in org.calls if c.startswith("access_admin")] == [_ROLES_OFF]
+    assert org.calls[-2:] == ["gsa_off", _ROLES_OFF]
+
+
+def test_a_scan_only_visit_also_revokes_the_roles(make, page):
+    view, org = make(
+        {"Cameras": _items("cam", 1)},
+        roles={"ACCESS_CONTROL_SYSTEM_ADMIN", "ACCESS_CONTROL_USER_ADMIN"},
+    )
+    _scan(view, page)
+    asyncio.run(view._release_org())
+    asyncio.run(view._release_org())  # idempotent
+    assert org.calls.count(_ROLES_OFF) == 1
 
 
 def test_command_users_are_deleted_in_one_call(make, page):

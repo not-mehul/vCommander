@@ -44,6 +44,16 @@ v3.5
 - Updated ACS Lab to create 'HQ' instead of 'Trainer-HQ'
 - Updated AF64 Commissioning to disable DPI during setup
 - Added Strobe Light Creation on the Alarm Panel Pin 1 during AS Commissioning
+- (New feature) Commission claims all of a template's devices with one batch call and sets up cameras together
+- (New feature) ACSL creates its door with the MFA modes in one call
+- (New feature) Invites go out four at a time; people already in the org are reported instead of re-invited, and still join the group
+- (New feature) Decommission uses only the internal API (no API key); Command Users and Persons of Interest are deleted with one call each, other categories four at a time
+- (New feature) Decommission scan lists categories in parallel and sends each identical read once (about twice as fast)
+- (Bug fix) Decommission revokes both Access Admin roles when it ends, including ones Command granted at a controller claim
+- (Bug fix) Persons of Interest are deleted before Cameras (Command refuses the delete once the org has no cameras)
+- (Bug fix) API key secrets are no longer written to the API call log
+- (Bug fix) Strobe Light is on the panel's Output 1
+- (Bug fix) Removed a fixed 3-second wait after creating a building
 
 --- NEWS ---
 - When the Alarm is triggered, you will not be able to delete an Alarm Site. It needs to be resolved to delete an alarm site.

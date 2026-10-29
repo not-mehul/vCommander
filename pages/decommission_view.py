@@ -172,8 +172,8 @@ class DecommissionView(ToolView):
         # What the scan changed in the org, released by _release_org().
         self._int_client = None
         self._gsa_enabled = False
-        # Access admin roles the scan granted (not ones the user already had).
-        self._granted_roles: list[str] = []
+        # Access admin roles to revoke at release (both, once the scan starts).
+        self._revoke_roles: list[str] = []
         # True while a scan or delete run owns the org; that run releases
         # the org itself when it finishes.
         self._busy = False
@@ -249,8 +249,8 @@ class DecommissionView(ToolView):
             spawn(self._release_org())
 
     async def _release_org(self) -> None:
-        """Undo the scan's org changes: Global Site Admin back off and the
-        access admin roles it granted revoked.
+        """Undo the scan's org changes: Global Site Admin back off and both
+        access admin roles revoked (also ones the user held before).
 
         Idempotent: each change is forgotten before it is undone, so a second
         call is a no-op. Results are logged and collected in self._cleanup
@@ -271,11 +271,11 @@ class DecommissionView(ToolView):
                     ("partial", f"Global Site Admin could not be turned off: {ex}")
                 )
 
-        roles, self._granted_roles = self._granted_roles, []
+        roles, self._revoke_roles = self._revoke_roles, []
         if roles and client is not None:
             try:
                 await loop.run_in_executor(_executor, client.disable_access_admin, roles)
-                log_system("Revoked the access admin roles granted for the scan.")
+                log_system("Revoked the access admin roles.")
                 self._cleanup.append(("done", "Access admin roles revoked"))
             except Exception as ex:
                 log_system(f"Could not revoke access admin roles: {ex}", level="WARN")
@@ -395,10 +395,13 @@ class DecommissionView(ToolView):
             # missing from the scan results.
             #
             # _release_org() undoes both whenever the flow ends: Global Site
-            # Admin goes back off, and the access admin roles the user did
-            # not already hold are revoked. The flags are set before the
-            # calls: a request that times out may still have applied, and
-            # undoing a change that didn't happen is harmless.
+            # Admin goes back off and both access admin roles are revoked,
+            # including ones the user already held (Command grants them to
+            # whoever claims an access controller, so a commissioned org
+            # leaves them behind). Only the missing roles are granted. The
+            # flags are set before the calls: a request that times out may
+            # still have applied, and undoing a change that didn't happen is
+            # harmless.
             self._gsa_enabled = True
             await self._prep_step(
                 page, "Enabling Global Site Admin", client.enable_global_site_admin
@@ -406,13 +409,14 @@ class DecommissionView(ToolView):
             held = await self._prep_step(
                 page, "Checking access roles", client.get_org_role_keys
             )
-            self._granted_roles = [r for r in ACCESS_ADMIN_ROLES if r not in held]
-            if self._granted_roles:
+            self._revoke_roles = list(ACCESS_ADMIN_ROLES)
+            missing = [r for r in ACCESS_ADMIN_ROLES if r not in held]
+            if missing:
                 await self._prep_step(
                     page,
                     "Granting Access System Admin",
                     client.enable_access_admin,
-                    self._granted_roles,
+                    missing,
                 )
 
             # Serials that should be filtered out of the Cameras list:
