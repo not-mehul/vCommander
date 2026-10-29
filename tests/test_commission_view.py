@@ -273,3 +273,29 @@ def test_a_supporting_user_listed_twice_is_invited_once(view, page):
     _add_user(view, page, "Ada", "Lovelace", "ada@x.com")
     _add_user(view, page, "Ada", "L", "ADA@x.com")
     assert view._collect_supporting_users() == [("Ada", "Lovelace", "ada@x.com")]
+
+
+@pytest.mark.parametrize("template", ["ESS", "AS"])
+def test_strobe_on_output_1_is_linked_to_the_default_response(view, page, monkeypatch, template):
+    client = FakeInternal()
+    client.create_wired_output = lambda *args: (client.args.__setitem__("strobe", args), "strobe-id")[1]
+    _run(view, page, client, monkeypatch, template=template)
+    name, _system, _panel, pin = client.args["strobe"]
+    assert (name, pin) == ("Strobe Light", 0)
+    (site, response, device_ids), _ = client.args["set_alarm_response_outputs"]
+    assert (site, response, device_ids) == ("create_or_reuse_site-id", "create_alarm_site-id", ["strobe-id"])
+    assert "[ok]   Linking Strobe to Default Response" in view._run_log
+
+
+@pytest.mark.parametrize("group_id, expected", [("ap-id", "ap-id"), (None, "")])
+def test_ess_af64_access_level_grants_all_participants_when_it_exists(
+    view, page, monkeypatch, group_id, expected
+):
+    client = FakeInternal()
+    client.find_access_group_id = lambda name: group_id
+    _run(view, page, client, monkeypatch, template="ESS")
+    (door, name, site, group), _ = client.args["create_access_level"]
+    assert (door, name, site, group) == (
+        "create_access_station_pro_door-id", "[DO NOT TOUCH] AF64", "create_or_reuse_site-id", expected,
+    )
+    assert view._failures == []

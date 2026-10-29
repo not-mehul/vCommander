@@ -2173,25 +2173,79 @@ class VerkadaInternalAPIClient:
 
     def find_access_group(self, group_name: str) -> dict[str, Any] | None:
         """{id, member_ids} of the access group with this name, or None.
+        Needs an access admin role."""
+        return self.find_access_groups([group_name]).get(group_name)
 
-        One user_groups/get call; each group lists its members under
-        `users` ([{"userId"}]). Needs an access admin role.
-        """
+    def find_access_groups(self, names) -> dict[str, dict[str, Any]]:
+        """{name: {id, member_ids}} for the access groups with these names
+        (one call; names not found are left out). Needs an access admin
+        role."""
+        names = set(names)
         data, _ = self._request(
             "access_group.list",
             json={"organizationId": self.org_id},
             error_context="Failed to fetch from access_group.list",
             log_request=f'{{"organizationId": "{self.org_id}"}}',
         )
+        found: dict[str, dict[str, Any]] = {}
         for group_id, info in (data.get("children") or {}).items():
-            if (info or {}).get("name") == group_name:
-                return {
+            name = (info or {}).get("name")
+            if name in names and name not in found:
+                found[name] = {
                     "id": group_id,
                     "member_ids": {
                         u["userId"] for u in info.get("users") or [] if u.get("userId")
                     },
                 }
-        return None
+        return found
+
+    def find_access_group_id(self, group_name: str) -> str | None:
+        """Id of the access group with this name, or None — also None when
+        the user may not list access groups (no access admin role yet)."""
+        try:
+            group = self.find_access_groups([group_name]).get(group_name)
+        except APIError as e:
+            if e.status_code == 403:
+                return None
+            raise
+        return group["id"] if group else None
+
+    def find_access_levels(self, names) -> dict[str, dict[str, Any]]:
+        """{name: the raw access level} for the access levels (type USER)
+        with these names, as access_level.update takes them back."""
+        names = set(names)
+        data, _ = self._request(
+            "access_level.list",
+            path_params={"org_id": self.org_id},
+            error_context="Failed to fetch from access_level.list",
+        )
+        found: dict[str, dict[str, Any]] = {}
+        for level in data.get("schedules") or []:
+            name = level.get("name")
+            if level.get("type") == "USER" and not level.get("deleted") and name in names:
+                found.setdefault(name, level)
+        return found
+
+    def add_groups_to_access_level(self, level: dict, group_ids: list[str]) -> list[str]:
+        """Grants an access level to more access groups (one call, only for
+        groups not on it yet). `level` is a raw entry from
+        find_access_levels. Returns the group ids added."""
+        held = list(level.get("userGroups") or [])
+        missing = [g for g in dict.fromkeys(group_ids) if g not in held]
+        if not missing:
+            return []
+        body = {k: v for k, v in level.items() if k not in ("events", "doors", "sites")}
+        body["userGroups"] = held + missing
+        body["doors"] = {"add": [], "remove": []}
+        body["sites"] = {"add": [], "remove": []}
+        self._request(
+            "access_level.update",
+            path_params={"schedule_id": level["scheduleId"]},
+            json=body,
+            error_context=f"Failed to update access level '{level.get('name')}'",
+            log_request=f'{{"name": "{level.get("name")}", "addGroups": {missing}}}',
+        )
+        return missing
 
     def add_users_to_access_group(self, user_ids: list[str], group_id: str) -> None:
         """Adds several users to one access group with one call."""
@@ -2963,6 +3017,23 @@ class VerkadaInternalAPIClient:
         )
 
     # ── Alarm System ─────────────────────────────────────────────────
+
+    def set_alarm_response_outputs(
+        self, site_id: str, response_config_id: str, device_ids: list[str]
+    ) -> None:
+        """Sets the output devices (e.g. the strobe) a response activates.
+        Replaces the response's whole output list."""
+        self._request(
+            "alarm.response.set_outputs",
+            json={
+                "siteId": site_id,
+                "responseConfigId": response_config_id,
+                "updateType": "CONFIG_UPDATE_TYPE_SET_OUTPUT_DEVICES",
+                "setOutputDevicesInput": {"deviceIds": list(device_ids)},
+            },
+            error_context="Failed to set the response's output devices",
+            log_request=f'{{"responseConfigId": "{response_config_id}", "deviceIds": {list(device_ids)}}}',
+        )
 
     def create_alarm_system(self, site_id: str) -> str:
         """

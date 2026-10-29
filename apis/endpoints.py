@@ -1892,6 +1892,24 @@ ENDPOINTS: dict[str, Endpoint] = {
             ],
         },
     ),
+    "access_level.update": Endpoint(
+        # Edit an access level, as the web app's Save → Confirm does: the
+        # level's own fields (as access_level.list returns them, without
+        # events) with the full userGroups list; doors and sites as
+        # {add, remove} changes.
+        method="PATCH",
+        subdomain="vcerberus",
+        path="access/v2/user/schedules/{schedule_id}",
+        payload={
+            "scheduleId": "<schedule_id>",
+            "name": "<access_level_name>",
+            "type": "USER",
+            "userGroups": ["<access_group_id>"],
+            "doors": {"add": [], "remove": []},
+            "sites": {"add": [], "remove": []},
+        },
+        response={"schedules": [{"scheduleId": "<schedule_id>"}]},
+    ),
     "access_level.list": Endpoint(
         method="GET",
         subdomain=API_GATEWAY_SUBDOMAIN,
@@ -2764,6 +2782,26 @@ ENDPOINTS: dict[str, Endpoint] = {
             "location": {
                 "id": "<location_id>",
             },
+        },
+    ),
+    "alarm.response.set_outputs": Endpoint(
+        # The output devices (e.g. a wired strobe) a response activates —
+        # Response → Automated Alarm Actions → Output devices. SET replaces
+        # the whole list.
+        method="POST",
+        subdomain="vagent",
+        path="response/config/update",
+        payload={
+            "siteId": "<site_id>",
+            "responseConfigId": "<alarm_response_id>",
+            "updateType": "CONFIG_UPDATE_TYPE_SET_OUTPUT_DEVICES",
+            "setOutputDevicesInput": {"deviceIds": ["<wired_output_id>"]},
+        },
+        response={
+            "responseConfig": {"id": "<alarm_response_id>"},
+            "outputDevices": [
+                {"responseConfigId": "<alarm_response_id>", "deviceId": "<wired_output_id>"}
+            ],
         },
     ),
     "alarm.site.delete": Endpoint(

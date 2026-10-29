@@ -58,14 +58,13 @@ from constants import (
     AS_KEYPAD_NAME,
     AS_PANEL_NAME,
     AS_SITE_NAME,
-    AS_STROBE_OUTPUT_NAME,
-    AS_STROBE_OUTPUT_PIN,
     BORDER,
     CARD_PADDING,
     ERROR,
     ESS_ACCESS_STATION_PRO_DOOR_NAME,
     ESS_ACCESS_STATION_PRO_NAME,
     ESS_ADDRESS,
+    ESS_AF64_ACCESS_LEVEL_NAME,
     ESS_ALARM_ADDRESS,
     ESS_BUILDING_NAME,
     ESS_CAMERA_NAME,
@@ -76,9 +75,12 @@ from constants import (
     FIELD_SPACING,
     HQ_TIMEZONE,
     LICENSE_PLATE_FIELD,
+    PARTICIPANTS_GROUP_NAME,
     PRIMARY,
     ROLE_PROPAGATION_SECONDS,
     SECONDARY,
+    STROBE_OUTPUT_NAME,
+    STROBE_OUTPUT_PIN,
     TEMPLATE_DISPLAY_NAMES,
     TEMPLATE_FIELDS,
     TEXT_PRIMARY,
@@ -744,6 +746,7 @@ class CommissionView(ToolView):
                 [camera_id],
             )
 
+        alarm_response_id = None
         if site_id:
             alarm_response_id = await step(
                 "Creating Alarm Site",
@@ -782,6 +785,9 @@ class CommissionView(ToolView):
                     ESS_PANEL_NAME,
                     alarm_system_id,
                 )
+                await self._add_strobe(
+                    step, client, alarm_system_id, panel_id, site_id, alarm_response_id
+                )
 
         if access_station_pro_id and site_id:
             access_station_pro_controller_id = await step(
@@ -796,13 +802,29 @@ class CommissionView(ToolView):
             # No separate face-unlock step: the Access Station Pro door is
             # created with face-unlock-enabled (as the Command web app does).
             if access_station_pro_controller_id:
-                _ = await step(
+                door_id = await step(
                     "Creating Door",
                     client.create_access_station_pro_door,
                     access_station_pro_controller_id,
                     ESS_ACCESS_STATION_PRO_DOOR_NAME,
                     floor_id,
                 )
+                if door_id:
+                    # Granted to the participants access group when it
+                    # already exists; the Users tool attaches it otherwise.
+                    group_id = await step(
+                        f"Looking up access group '{PARTICIPANTS_GROUP_NAME}'",
+                        client.find_access_group_id,
+                        PARTICIPANTS_GROUP_NAME,
+                    )
+                    _ = await step(
+                        "Creating Access Level",
+                        client.create_access_level,
+                        door_id,
+                        ESS_AF64_ACCESS_LEVEL_NAME,
+                        site_id,
+                        group_id or "",
+                    )
 
     async def _run_acsl_flow(self, step, page, client) -> None:
         access_station_pro_serial = self._device_serial("Access Station Pro")
@@ -1139,6 +1161,7 @@ class CommissionView(ToolView):
                 [dome_id],
             )
 
+        alarm_response_id = None
         if site_id:
             alarm_response_id = await step(
                 "Creating Alarm Site",
@@ -1183,13 +1206,8 @@ class CommissionView(ToolView):
                     keypad_serial,
                 )
 
-                _ = await step(
-                    "Configuring Wired Strobe",
-                    client.create_wired_output,
-                    AS_STROBE_OUTPUT_NAME,
-                    alarm_system_id,
-                    panel_id,
-                    AS_STROBE_OUTPUT_PIN
+                await self._add_strobe(
+                    step, client, alarm_system_id, panel_id, site_id, alarm_response_id
                 )
 
                 _ = await step(
@@ -1201,6 +1219,28 @@ class CommissionView(ToolView):
     # ------------------------------------------------------------------
     # Supporting steps
     # ------------------------------------------------------------------
+
+    async def _add_strobe(
+        self, step, client, alarm_system_id, panel_id, site_id, response_config_id
+    ) -> None:
+        """Strobe on the panel's Output 1, activated by the Default Response
+        (Response → Automated Alarm Actions → Output devices)."""
+        strobe_id = await step(
+            "Configuring Wired Strobe",
+            client.create_wired_output,
+            STROBE_OUTPUT_NAME,
+            alarm_system_id,
+            panel_id,
+            STROBE_OUTPUT_PIN,
+        )
+        if strobe_id and response_config_id:
+            _ = await step(
+                "Linking Strobe to Default Response",
+                client.set_alarm_response_outputs,
+                site_id,
+                response_config_id,
+                [strobe_id],
+            )
 
     async def _invite_supporting_users(self, step, page, client, role: str) -> None:
         """Invite every complete supporting-user row (validated on Review),

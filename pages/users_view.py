@@ -42,11 +42,14 @@ from constants import (
     BORDER,
     CARD_PADDING,
     ERROR,
+    ESS_AF64_ACCESS_LEVEL_NAME,
     FIELD_SPACING,
     PARTICIPANTS_GROUP_NAME,
     PRIMARY,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
+    VSS_ACCESS_GROUP_NAME,
+    VSS_ACCESS_LEVEL_NAME,
     WARNING,
     load_internal_invite_defaults,
 )
@@ -730,23 +733,35 @@ class UsersView(ToolView):
     ) -> None:
         """
         Put the run's participants (invited now or already in the org) in
-        both 'All Participants' groups (PARTICIPANTS_GROUP_NAME): the Command group and the
-        access group. Each group is found by name and created only the first
-        time, and only people not yet in it are added, so re-runs collect
-        into the same two groups.
+        the 'All Participants' groups (PARTICIPANTS_GROUP_NAME): the Command
+        group and the access group. Each is found by name and created only
+        the first time, and only people not yet in it are added, so re-runs
+        collect into the same groups.
+
+        When the org has the VSSL 'VCE Access Group', participants join it
+        too. The access levels the templates create are then granted to
+        their group: '[DO NOT TOUCH] AF64' (ESS) to 'All Participants' and
+        'VCE Access Level' (VSSL) to 'VCE Access Group', when the level
+        exists and lacks the group.
 
         Access groups need an access admin role. Roles the user lacks are
         granted for this step and revoked right after it; roles the user
         already held are left alone.
         """
-        await self._sync_group(
+        name = PARTICIPANTS_GROUP_NAME
+        ok, group = await self._progress_step(
             page,
-            "group",
+            f"Looking up group '{name}'",
+            f"Looked up group '{name}'",
+            "Failed: group lookup",
             client.find_group,
-            client.create_group,
-            client.add_users_to_group,
-            user_ids,
+            name,
         )
+        if ok:
+            await self._sync_group(
+                page, "group", name, group, client.create_group,
+                client.add_users_to_group, user_ids,
+            )
 
         ok, held = await self._progress_step(
             page,
@@ -769,14 +784,7 @@ class UsersView(ToolView):
                     missing,
                 )
             if ok:
-                await self._sync_group(
-                    page,
-                    "access group",
-                    client.find_access_group,
-                    client.create_access_group,
-                    client.add_users_to_access_group,
-                    user_ids,
-                )
+                await self._sync_access_groups(page, client, user_ids)
         finally:
             if missing:
                 await self._progress_step(
@@ -788,23 +796,81 @@ class UsersView(ToolView):
                     missing,
                 )
 
-    async def _sync_group(
-        self, page, kind: str, find, create, add, user_ids: list[str]
-    ) -> bool:
-        """Find or create the participants group of this kind (by name),
-        then add the user_ids not in it yet (one call). True on success."""
-        name = PARTICIPANTS_GROUP_NAME
-        ok, group = await self._progress_step(
+    async def _sync_access_groups(self, page, client, user_ids: list[str]) -> None:
+        """The access-group part of _add_to_participant_groups: one lookup
+        for both groups, one for both access levels."""
+        ok, groups = await self._progress_step(
             page,
-            f"Looking up {kind} '{name}'",
-            f"Looked up {kind} '{name}'",
-            f"Failed: {kind} lookup",
-            find,
-            name,
+            "Looking up access groups",
+            "Looked up access groups",
+            "Failed: access group lookup",
+            client.find_access_groups,
+            [PARTICIPANTS_GROUP_NAME, VSS_ACCESS_GROUP_NAME],
         )
         if not ok:
-            return False
+            return
+        group_ids = {
+            PARTICIPANTS_GROUP_NAME: await self._sync_group(
+                page, "access group", PARTICIPANTS_GROUP_NAME,
+                groups.get(PARTICIPANTS_GROUP_NAME), client.create_access_group,
+                client.add_users_to_access_group, user_ids,
+            ),
+        }
+        if VSS_ACCESS_GROUP_NAME in groups:  # VSSL org: never created here
+            group_ids[VSS_ACCESS_GROUP_NAME] = await self._sync_group(
+                page, "access group", VSS_ACCESS_GROUP_NAME,
+                groups[VSS_ACCESS_GROUP_NAME], None,
+                client.add_users_to_access_group, user_ids,
+            )
+
+        pairs = {  # access level -> the group it should be granted to
+            ESS_AF64_ACCESS_LEVEL_NAME: group_ids.get(PARTICIPANTS_GROUP_NAME),
+            VSS_ACCESS_LEVEL_NAME: group_ids.get(VSS_ACCESS_GROUP_NAME),
+        }
+        pairs = {level: gid for level, gid in pairs.items() if gid}
+        if not pairs:
+            return
+        ok, levels = await self._progress_step(
+            page,
+            "Looking up access levels",
+            "Looked up access levels",
+            "Failed: access level lookup",
+            client.find_access_levels,
+            list(pairs),
+        )
+        if not ok:
+            return
+        group_names = {gid: n for n, gid in group_ids.items()}
+        for level_name, group_id in pairs.items():
+            level = levels.get(level_name)
+            if level is None:
+                continue  # that template's level isn't in this org
+            group_name = group_names[group_id]
+            if group_id in (level.get("userGroups") or []):
+                row = StepRow(level_name)
+                row.succeed(f"Access level '{level_name}' already grants '{group_name}'")
+                self._invite_progress.controls.append(row)
+                page.update()
+                continue
+            await self._progress_step(
+                page,
+                f"Granting access level '{level_name}' to '{group_name}'",
+                f"Granted access level '{level_name}' to '{group_name}'",
+                f"Failed: granting access level '{level_name}'",
+                client.add_groups_to_access_level,
+                level,
+                [group_id],
+            )
+
+    async def _sync_group(
+        self, page, kind: str, name: str, group, create, add, user_ids: list[str]
+    ) -> str | None:
+        """Create the group (`group` is None and `create` is given), then add
+        the user_ids not in it yet (one call). Returns its id, or None when
+        it doesn't exist or couldn't be created."""
         if group is None:
+            if create is None:
+                return None
             ok, group_id = await self._progress_step(
                 page,
                 f"Creating {kind} '{name}'",
@@ -814,7 +880,7 @@ class UsersView(ToolView):
                 name,
             )
             if not ok:
-                return False
+                return None
             group = {"id": group_id, "member_ids": set()}
 
         to_add = [
@@ -830,11 +896,11 @@ class UsersView(ToolView):
             )
             self._invite_progress.controls.append(row)
             page.update()
-            return True
+            return group["id"]
 
         count = len(to_add)
         plural = "" if count == 1 else "s"
-        ok, _ = await self._progress_step(
+        await self._progress_step(
             page,
             f"Adding {count} user{plural} to {kind} '{name}'",
             f"Added {count} user{plural} to {kind} '{name}'",
@@ -843,7 +909,7 @@ class UsersView(ToolView):
             to_add,
             group["id"],
         )
-        return ok
+        return group["id"]
 
     def _on_copy_invited(self, e):
         """Copy the successfully-invited participants to the clipboard as a

@@ -95,6 +95,8 @@ ESS_CAMERA_NAME = "HQ CD62"
 ESS_PANEL_NAME = "HQ Alarm Panel"
 ESS_ACCESS_STATION_PRO_NAME = "HQ AF64"
 ESS_ACCESS_STATION_PRO_DOOR_NAME = "HQ Door"
+# Access level on the AF64 door, granted to the participants access group.
+ESS_AF64_ACCESS_LEVEL_NAME = "[DO NOT TOUCH] AF64"
 ESS_BUILDING_NAME = "HQ"
 ESS_FLOORS = ["G"]
 ESS_ADDRESS = (
@@ -166,9 +168,6 @@ AS_ACCESS_LEVEL_NAME = "HQ 24/7 Access"
 AS_INSTRUCTOR_KEYCODE_NAME = "VCE Instructor Keycode"
 AS_INSTRUCTOR_KEYCODE = "123456"
 AS_BUILDING_NAME = "HQ"
-AS_STROBE_OUTPUT_NAME = "Strobe Light"
-# pinNum is 0-based: 0 is the panel's "Output 1" in Command.
-AS_STROBE_OUTPUT_PIN = 0
 AS_FLOORS = ["G"]
 AS_ADDRESS = (
     "406 E 3rd Ave, San Mateo, CA 94401, USA",
@@ -185,6 +184,11 @@ AS_ALARM_ADDRESS = (
     "America/Los_Angeles",
     "94401",
 )
+
+# Strobe on the alarm panel (ESS, AS), activated by the Default Response.
+STROBE_OUTPUT_NAME = "Strobe Light"
+# pinNum is 0-based: 0 is the panel's "Output 1" in Command.
+STROBE_OUTPUT_PIN = 0
 
 # USER INVITE Constants
 # Name of both the Command group and the access group the Users tool

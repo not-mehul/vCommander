@@ -54,6 +54,9 @@ v3.5
 - (Bug fix) Persons of Interest are deleted before Cameras (Command refuses the delete once the org has no cameras)
 - (Bug fix) API key secrets are no longer written to the API call log
 - (Bug fix) Strobe Light is on the panel's Output 1
+- (New feature) ESS and AS add the Strobe Light (Output 1) to the Default Response's output devices; ESS now creates the strobe too
+- (New feature) ESS creates the '[DO NOT TOUCH] AF64' access level on HQ Door, granted to 'All Participants' when that access group exists (the Invite Tool grants it otherwise)
+- (New feature) Invite Tool also adds participants to 'VCE Access Group' when the org has it (VSSL), and makes sure 'VCE Access Level' and '[DO NOT TOUCH] AF64' grant their group
 - (Bug fix) Removed a fixed 3-second wait after creating a building
 
 --- NEWS ---

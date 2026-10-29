@@ -160,17 +160,23 @@ def test_invite_progress_reaches_the_total(page, monkeypatch):
 
 
 class GroupOrg:
-    """Fake org for the participant groups: users, both groups, roles."""
+    """Fake org for the participant groups: users, groups, access levels,
+    roles."""
 
     def __init__(self, existing=(), command_members=None, access_members=None,
-                 roles=(), fail=()):
+                 roles=(), fail=(), access_groups=None, levels=None):
         self.existing = dict(existing)  # email -> user id
-        self.groups = {}  # kind -> {"id", "member_ids"}
+        self.command = None
         if command_members is not None:
-            self.groups["command"] = {"id": "g1", "member_ids": set(command_members)}
+            self.command = {"id": "g1", "member_ids": set(command_members)}
+        # access group name -> {"id", "member_ids"}
+        self.access = {n: {"id": g["id"], "member_ids": set(g["member_ids"])}
+                       for n, g in (access_groups or {}).items()}
         if access_members is not None:
-            self.groups["access"] = {"id": "ag1", "member_ids": set(access_members)}
+            self.access[uv.PARTICIPANTS_GROUP_NAME] = {"id": "ag1", "member_ids": set(access_members)}
+        self.levels = {n: dict(level) for n, level in (levels or {}).items()}
         self.roles, self.fail, self.calls, self.invited = set(roles), set(fail), [], []
+        self.level_lookups = 0
 
     def _maybe_fail(self, name):
         if name in self.fail:
@@ -183,41 +189,48 @@ class GroupOrg:
         self.invited.append(email)
         return {"user_id": f"id-{email}"}
 
-    def _find(self, kind):
-        group = self.groups.get(kind)
-        return None if group is None else {"id": group["id"], "member_ids": set(group["member_ids"])}
-
-    def _create(self, kind, name):
-        self.calls.append(f"create_{kind}")
-        self.groups[kind] = {"id": f"new-{kind}", "member_ids": set()}
-        return f"new-{kind}"
-
-    def _add(self, kind, user_ids, group_id):
-        self._maybe_fail(f"add_{kind}")
-        assert group_id == self.groups[kind]["id"]
-        self.calls.append(f"add_{kind}:{sorted(user_ids)}")
-        self.groups[kind]["member_ids"] |= set(user_ids)
-
     def find_group(self, name):
         assert name == uv.PARTICIPANTS_GROUP_NAME
-        return self._find("command")
-
-    def find_access_group(self, name):
-        assert "access_admin" in "".join(self.calls[-1:]) or self.roles, "needs a role"
-        self._maybe_fail("find_access_group")
-        return self._find("access")
+        g = self.command
+        return None if g is None else {"id": g["id"], "member_ids": set(g["member_ids"])}
 
     def create_group(self, name):
-        return self._create("command", name)
-
-    def create_access_group(self, name):
-        return self._create("access", name)
+        self.calls.append("create_command")
+        self.command = {"id": "new-command", "member_ids": set()}
+        return "new-command"
 
     def add_users_to_group(self, user_ids, group_id):
-        self._add("command", user_ids, group_id)
+        self._maybe_fail("add_command")
+        assert group_id == self.command["id"]
+        self.calls.append(f"add_command:{sorted(user_ids)}")
+        self.command["member_ids"] |= set(user_ids)
+
+    def find_access_groups(self, names):
+        assert self.roles or any(c.startswith("access_admin_on") for c in self.calls), "needs a role"
+        self._maybe_fail("find_access_group")
+        return {n: {"id": g["id"], "member_ids": set(g["member_ids"])}
+                for n, g in self.access.items() if n in names}
+
+    def create_access_group(self, name):
+        self.calls.append("create_access")
+        self.access[name] = {"id": "new-access", "member_ids": set()}
+        return "new-access"
 
     def add_users_to_access_group(self, user_ids, group_id):
-        self._add("access", user_ids, group_id)
+        self._maybe_fail("add_access")
+        name = next(n for n, g in self.access.items() if g["id"] == group_id)
+        label = "access" if name == uv.PARTICIPANTS_GROUP_NAME else name
+        self.calls.append(f"add_{label}:{sorted(user_ids)}")
+        self.access[name]["member_ids"] |= set(user_ids)
+
+    def find_access_levels(self, names):
+        self.level_lookups += 1
+        return {n: dict(level) for n, level in self.levels.items() if n in names}
+
+    def add_groups_to_access_level(self, level, group_ids):
+        self.calls.append(f"grant_level:{level['name']}:{group_ids}")
+        self.levels[level["name"]]["userGroups"] = list(level["userGroups"]) + list(group_ids)
+        return group_ids
 
     def get_org_role_keys(self):
         return set(self.roles)
@@ -314,3 +327,50 @@ def test_a_participant_listed_twice_is_invited_once(page, monkeypatch):
     assert view._invite_header.label == "2 / 2"
     assert any(t.startswith("Listed twice:") for t in texts)
     assert org.calls[1] == "add_command:['id-a@x.com', 'id-b@x.com']"
+
+
+_ROLES = {"ACCESS_CONTROL_SYSTEM_ADMIN", "ACCESS_CONTROL_USER_ADMIN"}
+_VCE = uv.VSS_ACCESS_GROUP_NAME
+
+
+def test_participants_also_join_an_existing_vce_access_group(page, monkeypatch):
+    org = GroupOrg(
+        existing={"a@x.com": "id-a"},
+        roles=_ROLES,
+        access_groups={_VCE: {"id": "vce", "member_ids": {"id-a", "trainer"}}},
+    )
+    _invite(page, monkeypatch, org, "a@x.com", "b@x.com")
+    assert "add_VCE Access Group:['id-b@x.com']" in org.calls  # only who's missing
+    assert org.access[_VCE]["member_ids"] == {"id-a", "id-b@x.com", "trainer"}
+
+
+def test_no_vce_access_group_is_created_outside_vssl(page, monkeypatch):
+    org = GroupOrg(roles=_ROLES)
+    _invite(page, monkeypatch, org, "a@x.com")
+    assert _VCE not in org.access
+
+
+def test_template_access_levels_are_granted_to_their_groups_once(page, monkeypatch):
+    levels = {
+        "[DO NOT TOUCH] AF64": {"name": "[DO NOT TOUCH] AF64", "scheduleId": "l1", "userGroups": []},
+        "VCE Access Level": {"name": "VCE Access Level", "scheduleId": "l2", "userGroups": []},
+    }
+    org = GroupOrg(
+        roles=_ROLES,
+        access_groups={_VCE: {"id": "vce", "member_ids": set()}},
+        levels=levels,
+    )
+    _invite(page, monkeypatch, org, "a@x.com")
+    assert "grant_level:[DO NOT TOUCH] AF64:['new-access']" in org.calls
+    assert "grant_level:VCE Access Level:['vce']" in org.calls
+    org.calls.clear()
+    _, texts = _invite(page, monkeypatch, org, "a@x.com")  # re-run: nothing to grant
+    assert not [c for c in org.calls if c.startswith("grant_level")]
+    assert "Access level 'VCE Access Level' already grants 'VCE Access Group'" in texts
+
+
+def test_no_level_lookup_when_no_template_group_exists(page, monkeypatch):
+    org = GroupOrg(roles=_ROLES, fail={"create_access"})
+    org.create_access_group = lambda name: (_ for _ in ()).throw(ConnectionError("no"))
+    _invite(page, monkeypatch, org, "a@x.com")
+    assert org.level_lookups == 0

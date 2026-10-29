@@ -792,3 +792,57 @@ def test_a_camera_403_means_none_only_when_the_org_has_no_sites(sites, expect_er
             client.get_camera()
     else:
         assert client.get_camera() == []
+
+
+def test_add_groups_to_access_level_sends_the_level_back_with_the_new_group():
+    client = _client()
+    sent = []
+    client._request = lambda key, **kw: (sent.append((key, kw)) or ({}, 200))
+    level = {
+        "scheduleId": "l1", "name": "VCE Access Level", "type": "USER",
+        "userGroups": ["g1"], "events": [{"weekday": 1}], "doors": ["d1"], "siteCount": 1,
+    }
+    assert client.add_groups_to_access_level(level, ["g1", "g2", "g2"]) == ["g2"]
+    key, kw = sent[0]
+    assert key == "access_level.update" and kw["path_params"] == {"schedule_id": "l1"}
+    body = kw["json"]
+    assert body["userGroups"] == ["g1", "g2"]
+    assert body["doors"] == body["sites"] == {"add": [], "remove": []}
+    assert "events" not in body and body["name"] == "VCE Access Level"
+    assert client.add_groups_to_access_level({**level, "userGroups": ["g2"]}, ["g2"]) == []
+    assert len(sent) == 1  # nothing to add, no call
+
+
+def test_find_access_levels_matches_live_user_levels_by_name():
+    client = _client()
+    client._request = _fake_request({"access_level.list": {"schedules": [
+        {"name": "A", "type": "DOOR", "scheduleId": "door"},
+        {"name": "A", "type": "USER", "deleted": True, "scheduleId": "gone"},
+        {"name": "A", "type": "USER", "scheduleId": "a"},
+        {"name": "B", "type": "USER", "scheduleId": "b"},
+    ]}})
+    assert {n: v["scheduleId"] for n, v in client.find_access_levels(["A", "C"]).items()} == {"A": "a"}
+
+
+def test_find_access_group_id_is_none_without_permission():
+    from apis.internal_api import APIError
+
+    client = _client()
+
+    def refuse(*a, **k):
+        raise APIError("Insufficient permissions", status_code=403)
+
+    client._request = refuse
+    assert client.find_access_group_id("All Participants") is None
+
+
+def test_set_alarm_response_outputs_body():
+    client = _client()
+    sent = []
+    client._request = lambda key, **kw: (sent.append((key, kw["json"])) or ({}, 200))
+    client.set_alarm_response_outputs("s1", "rc1", ["strobe"])
+    assert sent == [("alarm.response.set_outputs", {
+        "siteId": "s1", "responseConfigId": "rc1",
+        "updateType": "CONFIG_UPDATE_TYPE_SET_OUTPUT_DEVICES",
+        "setOutputDevicesInput": {"deviceIds": ["strobe"]},
+    })]
