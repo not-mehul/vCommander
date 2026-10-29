@@ -3,6 +3,32 @@
 Results of running vCommander against a real test org with the scripts in
 `tools/live/`. Newest first.
 
+## 2026-10-29 (part 2) — Template fixes: strobe response, AF64 level, VCE group, ACSE reset
+
+Org left clean afterwards (only the owner's two accounts, no access roles).
+
+### Newly recorded (web app → vCommander)
+
+| Action | Call | Used by |
+|---|---|---|
+| Response → Automated Alarm Actions → Output devices → toggle the strobe | `vagent response/config/update`, `updateType: CONFIG_UPDATE_TYPE_SET_OUTPUT_DEVICES`, `setOutputDevicesInput.deviceIds` (replaces the list) | `alarm.response.set_outputs` |
+| Access level → Add Groups → Save → Confirm | `PATCH vcerberus access/v2/user/schedules/{id}`: the level as listed (no events), full `userGroups`, doors/sites as `{add, remove}` | `access_level.update` |
+| User → Roles → Manage (Organization / User Management / Site roles) | `vprovision org/set_user_permissions` grant/revoke `{entityId, permission}`: org and user-management roles on the org id, site roles (`SITE_ADMIN`, `SITE_VIEWER`, …) on the site id. The user list (`includeRoleGrants`) returns every user's direct grants; inherited roles ("Inherited from Org Admin") are not grants | ACSE reset |
+
+### Changes and live results
+
+| Change | Live result |
+|---|---|
+| ESS and AS put the Strobe Light (Output 1) in the Default Response's output devices; ESS now creates the strobe | AS 24/24 steps, ESS 21/22 (guest trial, known); the response lists the created strobe, and the web app shows it ticked |
+| ESS creates "[DO NOT TOUCH] AF64" on HQ Door, granted to "All Participants" when that access group exists | Created with HQ Door; the group didn't exist yet, and the next invite run granted it; the re-run found it already granted |
+| Invite Tool: participants also join "VCE Access Group" when it exists; "VCE Access Level" and "[DO NOT TOUCH] AF64" are granted to their group if they lack it | VSSL: 3 participants added to VCE Access Group (now 4 with the trainer); VCE Access Level already granted it |
+| ACSE: "Remove existing user permissions (keeps Org Admin)", on by default, runs before anything else | A non-admin test user with Access System Admin, Command User Viewer, Access Credential Manager and Site Admin on HQ: all 4 removed in one call; the user stayed in the org and the web app shows None in all three sections. Org Admins were untouched |
+
+**Note:** "ACSL: add strobe to the response" was taken to mean AS (the
+Alarms Specialist lab); ACSL has no alarm panel or response.
+The live script limits ACSE's reset to "VC Test" users, so the org's real
+users are never changed by a test run.
+
 ## 2026-10-29 — Access roles, participant groups, stress and edge-case tests
 
 The org was left clean: no sites, devices, API keys or test users, Global
