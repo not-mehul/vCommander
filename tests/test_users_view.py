@@ -305,3 +305,12 @@ def test_a_failed_command_group_add_does_not_block_the_access_group(page, monkey
     org = GroupOrg(fail={"add_command"})
     _invite(page, monkeypatch, org, "a@x.com")
     assert "add_access:['id-a@x.com']" in org.calls
+
+
+def test_a_participant_listed_twice_is_invited_once(page, monkeypatch):
+    org = GroupOrg()
+    view, texts = _invite(page, monkeypatch, org, "a@x.com", "A@X.com ", "b@x.com")
+    assert sorted(org.invited) == ["a@x.com", "b@x.com"]
+    assert view._invite_header.label == "2 / 2"
+    assert any(t.startswith("Listed twice:") for t in texts)
+    assert org.calls[1] == "add_command:['id-a@x.com', 'id-b@x.com']"

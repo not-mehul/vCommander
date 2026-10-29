@@ -81,6 +81,8 @@ class FakeOrg:
 
     def delete_users(self, user_ids):
         self.calls.append(f"delete_users:{len(user_ids)}")
+        if self.fail_ids & set(user_ids):  # one bad id fails the whole call
+            raise ConnectionError("refused")
         for user_id in user_ids:
             self._delete("Command Users", user_id)
 
@@ -381,3 +383,42 @@ def test_intercom_cameras_are_not_listed_twice(make, page):
     # Cameras are listed after Intercoms so the dedup serials are known.
     order = org.listed_while_caching
     assert order.index("Cameras") > order.index("Intercoms")
+
+
+def test_large_user_batches_are_split_into_calls_of_batch_size(make, page, monkeypatch):
+    monkeypatch.setattr(dv, "BATCH_DELETE_SIZE", 3)
+    view, org = make({"Command Users": _items("u", 7)})
+    _scan(view, page)
+    _delete(view, page)
+    assert [c for c in org.calls if c.startswith("delete_users")] == [
+        "delete_users:3", "delete_users:3", "delete_users:1",
+    ]
+    assert org.store["Command Users"] == []
+
+
+def test_a_failed_batch_is_retried_one_at_a_time(make, page, monkeypatch):
+    view, org = make({"Command Users": _items("u", 4)}, fail_ids={"u2"})
+    _scan(view, page)
+    _delete(view, page)
+    calls = [c for c in org.calls if c.startswith("delete_users")]
+    assert calls[0] == "delete_users:4" and calls[1:] == ["delete_users:1"] * 4
+    assert [i["id"] for i in org.store["Command Users"]] == ["u2"]
+    row = view._category_rows["Command Users"]
+    assert (row["success"], row["failed"]) == (3, 1)
+
+
+def test_cancelling_a_scan_stops_before_cameras_and_releases(make, page):
+    view, org = make({"Cameras": _items("cam", 2), "Sites": _items("s", 1)})
+    original = org._list
+
+    def list_then_cancel(category):
+        if category == "Sites":
+            session.cancel_run()
+        return original(category)
+
+    org._list = list_then_cancel
+    _scan(view, page)
+    assert view._state == dv.SCAN
+    assert "Cameras" not in org.listed_while_caching
+    assert not org.caching
+    assert org.calls[-2:] == ["gsa_off", _ROLES_OFF]

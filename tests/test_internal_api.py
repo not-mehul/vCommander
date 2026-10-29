@@ -617,3 +617,135 @@ def test_read_cache_sends_identical_reads_once_and_never_caches_writes():
     assert len(sent) == 3
     client._request("alarm.sites.list", json={"siteIds": []}, error_context="x")
     assert len(sent) == 4  # no caching outside the block
+
+
+def test_read_cache_shares_one_request_between_many_threads():
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    client = _client()
+    sent, lock = [], threading.Lock()
+
+    def send(endpoint, url, json, *rest):
+        with lock:
+            sent.append(url)
+        time.sleep(0.05)  # every thread arrives while the first is in flight
+        return {"sites": [1, 2]}, 200
+
+    client._send = send
+    with client.read_cache(), ThreadPoolExecutor(max_workers=32) as pool:
+        results = list(
+            pool.map(
+                lambda _: client._request("alarm.sites.list", json={}, error_context="x"),
+                range(64),
+            )
+        )
+    assert len(sent) == 1
+    assert all(r == ({"sites": [1, 2]}, 200) for r in results)
+    assert len({id(r[0]) for r in results}) == 64  # each caller gets its own copy
+
+
+def test_read_cache_does_not_keep_a_failed_read():
+    client = _client()
+    outcomes = [ConnectionError("blip"), ({"ok": True}, 200)]
+
+    def send(*args):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    client._send = send
+    with client.read_cache():
+        with pytest.raises(ConnectionError):
+            client._request("alarm.sites.list", json={}, error_context="x")
+        assert client._request("alarm.sites.list", json={}, error_context="x") == (
+            {"ok": True},
+            200,
+        )
+
+
+def test_read_cache_releases_waiters_on_a_base_exception():
+    client = _client()
+
+    def send(*args):
+        raise KeyboardInterrupt
+
+    client._send = send
+    with client.read_cache():
+        with pytest.raises(KeyboardInterrupt):
+            client._request("alarm.sites.list", json={}, error_context="x")
+        assert client._read_cache == {}  # nothing left for a waiter to block on
+
+
+def test_read_cache_keys_on_the_payload():
+    client = _client()
+    sent = []
+    client._send = lambda endpoint, url, json, *rest: (sent.append(json) or {}, 200)
+    with client.read_cache():
+        client._request("alarm.sites.list", json={"a": 1, "b": 2}, error_context="x")
+        client._request("alarm.sites.list", json={"b": 2, "a": 1}, error_context="x")
+        client._request("alarm.sites.list", json={"a": 2}, error_context="x")
+    assert len(sent) == 2  # key order doesn't matter; values do
+
+
+def test_add_devices_reports_each_serial_and_matches_dashes_and_case():
+    client = _client()
+
+    def request(endpoint_key, json=None, **kwargs):
+        return {
+            "successfulDevices": [{"serialNumber": "AAAABBBBCCCC", "deviceId": "d1"}],
+            "failedSerials": [{"serialNumber": "dddd-eeee-ffff", "reason": "claimed elsewhere"}],
+        }, 200
+
+    client._request = request
+    out = client.add_devices(
+        [("Cam", "aaaa-bbbb-cccc"), ("Bad", "DDDD-EEEE-FFFF"), ("Gone", "1111-2222-3333")]
+    )
+    assert out["AAAABBBBCCCC"] == "d1"
+    assert "claimed elsewhere" in str(out["DDDDEEEEFFFF"])
+    assert "missing from the response" in str(out["111122223333"])
+
+
+def test_find_group_matches_by_name_and_skips_managed_groups():
+    client = _client()
+    client._request = _fake_request(
+        {
+            "group.list": {
+                "securityEntityGroup": [
+                    {"entityGroupId": "m", "name": "All Participants", "verkadaManaged": True},
+                    {"entityGroupId": "g", "name": "All Participants", "memberIds": ["u1"]},
+                ]
+            }
+        }
+    )
+    assert client.find_group("All Participants") == {"id": "g", "member_ids": {"u1"}}
+    assert client.find_group("Other") is None
+
+
+def test_find_access_group_reads_members():
+    client = _client()
+    client._request = _fake_request(
+        {
+            "access_group.list": {
+                "children": {
+                    "a1": {"name": "VCE Access Group", "users": [{"userId": "x"}]},
+                    "a2": {"name": "All Participants", "users": [{"userId": "u1"}, {}]},
+                    "a3": None,
+                }
+            }
+        }
+    )
+    assert client.find_access_group("All Participants") == {"id": "a2", "member_ids": {"u1"}}
+    assert client.find_access_group("Missing") is None
+
+
+def test_user_ids_by_email_is_case_insensitive_and_skips_missing_emails():
+    client = _client()
+    client.get_user = lambda: [
+        {"id": "1", "email": "Ada@X.com"},
+        {"id": "2", "email": None},
+        {"id": "3", "email": ""},
+    ]
+    assert client.get_user_ids_by_email() == {"ada@x.com": "1"}

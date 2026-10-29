@@ -57,8 +57,8 @@ def view(page, monkeypatch):
 def _fill(view, page, template):
     view.template_dropdown.value = template
     view._on_template_change(Event(page))
-    for name, field in view._device_fields.items():
-        field.value = "PLATE1" if name == "License Plate" else "AAAA-BBBB-CCCC"
+    for i, (name, field) in enumerate(view._device_fields.items()):
+        field.value = "PLATE1" if name == "License Plate" else f"AAAA-BBBB-CCC{i}"
 
 
 def _run(view, page, client, monkeypatch, template="AS"):
@@ -255,3 +255,21 @@ def test_supporting_users_already_in_the_org_are_not_reinvited(view, page, monke
     assert invited == ["alan@x.com"]
     assert "[ok]   Adding user Ada Lovelace" in view._run_log
     assert view._failures == []
+
+
+def test_the_same_serial_in_two_fields_blocks_review(view, page, monkeypatch):
+    toasts = []
+    monkeypatch.setattr(cv, "show_toast", lambda page, msg, **kw: toasts.append(msg))
+    _fill(view, page, "VSSE")
+    first, second = list(view._device_fields)[:2]
+    view._device_fields[second].value = view._device_fields[first].value
+    view._on_review(Event(page))
+    assert view._stepper._current == 0
+    assert toasts == [f"{first} and {second} have the same serial number."]
+
+
+def test_a_supporting_user_listed_twice_is_invited_once(view, page):
+    _fill(view, page, "ACSE")
+    _add_user(view, page, "Ada", "Lovelace", "ada@x.com")
+    _add_user(view, page, "Ada", "L", "ADA@x.com")
+    assert view._collect_supporting_users() == [("Ada", "Lovelace", "ada@x.com")]

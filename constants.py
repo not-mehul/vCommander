@@ -551,6 +551,9 @@ SEQUENTIAL_DELETE_CATEGORIES = frozenset(
 
 # Categories deleted many-at-once by one internal call taking a list of ids
 # (as the Command web app does): category -> client method.
+# Ids per batch delete call (Command users, persons of interest).
+BATCH_DELETE_SIZE = 100
+
 _BATCH_DELETERS = {
     "Command Users": "delete_users",
     "Persons of Interest": "delete_persons_of_interest",

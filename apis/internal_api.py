@@ -578,7 +578,11 @@ class VerkadaInternalAPIClient:
                         self._send(endpoint, url, json, error_context, endpoint_key,
                                    formatted_path, log_request, log_response, auto_log)
                     )
-                except Exception as ex:  # noqa: BLE001 — re-raised for every caller
+                except BaseException as ex:  # re-raised for every waiting caller
+                    # A failure is not kept: later callers send the read again.
+                    with self._read_cache_lock:
+                        if cache.get(key) is future:
+                            del cache[key]
                     future.set_exception(ex)
             data, status = future.result()
             return copy.deepcopy(data), status
@@ -1103,7 +1107,7 @@ class VerkadaInternalAPIClient:
             },
             mapping_func=lambda x: {
                 "id": x["userId"],
-                "email": x["email"],
+                "email": x.get("email"),
                 "first_name": x.get("firstName"),
                 "last_name": x.get("lastName"),
                 "is_org_admin": x.get("isOrganizationAdmin", False),

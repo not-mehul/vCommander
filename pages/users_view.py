@@ -550,11 +550,22 @@ class UsersView(ToolView):
 
         # Participants with an email, in list order (rows without one are
         # skipped, as before). Collected first so progress has a total.
-        people = []
+        # A repeated email (any case; a guest who signed in twice) is one
+        # person: invited once, the repeats listed as skipped.
+        people, emails, repeats = [], set(), []
         for row in self._participants_column.controls:
             fields = [c for c in row.controls if isinstance(c, ft.TextField)]
             if len(fields) == 3 and _strip(fields[2].value):
-                people.append(tuple(_strip(f.value) for f in fields))
+                person = tuple(_strip(f.value) for f in fields)
+                if person[2].lower() in emails:
+                    repeats.append(person)
+                    continue
+                emails.add(person[2].lower())
+                people.append(person)
+        for first, last, email_val in repeats:
+            row = StepRow(email_val)
+            row.skip(f"Listed twice: {f'{first} {last}'.strip()} ({email_val}) — invited once")
+            self._invite_progress.controls.append(row)
         total = len(people)
         self._invite_header.set_progress(0, total)
         done = 0

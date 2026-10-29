@@ -449,6 +449,22 @@ class CommissionView(ToolView):
                 )
                 return False, None
 
+        # One device can't fill two fields: the batch claim would return the
+        # same device for both rows.
+        seen: dict[str, str] = {}
+        for device_type in config["devices"]:
+            if device_type == LICENSE_PLATE_FIELD:
+                continue
+            serial = normalize_serial(self._device_serial(device_type))
+            if serial in seen:
+                show_toast(
+                    e.page,
+                    f"{seen[serial]} and {device_type} have the same serial number.",
+                    kind="warning",
+                )
+                return False, None
+            seen[serial] = device_type
+
         if not self._validate_supporting_users():
             show_toast(
                 e.page,
@@ -500,9 +516,12 @@ class CommissionView(ToolView):
         Same rule as the invite step, so Review shows exactly who is invited.
         """
         users: list[tuple[str, str, str]] = []
+        emails: set[str] = set()
         for fields in self._user_rows():
             first, last, email = ((f.value or "").strip() for f in fields)
-            if first and last and email:
+            # A repeated email (any case) is one person, invited once.
+            if first and last and email and email.lower() not in emails:
+                emails.add(email.lower())
                 users.append((first, last, email))
         return users
 

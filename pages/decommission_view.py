@@ -46,6 +46,7 @@ from constants import (
     _INTERNAL_DELETERS,
     _INTERNAL_GETTERS,
     ASSET_CATEGORIES,
+    BATCH_DELETE_SIZE,
     CARD_PADDING,
     CATEGORY_GROUPS,
     DELETION_ORDER,
@@ -1537,40 +1538,67 @@ class DecommissionView(ToolView):
             return False
 
     async def _delete_batch(self, page, loop, int_client, category, items) -> int:
-        """Delete a whole batch with one call taking all ids (Command users,
-        persons of interest — as the web app does), with a status row per
-        item. Returns how many were deleted."""
+        """Delete items with calls that take many ids (Command users, persons
+        of interest — as the web app does), BATCH_DELETE_SIZE per call, with
+        a status row per item. When a call fails, its items are retried one
+        at a time so each row shows its own result. Returns how many were
+        deleted."""
         cat_row = self._category_rows.get(category)
         rows = []
         for item in items:
             label = item.get("name") or item.get("email") or item.get("id")
             step_row = StepRow(f"Deleting {label}...", compact=True)
-            rows.append((step_row, label))
+            rows.append((item.get("id"), step_row, label))
             if cat_row is not None:
                 cat_row["items"].controls.append(step_row)
         page.update()
         await asyncio.sleep(0)
-        ids = [item.get("id") for item in items]
         deleter = getattr(int_client, _BATCH_DELETERS[category])
-        log_system(f"{category}: deleting {len(ids)} item(s) in one call")
-        try:
-            await loop.run_in_executor(_executor, deleter, ids)
-        except Exception as ex:
-            for step_row, label in rows:
-                step_row.fail(f"Failed: {label} — {ex}")
+
+        async def attempt(chunk) -> Exception | None:
+            try:
+                await loop.run_in_executor(_executor, deleter, [i for i, _, _ in chunk])
+            except Exception as ex:  # noqa: BLE001 — reported on the rows
+                return ex
+            return None
+
+        def settle(chunk, error) -> None:
+            for _, step_row, label in chunk:
+                if error is None:
+                    step_row.succeed(f"Deleted {label}")
+                else:
+                    step_row.fail(f"Failed: {label} — {error}")
             if cat_row is not None:
-                cat_row["failed"] += len(items)
+                key = "success" if error is None else "failed"
+                cat_row[key] += len(chunk)
+                cat_row["counter"].value = f"{cat_row['success']} / {cat_row['total']}"
             page.update()
-            log_system(f"{category}: FAILED to delete {len(ids)} item(s) — {ex}", level="ERROR")
-            return 0
-        for step_row, label in rows:
-            step_row.succeed(f"Deleted {label}")
-        if cat_row is not None:
-            cat_row["success"] += len(items)
-            cat_row["counter"].value = f"{cat_row['success']} / {cat_row['total']}"
-        page.update()
-        log_system(f"{category}: deleted {len(ids)} item(s)")
-        return len(items)
+
+        deleted = 0
+        for start in range(0, len(rows), BATCH_DELETE_SIZE):
+            chunk = rows[start : start + BATCH_DELETE_SIZE]
+            log_system(f"{category}: deleting {len(chunk)} item(s) in one call")
+            error = await attempt(chunk)
+            if error is None or len(chunk) == 1:
+                settle(chunk, error)
+                deleted += len(chunk) if error is None else 0
+                continue
+            log_system(
+                f"{category}: batch delete failed ({error}); retrying one at a time",
+                level="WARN",
+            )
+            for one_start in range(0, len(chunk), PARALLEL_REQUESTS):
+                singles = chunk[one_start : one_start + PARALLEL_REQUESTS]
+                errors = await asyncio.gather(*(attempt([row]) for row in singles))
+                for row, one_error in zip(singles, errors, strict=True):
+                    settle([row], one_error)
+                    deleted += one_error is None
+        failed = len(rows) - deleted
+        log_system(
+            f"{category}: deleted {deleted} item(s)" + (f", {failed} failed" if failed else ""),
+            level="ERROR" if failed else "INFO",
+        )
+        return deleted
 
     async def _rename_site_fallback(
         self,
