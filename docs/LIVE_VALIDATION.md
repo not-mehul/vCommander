@@ -3,6 +3,61 @@
 Results of running vCommander against a real test org with the scripts in
 `tools/live/`. Newest first.
 
+## 2026-10-29 — Access roles, participant groups, stress and edge-case tests
+
+The org was left clean: no sites, devices, API keys or test users, Global
+Site Admin off, no access admin roles on the session user (only the owner's
+two accounts remain).
+
+### Changes
+
+| Change | Commit |
+|---|---|
+| Decommission revokes both access admin roles at release, including ones held before the scan (as it already did for Global Site Admin). Only missing roles are granted. | `f7b6793` |
+| Users tool: participants (invited now or already in the org) go into an "All Participants" **Command group and access group**. Each is found by name, created once, and only people not yet in it are added. The access group needs an access admin role: missing roles are granted for that step and revoked right after, also when it fails. | `6bb0ce1` |
+| Edge cases: the read cache no longer keeps a failed read, and releases waiting threads on any exception. Batch deletes send ≤100 ids per call; a failed call is retried item by item. Review catches one serial entered in two device fields. A repeated email (any case) is invited once. `get_user` tolerates a user without an email. | `59ee242` |
+| **Bug found by the stress run:** a scan failed outright in an org with no sites (camera search: 403 even with Global Site Admin on) or no cameras (people service: 403). This came in when Cameras and Persons of Interest moved to the internal API. Each 403 now means "none" only when the org really has no sites / cameras. The live script now prints scan alerts; the ACSE cycle had failed without showing it. | `3689cc2` |
+
+### Live stress and edge-case results
+
+| Test | Result |
+|---|---|
+| Invite 28 participants (25 new, 3 existing, one listed twice, addresses upper-cased), both groups on | 10.5 s, 32 calls, 0 errors, no rate limiting. 25 invited, 3 reported as already in the org, the repeat skipped; 25 added to each group with one call per group |
+| Same batch again | 3.4 s, 5 calls: everyone already in the org and in both groups; nothing sent |
+| Users-tool group step with no access roles held | roles granted, access group created, 2 added, roles revoked (13 calls) |
+| Three scans in a row (VSSL + 27 users) | same items each time, 7.3–9.0 s. Scans 2–3 make one extra call to re-grant the roles scan 1 revoked |
+| Decommission of that org | 27 users in one call, 12 categories, 0 failed, 14.9 s; both roles revoked although held before |
+| Batch user delete with an unknown id beside a real one | accepted; the real user deleted, the unknown id ignored |
+| Batch user delete of the session user / an empty list | refused locally / no call |
+| Claim a nonexistent serial | Command returns it under `failedSerials` with no reason; the row fails with a clear message |
+| Claim a serial already in this org | returns its existing device id; the device keeps its name |
+| Alarm-site, Command-group and access-group lookups with nothing to find | `[]` / `None`, no error |
+| Scan of an empty org; of an org with only a site | review state reached (after the fix above); the site deleted |
+| Every template, commissioned then decommissioned | below |
+
+| Template | Commission | Decommission |
+|---|---|---|
+| ESS | 17 ok, 1 failed (guest trial, see below), 23 calls, 23.0 s | 0 failed, 48 calls, 15.5 s |
+| ACSL | 9 ok, 11 calls, 12.6 s | 0 failed, 37 calls, 12.2 s |
+| ACSE | 2 ok, 3 calls, 5.3 s | nothing to delete (re-run after the fix) |
+| VSSL | 21 ok, 25 calls, 15.1 s | 0 failed, 41 calls, 12.0 s |
+| VSSE | 10 ok, 15 calls, 10.6 s | 0 failed, 36 calls, 9.4 s |
+| AS | 23 ok, 26 calls, 18.1 s | 0 failed, 45 calls, 14.8 s |
+
+Unit tests: 206, including a 64-thread read-cache test, batch chunking and
+fallback, scan cancellation, and the role and group cases above.
+
+### Known limitations
+
+- **Guest trial.** ESS's "Creating Guest Site" fails on this test org with
+  "Site creation is limited" (the trial call). The guest site itself is
+  created. The org has run many guest-site cycles; fresh orgs are not
+  affected as far as seen.
+- **Re-running AS on an already commissioned org** fails 3 steps: Command
+  refuses to claim alarm devices already set up, and the alarm site already
+  exists. Decommission first, then commission again.
+- **Large orgs.** Cameras and users list up to 1,000 each.
+
 ## 2026-10-28 (part 2) — Log review, internal-only Decommission, faster scan
 
 Driven by the owner's `api_calls.log` (1,110 calls over 8 days, five
@@ -73,7 +128,7 @@ batch made 3 calls (validate, user list, one invite) and reported
 - **Access admin roles at release.** Decommission revokes only the roles it
   granted. Roles Command grants at a controller claim stay. After these
   runs, both were revoked from the session user by hand to restore the
-  earlier state. Open question: should Decommission always revoke both?
+  earlier state. (Since 2026-10-29 Decommission revokes both.)
 
 ## 2026-10-28 — Batching: several devices, users and deletes at once
 

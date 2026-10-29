@@ -946,7 +946,7 @@ class VerkadaInternalAPIClient:
             key = normalize_serial(serial)
             if key not in results:
                 reason = reasons.get(key) or (
-                    "Command rejected the serial (check it, or release it from its other org)"
+                    "Command rejected the serial (mistyped, already set up, or claimed by another org)"
                     if key in reasons
                     else "missing from the response"
                 )
