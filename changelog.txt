@@ -46,6 +46,7 @@ v3.5
 - Added Strobe Light Creation on the Alarm Panel Pin 1 during AS Commissioning
 - (New feature) Commission claims all of a template's devices with one batch call and sets up cameras together
 - (New feature) ACSL creates its door with the MFA modes in one call
+- (New feature) Invite Tool adds participants to an 'All Participants' Command group and access group, reusing both on re-runs and adding only those not yet in them
 - (New feature) Invites go out four at a time; people already in the org are reported instead of re-invited, and still join the group
 - (New feature) Decommission uses only the internal API (no API key); Command Users and Persons of Interest are deleted with one call each, other categories four at a time
 - (New feature) Decommission scan lists categories in parallel and sends each identical read once (about twice as fast)

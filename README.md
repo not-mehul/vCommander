@@ -197,7 +197,7 @@ Bulk-invites users to your current org by pulling them from another org's **gues
 1. **Connect to a source org** — enter its short name and a Verkada **public-API key** (generate one in the source org's Command settings). vCommander looks up the source org's region itself; it can differ from the org you're logged in to.
 2. **Pick a site and a date** — vCommander fetches the guest-visit participants who checked in at that site on that day.
 3. **Review the list** — you can edit names and emails inline, or remove rows you don't want to invite. Malformed emails are flagged before anything is sent. Use **Back** on steps 2 and 3 to change the site/date or the source org without starting over.
-4. **Send invites** — invitations are sent against the org you're logged into, and (unless you turn it off in step 3) everyone invited is added to the **All Participants** group. A copy-able summary at the end breaks down successful vs. failed invites.
+4. **Send invites** — invitations are sent against the org you're logged into, and (unless you turn it off in step 3) everyone in the run — invited now or already in the org — is added to an **All Participants** Command group and an **All Participants** access group. Both are created the first time and reused afterwards; a re-run adds only the people not yet in them. Creating the access group needs an access admin role: any you lack are granted for that step and revoked right after. A copy-able summary at the end breaks down successful vs. failed invites.
 
 <p align="center">
   <img src="docs/screenshots/User-Invite-API.png" alt="Step 1 — External org API key" width="48%" />

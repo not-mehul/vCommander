@@ -17,6 +17,7 @@ import flet as ft
 import theme
 from apis.external_api import VerkadaExternalAPIClient
 from apis.internal_api import (
+    ACCESS_ADMIN_ROLES,
     PARALLEL_REQUESTS,
     OrgNotFoundError,
     validate_org_short_name,
@@ -40,9 +41,9 @@ from components import (
 from constants import (
     BORDER,
     CARD_PADDING,
-    COMMAND_GROUP_NAME,
     ERROR,
     FIELD_SPACING,
+    PARTICIPANTS_GROUP_NAME,
     PRIMARY,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
@@ -357,7 +358,10 @@ class UsersView(ToolView):
         # Gates the group step in _run_invites. On by default: the common
         # case is that every invited participant belongs in the group.
         self._add_to_group_switch = ft.Switch(
-            label=f" Add invited users to '{COMMAND_GROUP_NAME}'",
+            label=(
+                f" Add participants to the '{PARTICIPANTS_GROUP_NAME}' Command "
+                f"group and access group"
+            ),
             value=True,
             active_color=PRIMARY,
             label_text_style=ft.TextStyle(color=TEXT_PRIMARY),
@@ -615,12 +619,12 @@ class UsersView(ToolView):
             )
             page.update()
 
-        # Group membership runs once for the whole batch — add_users_to_group
-        # takes the id list, so one call covers everyone invited this run.
+        # Group membership runs once for the whole batch: one add call per
+        # group covers everyone in this run who is not in it yet.
         # Skipped entirely when the Step 3 toggle is off.
         if self._add_to_group_switch.value and not token.is_cancelled:
             if invited_user_ids:
-                await self._add_invited_to_command_group(
+                await self._add_to_participant_groups(
                     page, client, invited_user_ids
                 )
             elif success_count:
@@ -630,7 +634,7 @@ class UsersView(ToolView):
                             ft.Icon(ft.Icons.WARNING_ROUNDED, color=WARNING, size=18),
                             ft.Text(
                                 f"Invited users carried no user id — skipped "
-                                f"'{COMMAND_GROUP_NAME}'.",
+                                f"'{PARTICIPANTS_GROUP_NAME}'.",
                                 color=WARNING,
                                 size=13,
                             ),
@@ -710,53 +714,123 @@ class UsersView(ToolView):
         )
         return ok, (result or {}).get("user_id")
 
-    async def _add_invited_to_command_group(
+    async def _add_to_participant_groups(
         self, page, client, user_ids: list[str]
-    ) -> bool:
+    ) -> None:
         """
-        Add the freshly invited users to the shared Command group, creating
-        the group the first time it is needed.
+        Put the run's participants (invited now or already in the org) in
+        both 'All Participants' groups (PARTICIPANTS_GROUP_NAME): the Command group and the
+        access group. Each group is found by name and created only the first
+        time, and only people not yet in it are added, so re-runs collect
+        into the same two groups.
 
-        Reuses an existing group by name so repeated invite runs collect
-        into one group. Note that get_group() hides Verkada-managed groups,
-        so only a group created by this tool (or by hand) is ever matched.
+        Access groups need an access admin role. Roles the user lacks are
+        granted for this step and revoked right after it; roles the user
+        already held are left alone.
         """
-        ok, groups = await self._progress_step(
+        await self._sync_group(
             page,
-            f"Looking up group '{COMMAND_GROUP_NAME}'",
-            f"Looked up group '{COMMAND_GROUP_NAME}'",
-            "Failed: group lookup",
-            client.get_group,
+            "group",
+            client.find_group,
+            client.create_group,
+            client.add_users_to_group,
+            user_ids,
+        )
+
+        ok, held = await self._progress_step(
+            page,
+            "Checking access roles",
+            "Checked access roles",
+            "Failed: checking access roles",
+            client.get_org_role_keys,
+        )
+        if not ok:
+            return
+        missing = [role for role in ACCESS_ADMIN_ROLES if role not in held]
+        try:
+            if missing:
+                ok, _ = await self._progress_step(
+                    page,
+                    "Granting access admin roles",
+                    "Granted access admin roles",
+                    "Failed: granting access admin roles",
+                    client.enable_access_admin,
+                    missing,
+                )
+            if ok:
+                await self._sync_group(
+                    page,
+                    "access group",
+                    client.find_access_group,
+                    client.create_access_group,
+                    client.add_users_to_access_group,
+                    user_ids,
+                )
+        finally:
+            if missing:
+                await self._progress_step(
+                    page,
+                    "Revoking access admin roles",
+                    "Revoked the access admin roles granted for this step",
+                    "Failed: revoking access admin roles",
+                    client.disable_access_admin,
+                    missing,
+                )
+
+    async def _sync_group(
+        self, page, kind: str, find, create, add, user_ids: list[str]
+    ) -> bool:
+        """Find or create the participants group of this kind (by name),
+        then add the user_ids not in it yet (one call). True on success."""
+        name = PARTICIPANTS_GROUP_NAME
+        ok, group = await self._progress_step(
+            page,
+            f"Looking up {kind} '{name}'",
+            f"Looked up {kind} '{name}'",
+            f"Failed: {kind} lookup",
+            find,
+            name,
         )
         if not ok:
             return False
-
-        group_id = next(
-            (g["id"] for g in groups or [] if g.get("name") == COMMAND_GROUP_NAME),
-            None,
-        )
-        if not group_id:
+        if group is None:
             ok, group_id = await self._progress_step(
                 page,
-                f"Creating group '{COMMAND_GROUP_NAME}'",
-                f"Created group '{COMMAND_GROUP_NAME}'",
-                f"Failed: creating group '{COMMAND_GROUP_NAME}'",
-                client.create_group,
-                COMMAND_GROUP_NAME,
+                f"Creating {kind} '{name}'",
+                f"Created {kind} '{name}'",
+                f"Failed: creating {kind} '{name}'",
+                create,
+                name,
             )
             if not ok:
                 return False
+            group = {"id": group_id, "member_ids": set()}
 
-        count = len(user_ids)
+        to_add = [
+            u for u in dict.fromkeys(user_ids) if u not in group["member_ids"]
+        ]
+        if not to_add:
+            row = StepRow(name)
+            count = len(set(user_ids))
+            row.succeed(
+                f"All {count} already in {kind} '{name}'"
+                if count != 1
+                else f"Already in {kind} '{name}'"
+            )
+            self._invite_progress.controls.append(row)
+            page.update()
+            return True
+
+        count = len(to_add)
         plural = "" if count == 1 else "s"
         ok, _ = await self._progress_step(
             page,
-            f"Adding {count} user{plural} to '{COMMAND_GROUP_NAME}'",
-            f"Added {count} user{plural} to '{COMMAND_GROUP_NAME}'",
-            f"Failed: adding users to '{COMMAND_GROUP_NAME}'",
-            client.add_users_to_group,
-            user_ids,
-            group_id,
+            f"Adding {count} user{plural} to {kind} '{name}'",
+            f"Added {count} user{plural} to {kind} '{name}'",
+            f"Failed: adding users to {kind} '{name}'",
+            add,
+            to_add,
+            group["id"],
         )
         return ok
 

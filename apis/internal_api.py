@@ -2145,6 +2145,41 @@ class VerkadaInternalAPIClient:
             oid=group_id,
         )
 
+    def find_access_group(self, group_name: str) -> dict[str, Any] | None:
+        """{id, member_ids} of the access group with this name, or None.
+
+        One user_groups/get call; each group lists its members under
+        `users` ([{"userId"}]). Needs an access admin role.
+        """
+        data, _ = self._request(
+            "access_group.list",
+            json={"organizationId": self.org_id},
+            error_context="Failed to fetch from access_group.list",
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+        )
+        for group_id, info in (data.get("children") or {}).items():
+            if (info or {}).get("name") == group_name:
+                return {
+                    "id": group_id,
+                    "member_ids": {
+                        u["userId"] for u in info.get("users") or [] if u.get("userId")
+                    },
+                }
+        return None
+
+    def add_users_to_access_group(self, user_ids: list[str], group_id: str) -> None:
+        """Adds several users to one access group with one call."""
+        self._request(
+            "access_group.add_user",
+            json={
+                "userIds": list(user_ids),
+                "groupIds": [group_id],
+                "organizationId": self.org_id,
+            },
+            error_context=f"Failed to add users to access group '{group_id}'",
+            log_request=f'{{"groupId": "{group_id}", "userCount": {len(user_ids)}}}',
+        )
+
     def add_user_to_access_group(self, user_id: str, group_id: str) -> None:
         """Adds a single user to a single access group (batch endpoint, 1-item lists)."""
         self._request(
@@ -2252,6 +2287,30 @@ class VerkadaInternalAPIClient:
             error_context=f"Failed to add users to group '{group_id}'",
             log_request=f'{{"groupId": "{group_id}", "userIds": {user_ids}}}',
         )
+
+    def find_group(self, group_name: str) -> dict[str, Any] | None:
+        """{id, member_ids} of the Command group with this name, or None.
+
+        One security_entity_group/list call (it carries memberIds), so a
+        re-run can add only the people not yet in the group.
+        Verkada-managed groups are never matched.
+        """
+        data, _ = self._request(
+            "group.list",
+            json={
+                "organizationId": self.org_id,
+                "includeMembers": True,
+                "includeMemberCount": False,
+            },
+            error_context="Failed to fetch from group.list",
+        )
+        for group in data.get("securityEntityGroup") or []:
+            if not group.get("verkadaManaged") and group.get("name") == group_name:
+                return {
+                    "id": group["entityGroupId"],
+                    "member_ids": set(group.get("memberIds") or []),
+                }
+        return None
 
     def get_group(self) -> list[dict[str, Any]]:
         """List security entity groups the user can delete.

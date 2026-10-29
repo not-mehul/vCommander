@@ -2,7 +2,7 @@
 
 Usage: python tools/live/invite.py 1 2 3
 Invites "VC Test <n>" at the plus address <user>+test<n>@<domain> of
-VERKADA_EMAIL for each number given, without the Command group step.
+VERKADA_EMAIL for each number given. LIVE_GROUP=1 also runs the group step.
 CHANGES THE ORG: invites users (decommission.py deletes "VC Test" users).
 """
 
@@ -27,7 +27,7 @@ for n in sys.argv[1:]:
     view._participants_column.controls.append(
         view._create_participant_row("VC Test", n, f"{local}+test{n}@{domain}")
     )
-view._add_to_group_switch.value = False
+view._add_to_group_switch.value = bool(os.environ.get("LIVE_GROUP"))
 
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
