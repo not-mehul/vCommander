@@ -170,7 +170,7 @@ Spins up a populated org from a template.
    |---|---|---|
    | `ESS` | Essentials | Dome, Alarm Panel, Access Station Pro |
    | `ACSL` | Access Control Specialist - Lab | Access Station Pro |
-   | `ACSE` | Access Control Specialist - Exam | Disable Global Site Admin Only |
+   | `ACSE` | Access Control Specialist - Exam | Disable Global Site Admin; optionally (on by default) first remove every other user's organization, user management and site roles, keeping Org Admin |
    | `VSSL` | Video Security Specialist – Lab | Bullet, PTZ, Command Connector, Access Controller, License Plate |
    | `VSSE` | Video Security Specialist – Exam | Dome, Fisheye, Bullet |
    | `AS` | Alarms Specialist | Dome, Access Controller, Alarm Panel, Keypad |

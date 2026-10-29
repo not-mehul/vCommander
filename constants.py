@@ -210,7 +210,9 @@ LICENSE_PLATE_FIELD = "License Plate"
 TEMPLATE_FIELDS = {
     "ESS": {"devices": ["Dome", "Alarm Panel", "Access Station Pro"], "face_analytics": True},
     "ACSL": {"devices": ["Access Station Pro"], "face_analytics": False},
-    "ACSE": {"devices":[], "face_analytics": False},
+    # reset_permissions: offer the "remove existing user permissions" switch
+    # (on by default), run before anything else is commissioned.
+    "ACSE": {"devices": [], "face_analytics": False, "reset_permissions": True},
     "VSSL": {
         "devices": [
             "Bullet",

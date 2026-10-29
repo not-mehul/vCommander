@@ -846,3 +846,37 @@ def test_set_alarm_response_outputs_body():
         "updateType": "CONFIG_UPDATE_TYPE_SET_OUTPUT_DEVICES",
         "setOutputDevicesInput": {"deviceIds": ["strobe"]},
     })]
+
+
+
+def test_removable_permissions_keep_org_admin_membership_and_the_signed_in_user():
+    client = _client()
+    client.auth_data = {"adminUserId": "me", "organizationId": "org"}
+
+    def grant(user, key, entity="org", grantee=None):
+        return {"roleKey": key, "entityId": entity, "granteeId": grantee or user}
+
+    client._request = _fake_request({"user.list": {"users": [
+        {"userId": "me", "firstName": "Me", "roleGrants": [grant("me", "ACCESS_CONTROL_SYSTEM_ADMIN")]},
+        {"userId": "a", "firstName": "Ann", "lastName": "A", "roleGrants": [
+            grant("a", "ORG_MANAGER"), grant("a", "ORG_MEMBER"), grant("a", "ACCESS_ORG_MEMBER"),
+            grant("a", "ACCESS_CONTROL_SYSTEM_ADMIN"), grant("a", "COMMAND_USER_VIEWER"),
+            grant("a", "SITE_ADMIN", "site1"), grant("a", "SITE_ADMIN", "site1"),
+            grant("a", "SITE_VIEWER", "site2", grantee="group1"),
+        ]},
+        {"userId": "b", "email": "b@x.com", "roleGrants": [grant("b", "ORG_MEMBER")]},
+    ]}})
+    assert client.get_removable_permissions() == [{
+        "id": "a", "name": "Ann A", "revoke": [
+            {"entityId": "org", "permission": "ACCESS_CONTROL_SYSTEM_ADMIN"},
+            {"entityId": "org", "permission": "COMMAND_USER_VIEWER"},
+            {"entityId": "site1", "permission": "SITE_ADMIN"},
+        ],
+    }]
+
+
+def test_revoke_user_permissions_refuses_the_signed_in_user():
+    client = _client()
+    client.auth_data = {"adminUserId": "me", "organizationId": "org"}
+    with pytest.raises(ValueError):
+        client.revoke_user_permissions("me", [{"entityId": "org", "permission": "X"}])

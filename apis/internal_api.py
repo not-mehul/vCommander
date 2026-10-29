@@ -49,6 +49,11 @@ def _is_read(endpoint_key: str, method: str) -> bool:
     return method == "GET" or endpoint_key.endswith((".list", ".get", ".list.v4"))
 
 
+def _is_kept_role(role_key: str) -> bool:
+    """Roles a permission reset keeps: Org Admin and org membership."""
+    return role_key in ("ORG_MANAGER", "ORG_MEMBER") or role_key.endswith("_ORG_MEMBER")
+
+
 def normalize_serial(serial: str) -> str:
     """Serials compare without dashes or case ("abcd-efgh" == "ABCDEFGH")."""
     return serial.replace("-", "").strip().upper()
@@ -1095,16 +1100,7 @@ class VerkadaInternalAPIClient:
             "user.list",
             response_key="users",
             path_params={"org_id": self.org_id},
-            payload={
-                "paging": {"pageSize": 1000, "sortOrder": ["full_name:asc"]},
-                "isVisitor": False,
-                "status": ["active", "invited"],
-                "organizationId": self.org_id,
-                "userDirectoryIds": [],
-                "includeRoleGrants": True,
-                "includeGroups": True,
-                "useEs": True,
-            },
+            payload=self._user_list_payload(),
             mapping_func=lambda x: {
                 "id": x["userId"],
                 "email": x.get("email"),
@@ -1112,6 +1108,83 @@ class VerkadaInternalAPIClient:
                 "last_name": x.get("lastName"),
                 "is_org_admin": x.get("isOrganizationAdmin", False),
             },
+        )
+
+    def _user_list_payload(self) -> dict[str, Any]:
+        return {
+            "paging": {"pageSize": 1000, "sortOrder": ["full_name:asc"]},
+            "isVisitor": False,
+            "status": ["active", "invited"],
+            "organizationId": self.org_id,
+            "userDirectoryIds": [],
+            "includeRoleGrants": True,
+            "includeGroups": True,
+            "useEs": True,
+        }
+
+    def get_removable_permissions(self) -> list[dict[str, Any]]:
+        """
+        Every other user's directly granted permissions, as one user list
+        call returns them (roleGrants): organization roles and user
+        management roles (granted on the org) and site roles (granted on a
+        site). Org Admin (ORG_MANAGER) and the org-membership roles
+        (ORG_MEMBER, *_ORG_MEMBER — not permissions; the user would lose
+        the org) are kept, and the signed-in user is never listed. Roles
+        a user inherits (from Org Admin, a group, ...) are not grants of
+        their own and can't be removed per user.
+
+        Returns [{id, name, revoke: [{entityId, permission}]}] for the users
+        with something to remove.
+        """
+        data, _ = self._request(
+            "user.list",
+            path_params={"org_id": self.org_id},
+            json=self._user_list_payload(),
+            error_context="Failed to fetch from user.list",
+        )
+        users = []
+        for user in data.get("users") or []:
+            user_id = user.get("userId")
+            if not user_id or user_id == self.user_id:
+                continue
+            revoke, seen = [], set()
+            for grant in user.get("roleGrants") or []:
+                key, entity = grant.get("roleKey"), grant.get("entityId")
+                if not key or not entity or _is_kept_role(key):
+                    continue
+                if grant.get("granteeId") not in (None, user_id):
+                    continue  # granted to a group the user is in
+                if (key, entity) not in seen:
+                    seen.add((key, entity))
+                    revoke.append({"entityId": entity, "permission": key})
+            if revoke:
+                name = " ".join(
+                    p for p in (user.get("firstName"), user.get("lastName")) if p
+                ) or user.get("email") or user_id
+                users.append({"id": user_id, "name": name, "revoke": revoke})
+        return users
+
+    def revoke_user_permissions(self, user_id: str, revoke: list[dict]) -> None:
+        """Revokes several of a user's permissions with one call
+        ([{entityId, permission}], from get_removable_permissions)."""
+        if user_id == self.user_id:
+            raise ValueError("Refusing to change the signed-in user's permissions.")
+        if not revoke:
+            return
+        self._request(
+            "permissions.user_roles.set",
+            json={
+                "organizationId": self.org_id,
+                "targetUserId": user_id,
+                "returnPermissions": False,
+                "grant": [],
+                "revoke": list(revoke),
+            },
+            error_context=f"Failed to remove permissions from user '{user_id}'",
+            log_request=(
+                f'{{"targetUserId": "{user_id}", '
+                f'"revoke": {[r["permission"] for r in revoke]}}}'
+            ),
         )
 
     def get_user_ids_by_email(self) -> dict[str, str]:

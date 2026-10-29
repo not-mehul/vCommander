@@ -191,6 +191,14 @@ class CommissionView(ToolView):
             visible=False,
         )
 
+        self.reset_permissions_switch = ft.Switch(
+            label=" Remove existing user permissions (keeps Org Admin)",
+            value=True,
+            active_color=PRIMARY,
+            label_text_style=ft.TextStyle(color=TEXT_PRIMARY),
+            visible=False,
+        )
+
         self._users_column = ft.Column(spacing=10)
         add_user_btn = ft.Row(
             [
@@ -226,6 +234,7 @@ class CommissionView(ToolView):
                 ft.Container(height=4),
                 self._devices_column,
                 self.face_analytics_switch,
+                self.reset_permissions_switch,
                 ft.Divider(color=BORDER, height=1),
                 section_header(
                     "Supporting users",
@@ -326,6 +335,7 @@ class CommissionView(ToolView):
                 self._devices_hint("Choose a template to see the devices it needs.")
             ]
             self.face_analytics_switch.visible = False
+            self.reset_permissions_switch.visible = False
             e.page.update()
             return
 
@@ -344,6 +354,8 @@ class CommissionView(ToolView):
         ]
         self.face_analytics_switch.visible = config["face_analytics"]
         self.face_analytics_switch.value = config["face_analytics"]
+        self.reset_permissions_switch.visible = bool(config.get("reset_permissions"))
+        self.reset_permissions_switch.value = True
 
         if self.kit_dropdown.value:
             self._fill_from_kit(self.kit_dropdown.value)
@@ -564,6 +576,13 @@ class CommissionView(ToolView):
                     "On" if self.face_analytics_switch.value else "Off",
                 )
             )
+        if config.get("reset_permissions"):
+            rows.append(
+                stat_row(
+                    "Remove User Permissions",
+                    "On" if self.reset_permissions_switch.value else "Off",
+                )
+            )
         users = self._collect_supporting_users()
         rows.append(stat_row("Supporting Users", len(users)))
         for first, last, email in users:
@@ -665,6 +684,13 @@ class CommissionView(ToolView):
 
         async def step(label: str, fn, *args):
             return await self._run_step(page, label, fn, *args)
+
+        # ── Before anything else (ACSE): strip the users' permissions ──
+        if (
+            TEMPLATE_FIELDS[code].get("reset_permissions")
+            and self.reset_permissions_switch.value
+        ):
+            await self._reset_user_permissions(step, page, client)
 
         # ── Common prelude (every template) ──
         await step("Enabling Custom Roles", client.enable_custom_roles)
@@ -1240,6 +1266,30 @@ class CommissionView(ToolView):
                 site_id,
                 response_config_id,
                 [strobe_id],
+            )
+
+    async def _reset_user_permissions(self, step, page, client) -> None:
+        """Remove every other user's organization, user management and site
+        roles (keeping Org Admin): one user list call, then one revoke call
+        per user, PARALLEL_REQUESTS at a time."""
+        users = await step("Checking user permissions", client.get_removable_permissions)
+        if users is None:
+            return  # the lookup failed; its row says why
+        if not users:
+            self._progress_note(page, "No user permissions to remove.")
+            return
+        for start in range(0, len(users), PARALLEL_REQUESTS):
+            await asyncio.gather(
+                *(
+                    step(
+                        f"Removing {len(u['revoke'])} permission"
+                        f"{'' if len(u['revoke']) == 1 else 's'} from {u['name']}",
+                        client.revoke_user_permissions,
+                        u["id"],
+                        u["revoke"],
+                    )
+                    for u in users[start : start + PARALLEL_REQUESTS]
+                )
             )
 
     async def _invite_supporting_users(self, step, page, client, role: str) -> None:

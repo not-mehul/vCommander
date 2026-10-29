@@ -16,6 +16,7 @@ class FakeInternal:
     def __init__(self, fail=(), key_error=None):
         self.fail, self.key_error, self.calls = set(fail), key_error, []
         self.args = {}
+        self.removable = []  # get_removable_permissions
 
     def create_external_api_key(self):
         self.calls.append("create_external_api_key")
@@ -34,6 +35,10 @@ class FakeInternal:
             )
             for name, serial in devices
         }
+
+    def get_removable_permissions(self):
+        self.calls.append("get_removable_permissions")
+        return self.removable
 
     def __getattr__(self, name):
         def call(*args, **kwargs):
@@ -299,3 +304,35 @@ def test_ess_af64_access_level_grants_all_participants_when_it_exists(
         "create_access_station_pro_door-id", "[DO NOT TOUCH] AF64", "create_or_reuse_site-id", expected,
     )
     assert view._failures == []
+
+
+
+def test_acse_removes_user_permissions_before_anything_else(view, page, monkeypatch):
+    client = FakeInternal()
+    client.removable = [
+        {"id": f"u{i}", "name": f"User {i}", "revoke": [{"entityId": "org", "permission": "X"}]}
+        for i in range(cv.PARALLEL_REQUESTS + 1)
+    ]
+    revoked = []
+    client.revoke_user_permissions = lambda uid, rv: revoked.append((uid, rv))
+    _run(view, page, client, monkeypatch, template="ACSE")
+    assert client.calls[0] == "get_removable_permissions"
+    assert client.calls.index("enable_custom_roles") > 0
+    assert sorted(u for u, _ in revoked) == sorted(u["id"] for u in client.removable)
+    assert "[ok]   Removing 1 permission from User 0" in view._run_log
+    assert view._failures == []
+
+
+def test_acse_permission_reset_is_skipped_when_switched_off(view, page, monkeypatch):
+    client = FakeInternal()
+    monkeypatch.setattr(cv, "get_internal_client", lambda: client)
+    _fill(view, page, "ACSE")
+    assert view.reset_permissions_switch.visible and view.reset_permissions_switch.value
+    view.reset_permissions_switch.value = False
+    asyncio.run(view._on_commission(Event(page)))
+    assert "get_removable_permissions" not in client.calls
+
+
+def test_permission_reset_is_only_offered_for_acse(view, page):
+    _fill(view, page, "VSSL")
+    assert not view.reset_permissions_switch.visible

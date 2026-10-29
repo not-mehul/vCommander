@@ -1,6 +1,7 @@
 """Run vCommander's real Commission flow headlessly for one template.
 
 Usage: python tools/live/commission.py <ESS|ACSL|ACSE|VSSL|VSSE|AS>
+ACSE's user-permission reset is limited to "VC Test…" users.
 LIVE_NO_WAIT=1 skips the fixed role-propagation wait (to test whether it
 is needed). CHANGES THE ORG: claims devices and applies the template's org settings.
 """
@@ -25,6 +26,12 @@ for var, label in SERIAL_VARS.items():
 if os.environ.get("LIVE_NO_WAIT"):
     cv.ROLE_PROPAGATION_SECONDS = 0
 client, _ = make_client()
+# ACSE's permission reset only ever touches "VC Test…" users here (as
+# decommission.py only deletes them): the org's real users are left alone.
+_removable = client.get_removable_permissions
+client.get_removable_permissions = lambda: [
+    u for u in _removable() if u["name"].startswith("VC Test")
+]
 page = FakePage()
 cv.get_internal_client = lambda: client
 view = cv.CommissionView(lambda route: None)
