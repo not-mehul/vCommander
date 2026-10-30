@@ -41,30 +41,18 @@ v3.4
 - (New Feature) Several new endpoints added: group.create, group.add_members, org.allow_face_unlock, access_station_pro.create, access_station_pro.door.create, door.enable_face_unlock, door.mfa.card-code, door.mfa.face-card, door.mfa.face-code, schedule.create.mfa
 
 v3.5
-- Updated ACS Lab to create 'HQ' instead of 'Trainer-HQ'
-- Updated AF64 Commissioning to disable DPI during setup
-- Added Strobe Light Creation on the Alarm Panel Pin 1 during AS Commissioning
-- (New feature) Commission claims all of a template's devices with one batch call and sets up cameras together
-- (New feature) ACSL creates its door with the MFA modes in one call
+- (New feature) The API log drops entries older than 30 days when the app starts
+- (New feature) Added Strobe Light Creation on the Alarm Panel Pin 1 during AS Commissioning
+- (New feature) Commission claims all of a template's devices with one batch call and sets up cameras together, ACSL creates its door with the MFA modes in one call, Invites go out four at a time; people already in the org are reported instead of re-invited, and still join the group
 - (New feature) Invite Tool adds participants to an 'All Participants' Command group and access group, reusing both on re-runs and adding only those not yet in them
-- (New feature) Invites go out four at a time; people already in the org are reported instead of re-invited, and still join the group
-- (New feature) Decommission uses only the internal API (no API key); Command Users and Persons of Interest are deleted with one call each, other categories four at a time
-- (New feature) Decommission scan lists categories in parallel and sends each identical read once (about twice as fast)
+- (New feature) Decommission uses only the internal API (no API key); Command Users and Persons of Interest are deleted with one call each, other categories four at a time, Decommission scan lists categories in parallel and sends each identical read once (about twice as fast)
+- (Bug fix) Updated ACS Lab to create 'HQ' instead of 'Trainer-HQ'
+- (Bug fix) Updated AF64 Commissioning to disable DPI during setup
 - (Bug fix) Decommission revokes both Access Admin roles when it ends, including ones Command granted at a controller claim
 - (Bug fix) Persons of Interest are deleted before Cameras (Command refuses the delete once the org has no cameras)
 - (Bug fix) API key secrets are no longer written to the API call log
-- (Bug fix) Strobe Light is on the panel's Output 1
-- (New feature) ESS and AS add the Strobe Light (Output 1) to the Default Response's output devices; ESS now creates the strobe too
-- (New feature) ESS creates the '[DO NOT TOUCH] AF64' access level on HQ Door, granted to 'All Participants' when that access group exists (the Invite Tool grants it otherwise)
-- (New feature) ACSE: "Remove existing user permissions" (on by default) first strips every other user's organization, user management and site roles, keeping Org Admin
-- (New feature) Invite Tool also adds participants to 'VCE Access Group' when the org has it (VSSL), and makes sure 'VCE Access Level' and '[DO NOT TOUCH] AF64' grant their group
-- (Bug fix) Removed a fixed 3-second wait after creating a building
-- (Bug fix) Decommission and the Invite Tool no longer mistake another user's access roles for yours (they skipped granting the role and access-control steps failed)
-- (Bug fix) ACSL's 2FA door schedule can no longer be created twice when Command answers slowly
+- (Bug fix) ESS creates the '[DO NOT TOUCH] AF64' access level on HQ Door, granted to 'All Participants' when that access group exists (the Invite Tool grants it otherwise)
 - (Bug fix) Switching light/dark theme on Decommission's Review or Select step keeps the scan
-- (Bug fix) A release tagged v3.5.0 no longer shows "Update available" on v3.5
-- (New feature) The API log drops entries older than 30 days when the app starts
-- (Bug fix) Commission's Kit dropdown no longer shows a blank entry for separator rows in the kits file; a kits file saved by Excel, or a missing one, no longer stops Commission from opening
 - (Cleanup) Removed unused public-API and client code (about 1,100 lines); added contract tests for every API call
 
 --- NEWS ---
