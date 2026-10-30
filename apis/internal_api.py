@@ -1411,7 +1411,10 @@ class VerkadaInternalAPIClient:
         The current user's org-level role keys (e.g. ACCESS_CONTROL_USER_ADMIN).
 
         Read through set_user_permissions with nothing to grant or revoke and
-        returnPermissions on: the response lists the user's role grants.
+        returnPermissions on. The response's roleGrant list also carries
+        other users' grants, so only this user's own are kept: otherwise a
+        role someone else holds (e.g. an attendee's Access System Admin)
+        would count as held, and the caller would skip granting it.
         """
         data, _ = self._request(
             "permissions.user_roles.get",
@@ -1428,7 +1431,9 @@ class VerkadaInternalAPIClient:
         return {
             g["roleKey"]
             for g in data.get("roleGrant") or []
-            if g.get("roleKey") and g.get("targetEntityType", "organization") == "organization"
+            if g.get("roleKey")
+            and g.get("granteeId") == self.user_id
+            and g.get("targetEntityType", "organization") == "organization"
         }
 
     def enable_access_admin(self, roles: list[str] | None = None) -> None:

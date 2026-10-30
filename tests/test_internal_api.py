@@ -428,8 +428,9 @@ def test_org_role_keys_come_from_role_grants(monkeypatch):
     def fake_request(key, json=None, **kw):
         sent.update(key=key, **json)
         grants = [
-            {"roleKey": "ACCESS_CONTROL_USER_ADMIN", "targetEntityType": "organization"},
-            {"roleKey": "SITE_ADMIN", "targetEntityType": "site"},
+            {"roleKey": "ACCESS_CONTROL_USER_ADMIN", "granteeId": "u",
+             "targetEntityType": "organization"},
+            {"roleKey": "SITE_ADMIN", "granteeId": "u", "targetEntityType": "site"},
         ]
         return {"roleGrant": grants}, 200
 
@@ -437,6 +438,20 @@ def test_org_role_keys_come_from_role_grants(monkeypatch):
     assert client.get_org_role_keys() == {"ACCESS_CONTROL_USER_ADMIN"}
     assert sent["key"] == "permissions.user_roles.get"
     assert sent["grant"] == sent["revoke"] == [] and sent["returnPermissions"] is True
+
+
+def test_org_role_keys_ignore_other_users_grants():
+    # The response lists other users' grants too (seen live: 2 grantees for
+    # one read). Someone else's Access System Admin must not count as held,
+    # or Decommission would skip granting it.
+    client = _client()
+    client._request = _fake_request({"permissions.user_roles.get": {"roleGrant": [
+        {"roleKey": "ORG_MANAGER", "granteeId": "u", "targetEntityType": "organization"},
+        {"roleKey": "ACCESS_CONTROL_SYSTEM_ADMIN", "granteeId": "attendee",
+         "targetEntityType": "organization"},
+        {"roleKey": "ACCESS_CONTROL_USER_ADMIN", "targetEntityType": "organization"},
+    ]}})
+    assert client.get_org_role_keys() == {"ORG_MANAGER"}
 
 
 def test_access_admin_roles_change_in_one_call(monkeypatch):
