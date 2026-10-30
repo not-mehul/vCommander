@@ -422,3 +422,16 @@ def test_cancelling_a_scan_stops_before_cameras_and_releases(make, page):
     assert "Cameras" not in org.listed_while_caching
     assert not org.caching
     assert org.calls[-2:] == ["gsa_off", _ROLES_OFF]
+
+
+def test_only_a_held_scan_is_handed_over(make, page):
+    view, org = make({"Cameras": _items("cam", 1)})
+    assert view.detach_state() is None  # nothing scanned yet
+    _scan(view, page)
+    view._busy = True  # a run in progress releases the org itself
+    assert view.detach_state() is None
+    view._busy = False
+    state = view.detach_state()
+    assert state["state"] == dv.REVIEW and state["gsa_enabled"]
+    asyncio.run(view._release_org())
+    assert "gsa_off" not in org.calls  # handed over: nothing left to release

@@ -122,3 +122,43 @@ def test_leaving_a_tool_calls_its_leave_hook(app, monkeypatch):
     monkeypatch.setattr(tool, "on_leave", lambda: left.append(tool.route))
     navigate("/home")
     assert left == ["/decommission"]
+
+
+def test_theme_switch_keeps_a_decommission_scan(app, monkeypatch):
+    import pages.decommission_view as dv
+
+    page, navigate = app
+    released = []
+    spawned = []
+    monkeypatch.setattr(dv, "spawn", spawned.append)
+
+    class Org:
+        def disable_global_site_admin(self):
+            released.append("gsa_off")
+
+        def disable_access_admin(self, roles):
+            released.append("roles_off")
+
+    navigate("/decommission")
+    old = _shell(page)._tool
+    old._assets = {"Cameras": [{"id": "c1", "name": "Lobby"}]}
+    old._selected = {"Cameras": {0}}
+    old._search_query = "lob"
+    old._int_client, old._gsa_enabled = Org(), True
+    old._revoke_roles = ["ACCESS_CONTROL_SYSTEM_ADMIN"]
+    old._state = dv.SELECT
+
+    _shell(page)._on_toggle_theme(None)
+    for coro in spawned:  # the old screen's leave hook
+        asyncio.run(coro)
+    new = _shell(page)._tool
+    assert new is not old and new._state == dv.SELECT
+    assert new._assets == old._assets and new._selected == {"Cameras": {0}}
+    assert new._search_query == "lob"
+    assert released == []  # the org stays elevated for the rebuilt screen
+
+    spawned.clear()
+    navigate("/home")  # leaving for real releases it
+    for coro in spawned:
+        asyncio.run(coro)
+    assert released == ["gsa_off", "roles_off"]

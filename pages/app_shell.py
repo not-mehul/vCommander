@@ -94,6 +94,15 @@ class ToolView:
     def on_leave(self) -> None:
         """Called once when the shell stops hosting this tool."""
 
+    def detach_state(self):
+        """Hand over what this screen holds before it is rebuilt (e.g. for
+        a theme switch), or None. After a hand-over, on_leave must not
+        release it: the rebuilt screen owns it via restore_state()."""
+        return None
+
+    def restore_state(self, state) -> None:
+        """Take over what detach_state() handed over from the old screen."""
+
 
 class AppShell(ft.View):
     def __init__(self, *, navigate, tool_factory, logout):
@@ -134,12 +143,18 @@ class AppShell(ft.View):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def show(self, route: str):
-        """Swap the content area to `route`'s tool (sidebar stays constant)."""
+    def show(self, route: str, restore=None):
+        """Swap the content area to `route`'s tool (sidebar stays constant).
+
+        `restore` is what the previous instance of this tool handed over
+        (detach_tool_state) when the screen is rebuilt, e.g. for a theme
+        switch."""
         self.leave()
         tool = self._tool_factory(route)
         self._tool = tool
         tool.page = self._get_page()
+        if restore is not None:
+            tool.restore_state(restore)
         self._title_text.value = tool.title
         self._subtitle_text.value = tool.subtitle or ""
         self._subtitle_text.visible = bool(tool.subtitle)
@@ -147,6 +162,10 @@ class AppShell(ft.View):
         self._active_route = route
         self._render_nav()
         self._safe_update()
+
+    def detach_tool_state(self):
+        """What the hosted tool hands over before a rebuild, or None."""
+        return self._tool.detach_state() if self._tool is not None else None
 
     def leave(self):
         """Tell the hosted tool it is going away (idempotent)."""

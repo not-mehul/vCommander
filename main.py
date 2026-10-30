@@ -142,8 +142,10 @@ async def main(page: ft.Page):
         if shell is not None:
             shell.leave()
 
-    def _go(route: str):
+    def _go(route: str, restore=None):
         """Unguarded navigation. Callers decide whether a job may be abandoned.
+
+        `restore` is handed to the new tool screen (see AppShell.show).
 
         Public routes (login/2FA) replace the whole view. Tool routes are
         shown inside the one persistent AppShell — only the content area
@@ -173,7 +175,7 @@ async def main(page: ft.Page):
             page.views.clear()
             page.views.append(shell)
             page.update()  # mounts shell; did_mount starts the session timer
-        shell.show(route)
+        shell.show(route, restore)
         current["route"] = route
 
     def navigate(route: str):
@@ -202,11 +204,16 @@ async def main(page: ft.Page):
             _set_palette(new_mode)
             prefs.set_theme_pref(new_mode)
             # Rebuild the current screen with the new palette (colors are
-            # captured at build time). Tool routes need a fresh shell.
+            # captured at build time). Tool routes need a fresh shell; the
+            # old screen hands over what it holds (e.g. a Decommission scan)
+            # so the switch doesn't lose it.
             route = current["route"]
+            handed_over = None
             if route in TOOL_ROUTES:
+                shell = state["shell"]
+                handed_over = shell.detach_tool_state() if shell else None
                 _drop_shell()
-            _go(route)
+            _go(route, handed_over)
 
         guarded("Switching theme", proceed)
 

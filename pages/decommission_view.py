@@ -249,6 +249,39 @@ class DecommissionView(ToolView):
         if not self._busy:
             spawn(self._release_org())
 
+    # The steps whose screen is built from a scan that still holds the org.
+    _HANDOVER_STATES = (REVIEW, SELECT, CONFIRM)
+
+    def detach_state(self):
+        """Hand the scan to the rebuilt screen (theme switch): its assets,
+        selection and the org changes still to undo. This instance then
+        holds nothing, so its on_leave releases nothing."""
+        if self._busy or self._state not in self._HANDOVER_STATES:
+            return None
+        state = {
+            "state": self._state,
+            "assets": self._assets,
+            "selected": self._selected,
+            "show_items": self._show_items,
+            "search_query": self._search_query,
+            "int_client": self._int_client,
+            "gsa_enabled": self._gsa_enabled,
+            "revoke_roles": self._revoke_roles,
+        }
+        self._int_client, self._gsa_enabled, self._revoke_roles = None, False, []
+        return state
+
+    def restore_state(self, state) -> None:
+        self._assets = state["assets"]
+        self._selected = state["selected"]
+        self._show_items = state["show_items"]
+        self._search_query = state["search_query"]
+        self._int_client = state["int_client"]
+        self._gsa_enabled = state["gsa_enabled"]
+        self._revoke_roles = state["revoke_roles"]
+        self._state = state["state"]
+        self._render_state()
+
     async def _release_org(self) -> None:
         """Undo the scan's org changes: Global Site Admin back off and both
         access admin roles revoked (also ones the user held before).
