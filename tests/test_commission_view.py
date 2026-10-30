@@ -6,23 +6,17 @@ import pytest
 from conftest import Event
 
 import pages.commission_view as cv
-from apis.internal_api import ExternalApiKey, normalize_serial
+from apis.internal_api import normalize_serial
 from utils import session
 
 
 class FakeInternal:
     org_short_name, public_api_region, user_id = "lab", "api.eu", "me"
 
-    def __init__(self, fail=(), key_error=None):
-        self.fail, self.key_error, self.calls = set(fail), key_error, []
+    def __init__(self, fail=()):
+        self.fail, self.calls = set(fail), []
         self.args = {}
         self.removable = []  # get_removable_permissions
-
-    def create_external_api_key(self):
-        self.calls.append("create_external_api_key")
-        if self.key_error:
-            raise ConnectionError(self.key_error)
-        return ExternalApiKey("secret", "kid")
 
     def add_devices(self, devices):
         self.calls.append("add_devices")
@@ -89,7 +83,6 @@ def test_clean_run_reports_success_and_needs_no_api_key(view, page, monkeypatch)
     client = FakeInternal()
     _run(view, page, client, monkeypatch)
     assert _banner_text(view).startswith("Commission complete")
-    assert not [c for c in client.calls if "external_api_key" in c]
     assert session.running_job() is None and session._active_run is None
 
 
@@ -146,7 +139,6 @@ def test_access_station_pro_door_needs_no_separate_face_unlock(
     client = FakeInternal()
     _run(view, page, client, monkeypatch, template=template)
     assert "create_access_station_pro_door" in client.calls
-    assert "enable_door_face_unlock" not in client.calls
     assert view._steps_failed == 0
 
 
@@ -154,7 +146,6 @@ def test_acsl_creates_the_door_with_its_mfa_modes(view, page, monkeypatch):
     client = FakeInternal()
     _run(view, page, client, monkeypatch, template="ACSL")
     assert client.args["create_access_station_pro_door"][1] == {"mfa": True}
-    assert not [c for c in client.calls if c.startswith("enable_door_mfa")]
     assert "create_mfa_schedule" in client.calls
 
 

@@ -1,4 +1,4 @@
-"""Public-API client: pagination and region routing."""
+"""Public-API client (Users tool): pagination, region routing, tokens."""
 
 import json
 
@@ -45,18 +45,18 @@ def _client(pages, region="api"):
 
 
 def test_list_follows_next_page_token():
-    url = "https://api.verkada.com/cameras/v1/devices"
-    cam = lambda i: {"camera_id": f"c{i}", "name": f"Cam {i}", "serial": f"S{i}"}  # noqa: E731
+    url = "https://api.verkada.com/guest/v1/sites"
+    site = lambda i: {"site_id": f"s{i}", "site_name": f"Site {i}"}  # noqa: E731
     client = _client(
         {
             url: [
-                {"cameras": [cam(0), cam(1)], "next_page_token": "1"},
-                {"cameras": [cam(2)], "next_page_token": "2"},
-                {"cameras": [cam(3)]},
+                {"guest_sites": [site(0), site(1)], "next_page_token": "1"},
+                {"guest_sites": [site(2)], "next_page_token": "2"},
+                {"guest_sites": [site(3)]},
             ]
         }
     )
-    assert [c["id"] for c in client.get_cameras()] == ["c0", "c1", "c2", "c3"]
+    assert client.get_sites() == [{"site_id": f"s{i}", "name": f"Site {i}"} for i in range(4)]
     assert [p.get("page_token") for _, _, p in client.session.calls] == [None, "1", "2"]
     assert all(p["page_size"] == 200 for _, _, p in client.session.calls)
 
@@ -65,8 +65,16 @@ def test_repeated_page_token_stops_the_loop():
     url = "https://api.verkada.com/guest/v1/sites"
     page = {"guest_sites": [{"site_id": "g", "site_name": "G"}], "next_page_token": "0"}
     client = _client({url: [page]})
-    client.get_guest_sites()
+    client.get_sites()
     assert len(client.session.calls) == 2
+
+
+@pytest.mark.parametrize("region", ["api", "api.oh", "api.eu"])
+def test_calls_use_the_client_region(region):
+    url = f"https://{region}.verkada.com/guest/v1/sites"
+    client = _client({url: [{"guest_sites": []}]}, region=region)
+    assert client.get_sites() == []
+    assert client.session.calls[0][1] == url
 
 
 def test_guest_visits_are_paged():
@@ -79,54 +87,9 @@ def test_guest_visits_are_paged():
     assert emails == ["g1@x.com", "g2@x.com"]
 
 
-@pytest.mark.parametrize("region", ["api", "api.eu", "api.au"])
-def test_access_group_calls_use_the_client_region(region):
-    base = f"https://{region}.verkada.com/access/v1"
-    client = _client(
-        {
-            f"{base}/access_groups/group": [{"group_id": "g1"}],
-            f"{base}/access_groups/group/user": [{"successful_adds": ["u1"]}],
-            f"{base}/credentials/license_plate": [{"license_plate_number": "ABC"}],
-        },
-        region=region,
-    )
-    client.create_access_group("VCE")
-    client.add_user_to_access_group("u1", "g1")
-    client.add_license_plate_to_user("u1", "ABC")
-    assert {url for _, url, _ in client.session.calls} == {
-        f"{base}/access_groups/group",
-        f"{base}/access_groups/group/user",
-        f"{base}/credentials/license_plate",
-    }
-
-
 _PLATE = "https://api.verkada.com/access/v1/credentials/license_plate"
 _USER = "https://api.verkada.com/access/v1/access_users/user"
 _IN_USE = _Resp({"message": "This license plate number is already in use"}, 400)
-
-
-def test_license_plate_already_on_the_user_is_success():
-    client = _client(
-        {
-            _PLATE: [_IN_USE],
-            _USER: [{"license_plates": [{"license_plate_number": "vctest1"}]}],
-        }
-    )
-    assert client.add_license_plate_to_user("u1", "VCTEST1") == "VCTEST1"
-    assert client.session.calls[-1] == ("GET", _USER, {"user_id": "u1"})
-
-
-def test_license_plate_in_use_by_someone_else_still_fails():
-    client = _client({_PLATE: [_IN_USE], _USER: [{"license_plates": []}]})
-    with pytest.raises(ConnectionError, match="already in use"):
-        client.add_license_plate_to_user("u1", "VCTEST1")
-
-
-def test_other_license_plate_errors_are_not_looked_up():
-    client = _client({_PLATE: [_Resp({"message": "invalid plate"}, 400)]})
-    with pytest.raises(ConnectionError, match="invalid plate"):
-        client.add_license_plate_to_user("u1", "??")
-    assert [url for _, url, _ in client.session.calls] == [_PLATE]
 
 
 @pytest.mark.parametrize("region", ["evil.com", "api/../x", "api.eu/x", "API"])
@@ -166,13 +129,3 @@ def test_token_failures_are_logged_and_name_the_host(resp, reason, monkeypatch):
     assert req == '{"x-api-key": "***"}'
 
 
-def test_empty_400_is_logged_as_empty(monkeypatch):
-    import apis.external_api as ext
-
-    logged = []
-    monkeypatch.setattr(ext, "log_api_call", lambda *a: logged.append(a))
-    url = "https://api.verkada.com/cameras/v1/devices"
-    client = _client({url: [{"message": "must include cameras"}]})
-    client.session.request = lambda *a, **k: _Resp({"message": "must include cameras"}, 400)
-    assert client.get_cameras() == []
-    assert logged[-1][3] == "empty (HTTP 400)"

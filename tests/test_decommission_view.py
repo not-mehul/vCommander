@@ -35,13 +35,7 @@ class FakeOrg:
         self.caching = False
         self.listed_while_caching = []  # categories listed inside read_cache
 
-    # -- org settings / key ------------------------------------------------
-    def create_external_api_key(self):
-        raise AssertionError("Decommission must not create a public-API key")
-
-    def delete_external_api_key(self, key_id):
-        self.calls.append(f"delete_key:{key_id}")
-
+    # -- org settings ------------------------------------------------------
     def enable_global_site_admin(self):
         self.calls.append("gsa_on")
 

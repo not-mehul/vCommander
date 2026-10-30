@@ -448,7 +448,7 @@ SHOT_VIEW=decommission SHOT_STATE=select SHOT_THEME=light SHOT_PORT=8700 python 
 **`VerkadaExternalAPIClient`** (`apis/external_api.py`)
 - Uses the standard public API endpoints documented at [`apidocs.verkada.com`](https://apidocs.verkada.com).
 - Automatic token generation (refreshed on 401/403) and full pagination of list endpoints.
-- Used for guest-visit pulls and cross-org user invitations.
+- Used only by the Users tool, to read the source org's guest sites and visits with the API key you enter.
 Commission and Decommission use only the internal client. Independent calls run four at a time, and a Decommission scan sends each identical read once.
 
 Both clients share `apis/http.py`: every request has a default timeout, and transient failures are retried — but a `POST` (create site, claim device, invite user) is only retried when the server provably did nothing (connection never opened, or HTTP 429), so a retry can never create a duplicate.

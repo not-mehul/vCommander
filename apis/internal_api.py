@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
-from typing import Any, NamedTuple
+from typing import Any
 
 import requests
 from requests.exceptions import JSONDecodeError, RequestException
@@ -30,7 +30,6 @@ from apis.endpoints import (
 )
 from apis.http import build_session
 from constants import (
-    API_NAME,
     AS_INSTRUCTOR_KEYCODE,
     AS_INSTRUCTOR_KEYCODE_NAME,
     DEFAULT_TIMEOUT,
@@ -163,17 +162,8 @@ class APIError(ConnectionError):
         self.status_code = status_code
 
 
-class ExternalApiKey(NamedTuple):
-    """A freshly minted public-API key plus the id needed to delete it."""
-
-    key: str
-    key_id: str | None
-
-
-# Wired-input device `type` strings. All of these are created on a panel
-# pin, listed by alarm.wired_input.list, and decommissioned via
-# alarm.wired_input.delete. Only WIRED_CONTACT_SENSOR carries an extra
-# sensorConfig; the rest send just name + type.
+# Wired-input device `type` strings: the device types get_wired_input lists
+# (alarm_system/get_devices returns every device; this filters to inputs).
 _WIRED_INPUT_TYPES = (
     "WIRED_CONTACT_SENSOR",
     "WIRED_GLASS_BREAK_SENSOR",
@@ -182,36 +172,6 @@ _WIRED_INPUT_TYPES = (
     "WIRED_PANIC_BUTTON",
     "WIRED_WATER_LEAK_SENSOR",
 )
-
-# Alarm device `type` strings (returned by alarm_system/get_devices) mapped
-# to the v2 delete endpoint key for that device. Panels/keypads/expanders/
-# wireless decommission; wired in/out use a different delete path. Every
-# wired-input subtype shares the one alarm.wired_input.delete endpoint.
-_ALARM_DEVICE_DELETE_KEYS = {
-    "COLOSSUS": "alarm.panel.delete",
-    "SYLVIE": "alarm.keypad.delete",
-    "KURIBO": "alarm.expander.delete",
-    "WIRELESS_CONTACT_SENSOR": "alarm.wireless_contact_sensor.delete",
-    "WIRELESS_PANIC_BUTTON": "alarm.wireless_panic_button.delete",
-    "UNIVERSAL_TRANSMITTER": "alarm.wireless_universal_transmitter.delete",
-    "WIRED_GENERIC_OUTPUT": "alarm.wired_output.delete",
-    **{t: "alarm.wired_input.delete" for t in _WIRED_INPUT_TYPES},
-}
-
-# Fixed overnight (23:30–06:30) arm schedule applied to every camera guard.
-# startMinute 1110 = 18.5h*60; endMinute 390 = 6.5h*60. Each entry spans
-# one night, rolling Sun→Mon … Sat→Sun.
-_GUARD_SCHEDULES = [
-    {
-        "startDay": day,
-        "startMinute": 1110,
-        "startSecond": 0,
-        "endDay": (day + 1) % 7,
-        "endMinute": 390,
-        "endSecond": 0,
-    }
-    for day in range(7)
-]
 
 
 class VerkadaInternalAPIClient:
@@ -402,32 +362,6 @@ class VerkadaInternalAPIClient:
             json={"cameraIds": camera_ids, "params": feature_flags},
             error_context=f"Failed to enable {feature_label}",
             log_request=f'{{"cameraIds": {camera_ids}}}',
-        )
-
-    def _set_door_config(
-        self,
-        endpoint_key: str,
-        door_id: str,
-        param_name: str,
-        feature_label: str,
-    ) -> None:
-        """
-        Grant a single boolean door config param (POST door/config/set).
-
-        Backs the face-unlock and MFA toggles: those endpoint keys are the
-        same call with a different paramName, so callers name the key and
-        the param and this carries the payload shape.
-        """
-        self._request(
-            endpoint_key,
-            json={
-                "doorId": door_id,
-                "action": "grant",
-                "paramName": param_name,
-                "paramValue": True,
-            },
-            error_context=f"Failed to enable {feature_label} on door '{door_id}'",
-            log_request=f'{{"doorId": "{door_id}", "paramName": "{param_name}"}}',
         )
 
     def _create_door(
@@ -1009,32 +943,6 @@ class VerkadaInternalAPIClient:
             },
         )
 
-    def is_org_empty(self) -> bool:
-        """
-        Pre-flight check for destructive flows: returns True iff the org
-        holds no devices/sites/users (i.e. delete would succeed).
-        """
-        data, _ = self._request(
-            "org.check_empty",
-            json={"organizationId": self.org_id, "validateOnly": True},
-            error_context="Failed to check if org is empty",
-            log_request=f'{{"organizationId": "{self.org_id}"}}',
-        )
-        return bool(data.get("orgEmpty"))
-
-    def get_device_count(self) -> dict[str, int]:
-        """
-        Returns {device_type: quantity} across every device category Verkada
-        tracks. Useful for capacity dashboards / decommission accounting.
-        """
-        data, _ = self._request(
-            "org.device_count",
-            path_params={"org_id": self.org_id},
-            error_context="Failed to fetch device counts",
-            log_request=f'{{"organizationId": "{self.org_id}"}}',
-        )
-        return {d["deviceType"]: d["quantity"] for d in data.get("deviceCounts", [])}
-
     # ------------------------------------------------------------------
     # Users
     # ------------------------------------------------------------------
@@ -1309,88 +1217,9 @@ class VerkadaInternalAPIClient:
             mapping_func=lambda x: {"id": x["siteId"], "name": x.get("siteName")},
         )
 
-    def delete_user(self, user_id: str) -> None:
-        self._delete(
-            "user.delete",
-            json={"organizationId": self.org_id, "userIds": [user_id]},
-            oid=user_id,
-        )
-
     # ------------------------------------------------------------------
     # API Keys
     # ------------------------------------------------------------------
-
-    def create_external_api_key(self) -> ExternalApiKey:
-        """
-        Generates a temporary External API Key (used to initialize the
-        VerkadaExternalAPIClient). Key expires in 1 hour, but callers should
-        delete it with delete_external_api_key(key_id) once their run ends:
-        an org holds at most 10 keys, so leftovers block the next run.
-
-        Returns:
-            ExternalApiKey(key, key_id). key_id is taken from the create
-            response, falling back to a lookup by the (unique) key name; it
-            is None only if neither source has it.
-
-        Raises:
-            ConnectionError: If the API key limit (10) is exceeded.
-            APIError: On other API failures.
-        """
-        payload = {
-            "api_key_name": API_NAME + str(int(time.time())),
-            "expires_at": int(time.time() + 3600),
-            "roles": [
-                "PUBLIC_API_CAMERA_READ_WRITE",
-                "PUBLIC_API_SENSORS_READ_WRITE",
-                "PUBLIC_API_ACCESS_READ_WRITE",
-                "PUBLIC_API_ALARMS_READ_WRITE",
-                "PUBLIC_API_CORE_READ_WRITE",
-                "PUBLIC_API_HELIX_READ_WRITE",
-                "PUBLIC_API_WORKPLACE_READ_WRITE",
-                "PUBLIC_API_INTERCOM_READ_WRITE",
-                "PUBLIC_API_CAMERA_AUDIO",
-            ],
-        }
-        log_request = f'{{"api_key_name": "{payload["api_key_name"]}"}}'
-
-        try:
-            data, status = self._request(
-                "org.api_key.create",
-                path_params={"org_id": self.org_id},
-                json=payload,
-                error_context="Failed to create external API key",
-                log_request=log_request,
-                auto_log=False,
-            )
-        except APIError as e:
-            if e.status_code == 400 and "10 api keys limit" in str(e):
-                raise ConnectionError(
-                    "Failed to create external API key: exceeded 10 API keys limit."
-                ) from e
-            raise
-
-        api_key = data.get("apiKey", "")
-        key_id = data.get("apiKeyId")
-        self._log(
-            "org.api_key.create",
-            status,
-            path_params={"org_id": self.org_id},
-            log_request=log_request,
-            # The key is a credential: never written to api_calls.log.
-            log_response=f'{{"apiKey": "***", "apiKeyId": "{key_id}"}}',
-        )
-        if not key_id:
-            # Best effort: the key already exists, so a failed lookup must not
-            # fail the create (the caller would then never delete the key).
-            key_name = payload["api_key_name"]
-            try:
-                key_id = next(
-                    (k["id"] for k in self.get_external_api_key() if k["name"] == key_name),
-                    None,
-                )
-            except (ConnectionError, PermissionError, KeyError):
-                key_id = None
-        return ExternalApiKey(api_key, key_id)
 
     def get_external_api_key(self) -> list[dict[str, Any]]:
         return self._fetch_list(
@@ -1401,13 +1230,6 @@ class VerkadaInternalAPIClient:
                 "id": x["apiKeyId"],
                 "name": x["apiKeyName"],
             },
-        )
-
-    def delete_external_api_key(self, api_key_id: str) -> None:
-        self._delete(
-            "org.api_key.delete",
-            path_params={"org_id": self.org_id, "api_key_id": api_key_id},
-            oid=api_key_id,
         )
 
     # ------------------------------------------------------------------
@@ -1554,9 +1376,9 @@ class VerkadaInternalAPIClient:
         """
         Allow face unlock across the organization.
 
-        Org-level prerequisite for the per-door toggle — a door's
-        face-unlock-enabled config (enable_door_face_unlock) only takes
-        effect once the org flag is set.
+        Org-level prerequisite for face unlock on a door: the door's
+        face-unlock-enabled config (sent with door create) only takes effect
+        once the org flag is set.
         """
         self._request(
             "org.allow_face_unlock",
@@ -1693,45 +1515,6 @@ class VerkadaInternalAPIClient:
                 "serial_number": x.get("serialNumber"),
                 "site_id": x.get("siteId"),
             },
-        )
-
-    def configure_camera(
-        self,
-        camera_id: str,
-        camera_name: str,
-        site_id: str,
-        address: Address,
-    ) -> None:
-        """
-        Sets a camera's display name, site assignment, and location.
-        Three calls in sequence — any failure aborts the rest.
-        """
-        addr = address if isinstance(address, Address) else Address(*address)
-        log_req = f'{{"cameraId": "{camera_id}"}}'
-
-        self._request(
-            "camera.create.name",
-            json={"cameraId": camera_id, "name": camera_name},
-            error_context=f"Failed to configure name for camera '{camera_name}'",
-            log_request=log_req,
-        )
-        self._request(
-            "camera.create.site",
-            json={"cameraIds": [camera_id], "destinationSiteId": site_id},
-            error_context=f"Failed to assign camera '{camera_name}' to site",
-            log_request=log_req,
-        )
-        self._request(
-            "camera.create.location",
-            json={
-                "cameraId": camera_id,
-                "angle": 0,
-                "label": addr.label,
-                "lat": addr.latitude,
-                "lon": addr.longitude,
-            },
-            error_context=f"Failed to set location for camera '{camera_name}'",
-            log_request=log_req,
         )
 
     def configure_cameras(
@@ -2090,9 +1873,9 @@ class VerkadaInternalAPIClient:
         mode (doorLockState ACCESS_CONTROL_2FA).
 
         The weekly event grid comes from the shared _MFA_DOOR_EVENT
-        default. Pair with the per-door MFA toggles: this schedule sets
-        *when* two-factor applies, while enable_door_mfa_* sets *which*
-        credential combination satisfies it.
+        default. Pairs with the door's MFA configs (sent with door create,
+        mfa=True): this schedule sets *when* two-factor applies, the
+        configs set *which* credential combinations satisfy it.
 
         Shares the upsert-style PUT that delete_schedule uses — schedules
         are keyed by scheduleId, so an object sent without one is created
@@ -2264,11 +2047,6 @@ class VerkadaInternalAPIClient:
             json={"groupId": group_id, "organizationId": self.org_id},
             oid=group_id,
         )
-
-    def find_access_group(self, group_name: str) -> dict[str, Any] | None:
-        """{id, member_ids} of the access group with this name, or None.
-        Needs an access admin role."""
-        return self.find_access_groups([group_name]).get(group_name)
 
     def find_access_groups(self, names) -> dict[str, dict[str, Any]]:
         """{name: {id, member_ids}} for the access groups with these names
@@ -2859,51 +2637,9 @@ class VerkadaInternalAPIClient:
             log_request=f'{{"lprCameraId": "{lpr_camera_id}"}}',
         )
 
-    def enable_door_face_unlock(self, door_id: str) -> None:
-        """
-        Enable face unlock on a door.
-
-        Requires the org flag (enable_org_face_unlock) to already be set.
-        Doors created by create_access_station_pro_door() ship with this
-        config, so it is only needed for doors created another way.
-        """
-        self._set_door_config(
-            "door.enable_face_unlock",
-            door_id,
-            "face-unlock-enabled",
-            "face unlock",
-        )
-
     # Each MFA mode is its own door config param — the combination named
     # by the method is what the reader will accept as two factors. They
     # are independent flags, so more than one can be enabled on a door.
-
-    def enable_door_mfa_card_code(self, door_id: str) -> None:
-        """Require card + PIN code at the door."""
-        self._set_door_config(
-            "door.mfa.card-code",
-            door_id,
-            "mfa-card-code-enabled",
-            "card + code MFA",
-        )
-
-    def enable_door_mfa_face_card(self, door_id: str) -> None:
-        """Require face + card at the door."""
-        self._set_door_config(
-            "door.mfa.face-card",
-            door_id,
-            "mfa-face-card-enabled",
-            "face + card MFA",
-        )
-
-    def enable_door_mfa_face_code(self, door_id: str) -> None:
-        """Require face + PIN code at the door."""
-        self._set_door_config(
-            "door.mfa.face-code",
-            door_id,
-            "mfa-face-code-enabled",
-            "face + code MFA",
-        )
 
     def get_visitor_access_template(self) -> list[dict[str, Any]]:
         """List visitor access templates (visit types) in the org."""
@@ -3212,57 +2948,6 @@ class VerkadaInternalAPIClient:
 
     # ── Alarm Partition ──────────────────────────────────────────────
 
-    def create_alarm_partition(self, alarm_system_id: str, name: str) -> list[str]:
-        """Creates a partition on an alarm system.
-
-        Returns:
-            list[str]: A list containing [partition_id, alarm_response_id].
-        """
-        data, status = self._request(
-            "alarm.partition.create",
-            json={"alarmSystemId": alarm_system_id, "name": name},
-            error_context=f"Failed to create alarm partition '{name}'",
-            log_request=f'{{"alarmSystemId": "{alarm_system_id}", "name": "{name}"}}',
-            auto_log=False,
-        )
-        partition = data.get("partition") or {}
-        partition_id = partition.get("id")
-        alarm_response_id = partition.get("responseConfigId")
-        if not partition_id:
-            raise ConnectionError(
-                f"Failed to create alarm partition '{name}': no partition id."
-            )
-        if not alarm_response_id:
-            raise ConnectionError(
-                f"Failed to create alarm partition '{name}': no alarm response id."
-            )
-        self._log(
-            "alarm.partition.create",
-            status,
-            log_request=f'{{"name": "{name}"}}',
-            log_response=f'{{"partitionId": "{partition_id}", "alarm_response_id": "{alarm_response_id}"}}',
-        )
-        return [partition_id, alarm_response_id]
-
-    def assign_alarm_partition_response(
-        self, partition_id: str, response_config_id: str
-    ) -> None:
-        """Binds a partition to an alarm response config."""
-        self._request(
-            "alarm.partition.assign_response",
-            json={
-                "partitionId": partition_id,
-                "responseConfigId": response_config_id,
-            },
-            error_context=(
-                f"Failed to assign response config to partition '{partition_id}'"
-            ),
-            log_request=(
-                f'{{"partitionId": "{partition_id}", '
-                f'"responseConfigId": "{response_config_id}"}}'
-            ),
-        )
-
     def get_alarm_partition(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._fetch_list(
             "alarm.partition.list",
@@ -3283,53 +2968,6 @@ class VerkadaInternalAPIClient:
         )
 
     # ── Alarm Guard (camera-based) ───────────────────────────────────
-
-    def create_alarm_guard(
-        self,
-        site_id: str,
-        name: str,
-        camera_ids: list[str],
-        response_config_id: str,
-        timezone: str,
-    ) -> str:
-        """
-        Creates a camera guard on an alarm site. Returns guard_id.
-
-        Guards arm a set of cameras on the fixed overnight _GUARD_SCHEDULES
-        window. cameraType defaults to C_M42_SECURE for every camera (the
-        documented default); pass only secure-capable cameras.
-        """
-        data, status = self._request(
-            "alarm.guard.create",
-            json={
-                "siteId": site_id,
-                "organizationId": self.org_id,
-                "name": name,
-                "cameraIds": camera_ids,
-                "cameras": [
-                    {"cameraId": cid, "cameraType": "C_M42_SECURE"}
-                    for cid in camera_ids
-                ],
-                "schedules": _GUARD_SCHEDULES,
-                "responseConfigId": response_config_id,
-                "timezoneIana": timezone,
-            },
-            error_context=f"Failed to create alarm guard '{name}'",
-            log_request=f'{{"siteId": "{site_id}", "name": "{name}"}}',
-            auto_log=False,
-        )
-        guard_id = (data.get("guard") or {}).get("id")
-        if not guard_id:
-            raise ConnectionError(
-                f"Failed to create alarm guard '{name}': no guard id in response."
-            )
-        self._log(
-            "alarm.guard.create",
-            status,
-            log_request=f'{{"name": "{name}"}}',
-            log_response=f'{{"guardId": "{guard_id}"}}',
-        )
-        return guard_id
 
     def get_alarm_guard(self, site_id: str) -> list[dict[str, Any]]:
         return self._fetch_list(
@@ -3366,7 +3004,7 @@ class VerkadaInternalAPIClient:
         endpoint and returns ALL devices in the system; filtering by `type`
         client-side is what distinguishes panels from keypads from sensors.
         device_type may be a single type, a tuple of types (e.g. the wired
-        input family), or None to return every device (get_alarm_device).
+        input family), or None to return every device in the system.
         """
         if device_type is None:
             wanted: set[str] | None = None
@@ -3470,28 +3108,6 @@ class VerkadaInternalAPIClient:
 
     # ── Alarm Expander ───────────────────────────────────────────────
 
-    def configure_alarm_expander(
-        self,
-        device_id: str,
-        expander_name: str,
-        alarm_system_id: str,
-        serial_number: str,
-    ) -> None:
-        """Attaches an alarm output expander to an existing alarm system."""
-        self._request(
-            "alarm.expander.create",
-            json={
-                "alarmSystemId": alarm_system_id,
-                "deviceId": device_id,
-                "name": expander_name,
-                "serialNumber": serial_number,
-            },
-            error_context=f"Failed to configure alarm expander '{expander_name}'",
-            log_request=(
-                f'{{"deviceId": "{device_id}", "alarmSystemId": "{alarm_system_id}"}}'
-            ),
-        )
-
     def get_alarm_expander(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._list_alarm_devices(
             alarm_system_id, "alarm.expander.list", device_type="KURIBO"
@@ -3503,34 +3119,6 @@ class VerkadaInternalAPIClient:
         )
 
     # ── Alarm Wireless Devices ───────────────────────────────────────
-
-    def configure_wireless_contact_sensor(
-        self,
-        device_id: str,
-        name: str,
-        alarm_system_id: str,
-        partition_id: str,
-        serial_number: str,
-    ) -> None:
-        """Attaches a wireless contact (door) sensor to a partition."""
-        self._request(
-            "alarm.wireless_contact_sensor.create",
-            json={
-                "alarmSystemId": alarm_system_id,
-                "devices": [
-                    {
-                        "deviceId": device_id,
-                        "alarmSystemId": alarm_system_id,
-                        "serialNumber": serial_number,
-                        "name": name,
-                        "partitionId": partition_id,
-                        "contactSensorType": "DOOR",
-                    }
-                ],
-            },
-            error_context=f"Failed to configure wireless contact sensor '{name}'",
-            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
-        )
 
     def get_wireless_contact_sensor(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._list_alarm_devices(
@@ -3546,34 +3134,6 @@ class VerkadaInternalAPIClient:
             oid=device_id,
         )
 
-    def configure_wireless_panic_button(
-        self,
-        device_id: str,
-        name: str,
-        alarm_system_id: str,
-        partition_id: str,
-        serial_number: str,
-    ) -> None:
-        """Attaches a wireless panic button to a partition."""
-        self._request(
-            "alarm.wireless_panic_button.create",
-            json={
-                "alarmSystemId": alarm_system_id,
-                "devices": [
-                    {
-                        "deviceId": device_id,
-                        "alarmSystemId": alarm_system_id,
-                        "serialNumber": serial_number,
-                        "name": name,
-                        "partitionId": partition_id,
-                        "gestureType": "SINGLE_PRESS",
-                    }
-                ],
-            },
-            error_context=f"Failed to configure wireless panic button '{name}'",
-            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
-        )
-
     def get_wireless_panic_button(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._list_alarm_devices(
             alarm_system_id,
@@ -3586,35 +3146,6 @@ class VerkadaInternalAPIClient:
             "alarm.wireless_panic_button.delete",
             json={"deviceId": device_id},
             oid=device_id,
-        )
-
-    def configure_wireless_universal_transmitter(
-        self,
-        device_id: str,
-        name: str,
-        alarm_system_id: str,
-        partition_id: str,
-        serial_number: str,
-    ) -> None:
-        """Attaches a wireless universal transmitter to a partition."""
-        self._request(
-            "alarm.wireless_universal_transmitter.create",
-            json={
-                "alarmSystemId": alarm_system_id,
-                "devices": [
-                    {
-                        "deviceId": device_id,
-                        "alarmSystemId": alarm_system_id,
-                        "serialNumber": serial_number,
-                        "name": name,
-                        "partitionId": partition_id,
-                    }
-                ],
-            },
-            error_context=(
-                f"Failed to configure wireless universal transmitter '{name}'"
-            ),
-            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
         )
 
     def get_wireless_universal_transmitter(
@@ -3676,60 +3207,6 @@ class VerkadaInternalAPIClient:
             "alarm.wired_output.delete", json={"deviceId": device_id}, oid=device_id
         )
 
-    def create_wired_input(
-        self,
-        name: str,
-        alarm_system_id: str,
-        panel_id: str,
-        partition_id: str,
-        pin_num: int,
-        *,
-        device_type: str = "WIRED_CONTACT_SENSOR",
-        normal_state: str = "CLOSED",
-    ) -> str:
-        """Creates a wired input on a panel pin. Returns device_id.
-
-        device_type is one of _WIRED_INPUT_TYPES. Only WIRED_CONTACT_SENSOR
-        carries the extra wiredContactSensorConfig; glass-break/motion/
-        generic/panic/water-leak send just name + type.
-        """
-        if device_type not in _WIRED_INPUT_TYPES:
-            raise ValueError(
-                f"Unknown wired input type {device_type!r}; "
-                f"expected one of {_WIRED_INPUT_TYPES}"
-            )
-        device: dict[str, Any] = {"name": name, "type": device_type}
-        if device_type == "WIRED_CONTACT_SENSOR":
-            device["sensorConfig"] = {
-                "wiredContactSensorConfig": {"type": "DOOR", "doorHeldOpenDelay": 0}
-            }
-        data, status = self._request(
-            "alarm.wired_input.create",
-            json={
-                "device": device,
-                "alarmSystemId": alarm_system_id,
-                "partitionId": partition_id,
-                "hubId": panel_id,
-                "pinNum": pin_num,
-                "normalState": normal_state,
-            },
-            error_context=f"Failed to create wired input '{name}'",
-            log_request=f'{{"name": "{name}", "type": "{device_type}", "pinNum": {pin_num}}}',
-            auto_log=False,
-        )
-        device_id = (data.get("device") or {}).get("id")
-        if not device_id:
-            raise ConnectionError(
-                f"Failed to create wired input '{name}': no device id in response."
-            )
-        self._log(
-            "alarm.wired_input.create",
-            status,
-            log_request=f'{{"name": "{name}"}}',
-            log_response=f'{{"deviceId": "{device_id}"}}',
-        )
-        return device_id
-
     def get_wired_input(self, alarm_system_id: str) -> list[dict[str, Any]]:
         """Lists every wired-input subtype (contact/glass-break/motion/
         generic/panic/water-leak) on the system."""
@@ -3745,20 +3222,6 @@ class VerkadaInternalAPIClient:
         )
 
     # ── Alarm Devices: unified accessors (UI compatibility) ──────────
-
-    def get_alarm_device(self) -> list[dict[str, Any]]:
-        """
-        Lists every alarm device across all of the org's alarm systems.
-
-        v2 has no org-wide device endpoint — alarm_system/get_devices is
-        per-system — so list the systems (alarm.system.list) and aggregate
-        their devices. Each item carries its `type`, which delete_alarm_device
-        needs to pick the right delete endpoint.
-        """
-        results: list[dict[str, Any]] = []
-        for system in self.get_alarm_system():
-            results.extend(self._list_alarm_devices(system["id"], "alarm.panel.list"))
-        return results
 
     # ── Org-wide alarm accessors (no system/site arg) ────────────────
     # The per-type getters above all require an alarm_system_id (or
@@ -3809,20 +3272,6 @@ class VerkadaInternalAPIClient:
                 results.extend(self.get_alarm_guard(site_id))
         return results
 
-    def delete_alarm_device(self, device_id: str, device_type: str) -> None:
-        """
-        Deletes an alarm device, choosing the delete endpoint from its
-        type (panels/keypads/expanders/wireless decommission; wired in/out
-        use a different delete path). device_type comes from the `type`
-        field surfaced by get_alarm_device.
-        """
-        key = _ALARM_DEVICE_DELETE_KEYS.get(device_type)
-        if not key:
-            raise ValueError(
-                f"Unknown alarm device type {device_type!r} for device {device_id!r}"
-            )
-        self._delete(key, json={"deviceId": device_id}, oid=device_id)
-
     # ------------------------------------------------------------------
     # Workplace
     # ------------------------------------------------------------------
@@ -3869,54 +3318,6 @@ class VerkadaInternalAPIClient:
             path_params={"org_id": self.org_id, "site_id": site_id},
             oid=site_id,
         )
-
-    def create_mailroom_site(self, site_id: str, address: Address) -> str:
-        """
-        Activates the org mailroom trial, then creates a mailroom (package)
-        site. Returns the packageLocationId.
-
-        The trial is org-level (one-time) and re-runs harmlessly on each
-        call; site creation is per-site.
-        """
-        addr = address if isinstance(address, Address) else Address(*address)
-
-        # Step 1: activate the org-level mailroom trial
-        self._request(
-            "mailroom.activate_trial",
-            path_params={"org_id": self.org_id},
-            json={},
-            error_context="Failed to activate mailroom trial",
-            log_request=f'{{"organizationId": "{self.org_id}"}}',
-        )
-
-        # Step 2: create the mailroom site
-        data, status = self._request(
-            "mailroom.create",
-            path_params={"org_id": self.org_id},
-            json={
-                "siteId": site_id,
-                "latitude": addr.latitude,
-                "longitude": addr.longitude,
-                "fullAddress": addr.label,
-            },
-            error_context=f"Failed to create mailroom site on '{site_id}'",
-            log_request=f'{{"siteId": "{site_id}"}}',
-            auto_log=False,
-        )
-        location_id = data.get("packageLocationId")
-        if not location_id:
-            raise ConnectionError(
-                f"Failed to create mailroom site on '{site_id}': "
-                "no packageLocationId in response."
-            )
-        self._log(
-            "mailroom.create",
-            status,
-            path_params={"org_id": self.org_id},
-            log_request=f'{{"siteId": "{site_id}"}}',
-            log_response=f'{{"packageLocationId": "{location_id}"}}',
-        )
-        return location_id
 
     def get_mailroom_site(self) -> list[dict[str, Any]]:
         return self._fetch_list(

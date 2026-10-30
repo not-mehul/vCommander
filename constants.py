@@ -70,10 +70,6 @@ SEARCH_DURATION = 7
 # (visitors, visits, archives, incidents). See PAGED_CATEGORIES.
 INTERNAL_PAGE_SIZE = 99
 
-# Used as a prefix for generated External API key names. The internal client
-# appends a unique suffix (e.g. a unix timestamp) at call time, producing
-# names like "vCommander - Automation API - v2.0.1 - 1714316400".
-API_NAME = "vCommander - Automation API - v" + APP_VERSION + " - "
 
 # Card Shadow — re-exported from the design system (elevation level 1).
 from theme import CARD_SHADOW  # noqa: E402,F401
@@ -86,7 +82,7 @@ from theme import CARD_SHADOW  # noqa: E402,F401
 #   - create_alarm_site   (8-tuple: city, country, lat, lon, state, street1,
 #                          timezone, zipcode)
 #   - create_guest_site   (4-tuple: full_address, lat, lon, country_code)
-#   - configure_camera / configure_connector (3-tuple: label, lat, lon)
+#   - configure_cameras / configure_connector (3-tuple: label, lat, lon)
 # These calls unpack tuples into the matching NamedTuple internally.
 
 # ESS commission constants

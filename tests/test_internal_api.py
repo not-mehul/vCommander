@@ -274,47 +274,6 @@ def _fake_request(responses):
     return request
 
 
-def test_create_api_key_returns_its_id():
-    client = _client()
-    client._request = _fake_request(
-        {"org.api_key.create": {"apiKey": "secret", "apiKeyId": "kid"}}
-    )
-    key = client.create_external_api_key()
-    assert (key.key, key.key_id) == ("secret", "kid")
-
-
-def test_create_api_key_falls_back_to_lookup_by_name():
-    client = _client()
-    created = {}
-
-    def request(endpoint_key, json=None, **kwargs):
-        if endpoint_key == "org.api_key.create":
-            created["name"] = json["api_key_name"]
-            return {"apiKey": "secret"}, 200
-        return {
-            "apiKeys": [
-                {"apiKeyId": "other", "apiKeyName": "someone else's"},
-                {"apiKeyId": "kid", "apiKeyName": created["name"]},
-            ]
-        }, 200
-
-    client._request = request
-    assert client.create_external_api_key().key_id == "kid"
-
-
-def test_failed_lookup_still_returns_the_key():
-    client = _client()
-
-    def request(endpoint_key, **kwargs):
-        if endpoint_key == "org.api_key.create":
-            return {"apiKey": "secret"}, 200
-        raise ConnectionError("list failed")
-
-    client._request = request
-    key = client.create_external_api_key()
-    assert (key.key, key.key_id) == ("secret", None)
-
-
 # -- sites -------------------------------------------------------------------
 
 
@@ -573,20 +532,6 @@ def test_parallel_runs_everything_then_raises_the_first_failure():
     assert VerkadaInternalAPIClient._parallel(lambda i: i + 1, [1, 2]) == [2, 3]
 
 
-def test_api_key_secret_is_never_logged(monkeypatch):
-    import apis.internal_api as ia
-
-    client = _client()
-    logged = []
-    monkeypatch.setattr(
-        client, "_request", lambda *a, **kw: ({"apiKey": "SECRET-KEY", "apiKeyId": "k1"}, 200)
-    )
-    monkeypatch.setattr(ia, "log_api_call", lambda *a, **kw: logged.append(" ".join(map(str, a))))
-    key = client.create_external_api_key()
-    assert key.key == "SECRET-KEY"
-    assert logged and not any("SECRET-KEY" in line for line in logged)
-
-
 def test_alarm_sites_are_listed_in_one_call_with_their_configs():
     client = _client()
     calls = []
@@ -752,8 +697,8 @@ def test_find_access_group_reads_members():
             }
         }
     )
-    assert client.find_access_group("All Participants") == {"id": "a2", "member_ids": {"u1"}}
-    assert client.find_access_group("Missing") is None
+    found = client.find_access_groups(["All Participants", "Missing"])
+    assert found == {"All Participants": {"id": "a2", "member_ids": {"u1"}}}
 
 
 def test_user_ids_by_email_is_case_insensitive_and_skips_missing_emails():
