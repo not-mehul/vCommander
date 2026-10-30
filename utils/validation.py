@@ -47,3 +47,15 @@ def format_serial(raw: str | None) -> str:
 def is_valid_serial(value: str | None) -> bool:
     """True only for a complete serial; partial input is rejected."""
     return bool(_SERIAL_RE.match((value or "").strip()))
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def is_valid_email(value: str | None) -> bool:
+    """Loose shape check (something@domain.tld) for inline form feedback.
+
+    Deliberately permissive: the server is the real validator; this only
+    catches typos like a missing "@" or domain before a run starts.
+    """
+    return bool(_EMAIL_RE.match((value or "").strip()))

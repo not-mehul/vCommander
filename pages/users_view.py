@@ -1,7 +1,8 @@
 """Users screen — guest invitation workflow.
 
 Four-step wizard:
-  1. Connect to an external Verkada org (org short name + API key).
+  1. Connect to an external Verkada org (org short name + API key; its
+     shard and public-API region are looked up from the short name).
   2. Pick a date range and pull guest participants from that org.
   3. Review/edit the list, optionally trim rows.
   4. Send invites against the currently logged-in (internal) org and
@@ -13,35 +14,58 @@ from datetime import datetime, timedelta
 
 import flet as ft
 
+import theme
 from apis.external_api import VerkadaExternalAPIClient
-from constants import (
-    BORDER,
-    CARD_PADDING,
-    CARD_SHADOW,
-    COMMAND_GROUP_NAME,
-    ERROR,
-    FIELD_SPACING,
-    PRIMARY,
-    SECONDARY,
-    SURFACE,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
-    WARNING,
-    load_internal_invite_defaults,
+from apis.internal_api import (
+    ACCESS_ADMIN_ROLES,
+    PARALLEL_REQUESTS,
+    OrgNotFoundError,
+    validate_org_short_name,
 )
 from components import (
+    ProgressHeader,
     Stepper,
+    StepRow,
+    banner,
+    card,
+    dropdown,
+    ghost_button,
     primary_button,
+    run_step,
+    scroll_area,
     secondary_button,
     section_header,
     set_button_loading,
     text_field,
 )
+from constants import (
+    BORDER,
+    CARD_PADDING,
+    ERROR,
+    ESS_AF64_ACCESS_LEVEL_NAME,
+    FIELD_SPACING,
+    PARTICIPANTS_GROUP_NAME,
+    PRIMARY,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    VSS_ACCESS_GROUP_NAME,
+    VSS_ACCESS_LEVEL_NAME,
+    WARNING,
+    load_internal_invite_defaults,
+)
 from pages.app_shell import ToolView
+from utils.cancellation import CancellationToken
 from utils.db import load_import_settings, save_import_settings
 from utils.executor import _executor
-from utils.session import get_external_client, get_internal_client, set_external_client
+from utils.session import (
+    begin_run,
+    end_run,
+    get_external_client,
+    get_internal_client,
+    set_external_client,
+)
 from utils.ui_utils import show_alert, show_toast
+from utils.validation import is_valid_email
 
 _STEP_LABELS = ["API Key", "Site & Date", "Review", "Invite"]
 
@@ -52,12 +76,13 @@ def _strip(value: str | None) -> str:
 
 
 class UsersView(ToolView):
-    def __init__(self, push_route, pop_route):
+    def __init__(self, push_route):
         super().__init__(
             push_route,
-            pop_route,
             route="/users",
             title="User Management",
+            subtitle="Invite guest-visit participants from another org into "
+            "this one.",
         )
         self._current_step = 0
         self._sites: list[dict] = []
@@ -81,25 +106,21 @@ class UsersView(ToolView):
         for i, step in enumerate(self._steps):
             step.visible = i == 0
 
-        card_content: list[ft.Control] = [self._step_indicators]
-        card_content.extend(self._steps)
-
-        card = ft.Container(
-            bgcolor=SURFACE,
-            border_radius=12,
-            border=ft.Border.all(1, BORDER),
-            shadow=CARD_SHADOW,
-            padding=ft.Padding.all(CARD_PADDING),
-            content=ft.Column(
-                card_content,
-                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-                scroll=ft.ScrollMode.ADAPTIVE,
-                spacing=FIELD_SPACING,
-            ),
-            expand=True,
+        steps = ft.Column(
+            self._steps,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            spacing=FIELD_SPACING,
         )
-
-        self.mount(card)
+        self.mount(
+            card(
+                ft.Column(
+                    [self._step_indicators, scroll_area(steps)],
+                    expand=True,
+                ),
+                padding=CARD_PADDING,
+                expand=True,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Step indicator strip
@@ -141,6 +162,7 @@ class UsersView(ToolView):
         self._import_org_field = text_field(
             label="Org Short Name (External)",
             value=org_default,
+            on_change=self._clear_field_error,
         )
         self._connect_btn = primary_button("Connect", on_click=self._on_connect)
 
@@ -148,7 +170,8 @@ class UsersView(ToolView):
             [
                 section_header(
                     "External Organization",
-                    "Enter the API key and org short name for the external organization.",
+                    "The org your participants visited as guests. Use a public "
+                    "API key from that org's Command settings.",
                 ),
                 ft.Container(height=10),
                 self._api_key_field,
@@ -176,11 +199,24 @@ class UsersView(ToolView):
 
         try:
             loop = asyncio.get_running_loop()
+            # The source org may live on a different shard/region than the
+            # org this session is logged in to; look it up by short name.
+            shard = await loop.run_in_executor(
+                _executor, validate_org_short_name, org
+            )
             client = await loop.run_in_executor(
-                _executor, VerkadaExternalAPIClient, api_key, org
+                _executor,
+                VerkadaExternalAPIClient,
+                api_key,
+                org,
+                shard.public_api_region,
             )
             set_external_client(client)
-            save_import_settings(org, api_key)
+            save_import_settings(org, api_key, shard.public_api_region)
+            self._source_org_text.value = (
+                f"Connected to {shard.org_name or org}"
+                + (f" · {shard.readable_name}" if shard.readable_name else "")
+            )
 
             # Load sites for step 2
             self._sites = await loop.run_in_executor(_executor, client.get_sites)
@@ -192,6 +228,10 @@ class UsersView(ToolView):
                 self._site_dropdown.value = self._sites[0]["site_id"]
 
             self._go_to_step(1, e.page)
+        except OrgNotFoundError as ex:
+            set_button_loading(self._connect_btn, False, "Connect")
+            self._import_org_field.error = str(ex)
+            e.page.update()
         except Exception as ex:
             set_button_loading(self._connect_btn, False, "Connect")
             show_alert(e.page, "Connection Failed", str(ex))
@@ -201,48 +241,51 @@ class UsersView(ToolView):
     # ------------------------------------------------------------------
 
     def _build_step_2(self) -> ft.Column:
-        self._site_dropdown = ft.Dropdown(
-            label="Site",
-            options=[],
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
+        self._source_org_text = ft.Text(
+            "", size=theme.FONT_CAPTION, color=theme.TEXT_MUTED
         )
-
-        self._date_label = ft.Text(
-            f"Date: {self._selected_date.strftime('%B %d, %Y')}",
-            color=TEXT_PRIMARY,
-            size=14,
-        )
-        self._date_btn = ft.OutlinedButton(
-            content=self._date_label,
-            style=ft.ButtonStyle(
-                side=ft.BorderSide(1, BORDER),
-                shape=ft.RoundedRectangleBorder(radius=8),
-            ),
-            height=50,
+        self._site_dropdown = dropdown("Guest site", [])
+        self._date_btn = secondary_button(
+            self._date_text(),
             on_click=self._open_date_picker,
+            icon=ft.Icons.CALENDAR_MONTH,
+            height=52,
+            width=240,
         )
-
         self._step2_next_btn = primary_button(
-            "Load Participants", on_click=self._on_load_participants
+            "Load Participants", on_click=self._on_load_participants, expand=True
         )
 
         return ft.Column(
             [
                 section_header(
                     "Select Site & Date",
-                    "Choose the site and date to load guest visits.",
+                    "Participants are the guests who visited this site on "
+                    "this day.",
                 ),
+                self._source_org_text,
                 ft.Container(height=10),
-                self._site_dropdown,
-                ft.Container(height=FIELD_SPACING),
-                self._date_btn,
+                ft.Row(
+                    [self._site_dropdown, self._date_btn],
+                    spacing=FIELD_SPACING,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
                 ft.Container(height=FIELD_SPACING + 5),
-                self._step2_next_btn,
+                ft.Row([self._back_button(0), self._step2_next_btn], spacing=10),
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+
+    def _date_text(self) -> str:
+        return self._selected_date.strftime("%B %d, %Y")
+
+    def _back_button(self, to_step: int) -> ft.Control:
+        """Step back without losing what was loaded (Esc leaves the tool)."""
+        return ghost_button(
+            "Back",
+            on_click=lambda e: self._go_to_step(to_step, e.page),
+            color=TEXT_SECONDARY,
+            icon=ft.Icons.ARROW_BACK,
         )
 
     def _open_date_picker(self, e):
@@ -262,9 +305,7 @@ class UsersView(ToolView):
     def _on_date_change(self, e):
         if e.control.value:
             self._selected_date = e.control.value
-            self._date_label.value = (
-                f"Date: {self._selected_date.strftime('%B %d, %Y')}"
-            )
+            self._date_btn.content.controls[1].value = self._date_text()
             e.page.update()
 
     async def _on_load_participants(self, e):
@@ -304,16 +345,26 @@ class UsersView(ToolView):
         self._participant_count_text = ft.Text(
             "0 participants", size=13, color=TEXT_SECONDARY
         )
-        add_btn = ft.TextButton(
-            content=ft.Text("+ Add Participant", color=PRIMARY),
-            on_click=self._add_participant_row,
+        add_btn = ft.Row(
+            [
+                ghost_button(
+                    "Add participant",
+                    on_click=self._add_participant_row,
+                    icon=ft.Icons.PERSON_ADD_ALT_1,
+                )
+            ]
         )
-        self._invite_btn = primary_button("Invite All", on_click=self._on_invite_all)
+        self._invite_btn = primary_button(
+            "Invite All", on_click=self._on_invite_all, expand=True
+        )
 
         # Gates the group step in _run_invites. On by default: the common
         # case is that every invited participant belongs in the group.
         self._add_to_group_switch = ft.Switch(
-            label=f" Add invited users to '{COMMAND_GROUP_NAME}'",
+            label=(
+                f" Add participants to the '{PARTICIPANTS_GROUP_NAME}' Command "
+                f"group and access group"
+            ),
             value=True,
             active_color=PRIMARY,
             label_text_style=ft.TextStyle(color=TEXT_PRIMARY),
@@ -345,7 +396,7 @@ class UsersView(ToolView):
                 ft.Container(height=10),
                 self._add_to_group_switch,
                 ft.Container(height=10),
-                self._invite_btn,
+                ft.Row([self._back_button(1), self._invite_btn], spacing=10),
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
@@ -372,16 +423,12 @@ class UsersView(ToolView):
     def _create_participant_row(
         self, first: str = "", last: str = "", email: str = ""
     ) -> ft.Row:
-        compact_padding = ft.Padding.symmetric(horizontal=10, vertical=8)
-
         def _participant_field(value: str, expand: int) -> ft.TextField:
-            return ft.TextField(
-                value=value,
-                border_color=BORDER,
-                focused_border_color=PRIMARY,
-                color=TEXT_PRIMARY,
-                content_padding=compact_padding,
+            return text_field(
+                value=value or "",
                 expand=expand,
+                compact=True,
+                on_change=self._clear_field_error,
             )
 
         first_f = _participant_field(first, expand=1)
@@ -393,10 +440,29 @@ class UsersView(ToolView):
             icon=ft.Icons.DELETE_OUTLINE,
             icon_color=ERROR,
             icon_size=18,
+            tooltip="Remove",
             on_click=lambda _, r=row: self._remove_participant_row(r),
         )
         row.controls = [first_f, last_f, email_f, delete_btn]
         return row
+
+    @staticmethod
+    def _clear_field_error(e) -> None:
+        if e.control.error:
+            e.control.error = None
+            e.page.update()
+
+    def _validate_emails(self) -> bool:
+        """Mark malformed emails; rows with no email are skipped as before."""
+        ok = True
+        for row in self._participants_column.controls:
+            fields = [c for c in row.controls if isinstance(c, ft.TextField)]
+            if len(fields) == 3:
+                email = _strip(fields[2].value)
+                if email and not is_valid_email(email):
+                    fields[2].error = "Enter a valid email"
+                    ok = False
+        return ok
 
     def _add_participant_row(self, e):
         self._participants_column.controls.append(self._create_participant_row())
@@ -418,10 +484,29 @@ class UsersView(ToolView):
                 e.page, "Add at least one participant to invite.", kind="warning"
             )
             return
+        if not self._validate_emails():
+            show_toast(
+                e.page,
+                "Fix the highlighted emails, or remove those rows.",
+                kind="warning",
+            )
+            e.page.update()
+            return
 
+        token = CancellationToken()
+        if not begin_run("Invite", token):
+            show_toast(
+                e.page,
+                "Another run is still stopping — try again in a moment.",
+                kind="warning",
+            )
+            return
         self._go_to_step(3, e.page)
         await asyncio.sleep(0)
-        await self._run_invites(e.page)
+        try:
+            await self._run_invites(e.page, token)
+        finally:
+            end_run(token)
 
     # ------------------------------------------------------------------
     # Step 4: Invite Progress
@@ -429,6 +514,8 @@ class UsersView(ToolView):
 
     def _build_step_4(self) -> ft.Column:
         self._invite_progress = ft.Column(spacing=8)
+        self._invite_header = ProgressHeader(determinate=True)
+        self._invite_result = ft.Container(visible=False)
         # Holds (first, last, email) tuples for participants that were
         # successfully invited. Populated by _run_invites; consumed by
         # _on_copy_invited.
@@ -445,6 +532,8 @@ class UsersView(ToolView):
             [
                 section_header("Inviting Participants"),
                 ft.Container(height=10),
+                self._invite_header,
+                self._invite_result,
                 self._invite_progress,
                 ft.Container(height=15),
                 ft.Row(
@@ -456,44 +545,101 @@ class UsersView(ToolView):
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
 
-    async def _run_invites(self, page):
+    async def _run_invites(self, page, token: CancellationToken):
         client = get_internal_client()
-        loop = asyncio.get_running_loop()
         success_count = 0
-        total = 0
         self._invited_records = []
         invited_user_ids: list[str] = []
 
-        for control in self._participants_column.controls:
-            if not isinstance(control, ft.Row):
-                continue  # only ft.Row instances are added by _create_participant_row
-            row: ft.Row = control
+        # Participants with an email, in list order (rows without one are
+        # skipped, as before). Collected first so progress has a total.
+        # A repeated email (any case; a guest who signed in twice) is one
+        # person: invited once, the repeats listed as skipped.
+        people, emails, repeats = [], set(), []
+        for row in self._participants_column.controls:
             fields = [c for c in row.controls if isinstance(c, ft.TextField)]
-            if len(fields) < 3:
-                continue
-            first = _strip(fields[0].value)
-            last = _strip(fields[1].value)
-            email_val = _strip(fields[2].value)
-            if not email_val:
-                continue
-            total += 1
+            if len(fields) == 3 and _strip(fields[2].value):
+                person = tuple(_strip(f.value) for f in fields)
+                if person[2].lower() in emails:
+                    repeats.append(person)
+                    continue
+                emails.add(person[2].lower())
+                people.append(person)
+        for first, last, email_val in repeats:
+            row = StepRow(email_val)
+            row.skip(f"Listed twice: {f'{first} {last}'.strip()} ({email_val}) — invited once")
+            self._invite_progress.controls.append(row)
+        total = len(people)
+        self._invite_header.set_progress(0, total)
+        done = 0
 
-            ok, user_id = await self._run_invite_step(
-                page, loop, client, first, last, email_val
+        # People already in the org (one user list call) are not re-invited
+        # — the invite would be refused — but still join the Command group.
+        # If the lookup fails, everyone is invited as before.
+        already_count = 0
+        if people:
+            ok, existing = await self._progress_step(
+                page,
+                "Checking for existing users",
+                "Checked for existing users",
+                "Could not check for existing users",
+                client.get_user_ids_by_email,
             )
-            if ok:
+            existing = (existing or {}) if ok else {}
+            remaining = []
+            for first, last, email_val in people:
+                user_id = existing.get(email_val.lower())
+                if user_id is None:
+                    remaining.append((first, last, email_val))
+                    continue
+                who = f"{first} {last}".strip()
+                row = StepRow(email_val)
+                row.succeed(f"Already in the org: {who} ({email_val})")
+                self._invite_progress.controls.append(row)
+                invited_user_ids.append(user_id)
+                done += 1
                 success_count += 1
-                self._invited_records.append((first, last, email_val))
-                if user_id:
-                    invited_user_ids.append(user_id)
+                already_count += 1
+            people = remaining
+            self._invite_header.set_progress(done, total)
+            page.update()
 
-        # Group membership runs once for the whole batch — add_users_to_group
-        # takes the id list, so one call covers everyone invited this run.
+        # Invites go out PARALLEL_REQUESTS at a time (one progress row each,
+        # in list order); cancelling stops before the next chunk.
+        for start in range(0, len(people), PARALLEL_REQUESTS):
+            chunk = people[start : start + PARALLEL_REQUESTS]
+            if token.is_cancelled:
+                for _first, _last, email_val in chunk:
+                    row = StepRow(email_val)
+                    row.skip(f"Skipped {email_val} (cancelled)")
+                    self._invite_progress.controls.append(row)
+                continue
+
+            results = await asyncio.gather(
+                *(
+                    self._run_invite_step(page, client, first, last, email_val)
+                    for first, last, email_val in chunk
+                )
+            )
+            for (first, last, email_val), (ok, user_id) in zip(chunk, results, strict=True):
+                done += 1
+                if ok:
+                    success_count += 1
+                    self._invited_records.append((first, last, email_val))
+                    if user_id:
+                        invited_user_ids.append(user_id)
+            self._invite_header.set_progress(
+                done, total, failed=done - success_count
+            )
+            page.update()
+
+        # Group membership runs once for the whole batch: one add call per
+        # group covers everyone in this run who is not in it yet.
         # Skipped entirely when the Step 3 toggle is off.
-        if self._add_to_group_switch.value:
+        if self._add_to_group_switch.value and not token.is_cancelled:
             if invited_user_ids:
-                await self._add_invited_to_command_group(
-                    page, loop, client, invited_user_ids
+                await self._add_to_participant_groups(
+                    page, client, invited_user_ids
                 )
             elif success_count:
                 self._invite_progress.controls.append(
@@ -502,7 +648,7 @@ class UsersView(ToolView):
                             ft.Icon(ft.Icons.WARNING_ROUNDED, color=WARNING, size=18),
                             ft.Text(
                                 f"Invited users carried no user id — skipped "
-                                f"'{COMMAND_GROUP_NAME}'.",
+                                f"'{PARTICIPANTS_GROUP_NAME}'.",
                                 color=WARNING,
                                 size=13,
                             ),
@@ -512,18 +658,29 @@ class UsersView(ToolView):
                 )
 
         if total == 0:
-            summary = "No participants with an email were invited."
-            color = WARNING
-        else:
-            summary = f"Complete: {success_count}/{total} invited successfully"
-            color = SECONDARY if success_count == total else ERROR
-
-        self._invite_progress.controls.append(
-            ft.Container(
-                content=ft.Text(summary, color=color, weight=ft.FontWeight.W_600),
-                padding=ft.Padding.only(top=10),
+            summary, kind = "No participants with an email were invited.", "warning"
+        elif token.is_cancelled:
+            summary = f"Stopped: {success_count}/{total} invited before cancelling."
+            kind = "warning"
+        elif success_count == total and already_count:
+            summary = (
+                f"{total - already_count} invited; {already_count} already in "
+                f"the org."
             )
+            kind = "success"
+        elif success_count == total:
+            summary, kind = f"All {total} participants invited.", "success"
+        else:
+            summary = (
+                f"{success_count}/{total} invited — "
+                f"{total - success_count} could not be invited."
+            )
+            kind = "warning"
+        self._invite_header.complete(
+            color=theme.SUCCESS if kind == "success" else theme.WARNING
         )
+        self._invite_result.content = banner(summary, kind=kind)
+        self._invite_result.visible = True
         self._copy_btn.visible = bool(self._invited_records)
         self._done_btn.visible = True
         page.update()
@@ -531,46 +688,26 @@ class UsersView(ToolView):
     async def _progress_step(
         self,
         page,
-        loop,
         label: str,
         success_label: str,
         fail_label: str,
         fn,
         *args,
     ) -> tuple[bool, object]:
-        """
-        Append a spinner row, run `fn` in the executor, then swap the
-        spinner for a check or error icon.
-
-        Returns (ok, result); result is None when the call raised.
-        """
-        step_icon = ft.ProgressRing(
-            width=16, height=16, stroke_width=2, color=TEXT_SECONDARY
+        """Run `fn` with a live progress row; returns (ok, result)."""
+        ok, result, _ = await run_step(
+            page,
+            self._invite_progress,
+            label,
+            fn,
+            *args,
+            success_text=success_label,
+            failure_text=fail_label,
         )
-        step_text = ft.Text(f"{label}...", color=TEXT_SECONDARY, size=13)
-        step_row = ft.Row([step_icon, step_text], spacing=10)
-        self._invite_progress.controls.append(step_row)
-        page.update()
-        await asyncio.sleep(0)
-
-        try:
-            result = await loop.run_in_executor(_executor, fn, *args)
-            step_row.controls[0] = ft.Icon(
-                ft.Icons.CHECK_CIRCLE, color=SECONDARY, size=18
-            )
-            step_text.value = success_label
-            step_text.color = SECONDARY
-            page.update()
-            return True, result
-        except Exception as ex:
-            step_row.controls[0] = ft.Icon(ft.Icons.ERROR, color=ERROR, size=18)
-            step_text.value = f"{fail_label} — {ex}"
-            step_text.color = ERROR
-            page.update()
-            return False, None
+        return ok, result
 
     async def _run_invite_step(
-        self, page, loop, client, first: str, last: str, email_val: str
+        self, page, client, first: str, last: str, email_val: str
     ) -> tuple[bool, str | None]:
         """Append a progress row, attempt the invite, and update the row.
 
@@ -581,7 +718,6 @@ class UsersView(ToolView):
         who = f"{first} {last}".strip()
         ok, result = await self._progress_step(
             page,
-            loop,
             f"Inviting {who} ({email_val})",
             f"Invited {who} ({email_val})",
             f"Failed: {who}",
@@ -592,58 +728,188 @@ class UsersView(ToolView):
         )
         return ok, (result or {}).get("user_id")
 
-    async def _add_invited_to_command_group(
-        self, page, loop, client, user_ids: list[str]
-    ) -> bool:
+    async def _add_to_participant_groups(
+        self, page, client, user_ids: list[str]
+    ) -> None:
         """
-        Add the freshly invited users to the shared Command group, creating
-        the group the first time it is needed.
+        Put the run's participants (invited now or already in the org) in
+        the 'All Participants' groups (PARTICIPANTS_GROUP_NAME): the Command
+        group and the access group. Each is found by name and created only
+        the first time, and only people not yet in it are added, so re-runs
+        collect into the same groups.
 
-        Reuses an existing group by name so repeated invite runs collect
-        into one group. Note that get_group() hides Verkada-managed groups,
-        so only a group created by this tool (or by hand) is ever matched.
+        When the org has the VSSL 'VCE Access Group', participants join it
+        too. The access levels the templates create are then granted to
+        their group: '[DO NOT TOUCH] AF64' (ESS) to 'All Participants' and
+        'VCE Access Level' (VSSL) to 'VCE Access Group', when the level
+        exists and lacks the group.
+
+        Access groups need an access admin role. Roles the user lacks are
+        granted for this step and revoked right after it; roles the user
+        already held are left alone.
         """
-        ok, groups = await self._progress_step(
+        name = PARTICIPANTS_GROUP_NAME
+        ok, group = await self._progress_step(
             page,
-            loop,
-            f"Looking up group '{COMMAND_GROUP_NAME}'",
-            f"Looked up group '{COMMAND_GROUP_NAME}'",
+            f"Looking up group '{name}'",
+            f"Looked up group '{name}'",
             "Failed: group lookup",
-            client.get_group,
+            client.find_group,
+            name,
+        )
+        if ok:
+            await self._sync_group(
+                page, "group", name, group, client.create_group,
+                client.add_users_to_group, user_ids,
+            )
+
+        ok, held = await self._progress_step(
+            page,
+            "Checking access roles",
+            "Checked access roles",
+            "Failed: checking access roles",
+            client.get_org_role_keys,
         )
         if not ok:
-            return False
+            return
+        missing = [role for role in ACCESS_ADMIN_ROLES if role not in held]
+        try:
+            if missing:
+                ok, _ = await self._progress_step(
+                    page,
+                    "Granting access admin roles",
+                    "Granted access admin roles",
+                    "Failed: granting access admin roles",
+                    client.enable_access_admin,
+                    missing,
+                )
+            if ok:
+                await self._sync_access_groups(page, client, user_ids)
+        finally:
+            if missing:
+                await self._progress_step(
+                    page,
+                    "Revoking access admin roles",
+                    "Revoked the access admin roles granted for this step",
+                    "Failed: revoking access admin roles",
+                    client.disable_access_admin,
+                    missing,
+                )
 
-        group_id = next(
-            (g["id"] for g in groups or [] if g.get("name") == COMMAND_GROUP_NAME),
-            None,
+    async def _sync_access_groups(self, page, client, user_ids: list[str]) -> None:
+        """The access-group part of _add_to_participant_groups: one lookup
+        for both groups, one for both access levels."""
+        ok, groups = await self._progress_step(
+            page,
+            "Looking up access groups",
+            "Looked up access groups",
+            "Failed: access group lookup",
+            client.find_access_groups,
+            [PARTICIPANTS_GROUP_NAME, VSS_ACCESS_GROUP_NAME],
         )
-        if not group_id:
+        if not ok:
+            return
+        group_ids = {
+            PARTICIPANTS_GROUP_NAME: await self._sync_group(
+                page, "access group", PARTICIPANTS_GROUP_NAME,
+                groups.get(PARTICIPANTS_GROUP_NAME), client.create_access_group,
+                client.add_users_to_access_group, user_ids,
+            ),
+        }
+        if VSS_ACCESS_GROUP_NAME in groups:  # VSSL org: never created here
+            group_ids[VSS_ACCESS_GROUP_NAME] = await self._sync_group(
+                page, "access group", VSS_ACCESS_GROUP_NAME,
+                groups[VSS_ACCESS_GROUP_NAME], None,
+                client.add_users_to_access_group, user_ids,
+            )
+
+        pairs = {  # access level -> the group it should be granted to
+            ESS_AF64_ACCESS_LEVEL_NAME: group_ids.get(PARTICIPANTS_GROUP_NAME),
+            VSS_ACCESS_LEVEL_NAME: group_ids.get(VSS_ACCESS_GROUP_NAME),
+        }
+        pairs = {level: gid for level, gid in pairs.items() if gid}
+        if not pairs:
+            return
+        ok, levels = await self._progress_step(
+            page,
+            "Looking up access levels",
+            "Looked up access levels",
+            "Failed: access level lookup",
+            client.find_access_levels,
+            list(pairs),
+        )
+        if not ok:
+            return
+        group_names = {gid: n for n, gid in group_ids.items()}
+        for level_name, group_id in pairs.items():
+            level = levels.get(level_name)
+            if level is None:
+                continue  # that template's level isn't in this org
+            group_name = group_names[group_id]
+            if group_id in (level.get("userGroups") or []):
+                row = StepRow(level_name)
+                row.succeed(f"Access level '{level_name}' already grants '{group_name}'")
+                self._invite_progress.controls.append(row)
+                page.update()
+                continue
+            await self._progress_step(
+                page,
+                f"Granting access level '{level_name}' to '{group_name}'",
+                f"Granted access level '{level_name}' to '{group_name}'",
+                f"Failed: granting access level '{level_name}'",
+                client.add_groups_to_access_level,
+                level,
+                [group_id],
+            )
+
+    async def _sync_group(
+        self, page, kind: str, name: str, group, create, add, user_ids: list[str]
+    ) -> str | None:
+        """Create the group (`group` is None and `create` is given), then add
+        the user_ids not in it yet (one call). Returns its id, or None when
+        it doesn't exist or couldn't be created."""
+        if group is None:
+            if create is None:
+                return None
             ok, group_id = await self._progress_step(
                 page,
-                loop,
-                f"Creating group '{COMMAND_GROUP_NAME}'",
-                f"Created group '{COMMAND_GROUP_NAME}'",
-                f"Failed: creating group '{COMMAND_GROUP_NAME}'",
-                client.create_group,
-                COMMAND_GROUP_NAME,
+                f"Creating {kind} '{name}'",
+                f"Created {kind} '{name}'",
+                f"Failed: creating {kind} '{name}'",
+                create,
+                name,
             )
             if not ok:
-                return False
+                return None
+            group = {"id": group_id, "member_ids": set()}
 
-        count = len(user_ids)
+        to_add = [
+            u for u in dict.fromkeys(user_ids) if u not in group["member_ids"]
+        ]
+        if not to_add:
+            row = StepRow(name)
+            count = len(set(user_ids))
+            row.succeed(
+                f"All {count} already in {kind} '{name}'"
+                if count != 1
+                else f"Already in {kind} '{name}'"
+            )
+            self._invite_progress.controls.append(row)
+            page.update()
+            return group["id"]
+
+        count = len(to_add)
         plural = "" if count == 1 else "s"
-        ok, _ = await self._progress_step(
+        await self._progress_step(
             page,
-            loop,
-            f"Adding {count} user{plural} to '{COMMAND_GROUP_NAME}'",
-            f"Added {count} user{plural} to '{COMMAND_GROUP_NAME}'",
-            f"Failed: adding users to '{COMMAND_GROUP_NAME}'",
-            client.add_users_to_group,
-            user_ids,
-            group_id,
+            f"Adding {count} user{plural} to {kind} '{name}'",
+            f"Added {count} user{plural} to {kind} '{name}'",
+            f"Failed: adding users to {kind} '{name}'",
+            add,
+            to_add,
+            group["id"],
         )
-        return ok
+        return group["id"]
 
     def _on_copy_invited(self, e):
         """Copy the successfully-invited participants to the clipboard as a

@@ -1,3 +1,6 @@
-flet>=0.85
+# flet minor releases deprecate and later remove APIs (1.0 removed
+# ElevatedButton). Bump the pin deliberately: run the tests and
+# tools/shoot_app.py against the new version first.
+flet>=1.0.5,<1.1
 requests>=2.31
 urllib3>=2.0

@@ -3,7 +3,7 @@
 With the persistent sidebar now owning navigation, org/session chips, and
 logout, Home is a compact landing dashboard rather than the app's primary
 navigation surface: a short intro, a tidy row of tool cards, and a keyboard
-shortcut hint. The session countdown and auto-logout live in `ShellView`.
+shortcut hint. The session countdown and auto-logout live in `AppShell`.
 """
 
 import flet as ft
@@ -12,37 +12,49 @@ import theme
 from components import card
 from pages.app_shell import ToolView
 
-# (route, title, icon, brand tint, description) for the three tool cards.
+# (route, title, icon, brand tint token, description) for the three tool
+# cards. Tints are theme token names, resolved when the card is drawn.
 _TOOLS = [
     (
         "/commission",
         "Commission",
         ft.Icons.BUSINESS_ROUNDED,
-        theme.BRAND_COMMISSION,
+        "BRAND_COMMISSION",
         "Set up sites, claim devices, and configure templates.",
     ),
     (
         "/users",
         "User Management",
         ft.Icons.PEOPLE_ALT_ROUNDED,
-        theme.BRAND_USERS,
+        "BRAND_USERS",
         "Import and invite guest participants from external orgs.",
     ),
     (
         "/decommission",
         "Decommission",
         ft.Icons.DELETE_SWEEP_ROUNDED,
-        theme.BRAND_DECOMMISSION,
+        "BRAND_DECOMMISSION",
         "Scan and remove assets with dependency-aware ordering.",
     ),
 ]
 
 
+_CARD_HEIGHT = 240
+
+# (keys, action) for the shortcut reference. Plain-text key names: the
+# bundled font has no guaranteed glyph for the macOS command symbol.
+_SHORTCUTS = [
+    ("Ctrl/Cmd + K", "Command palette"),
+    ("Esc", "Back"),
+    ("Ctrl/Cmd + ,", "Log out"),
+    ("Enter", "Submit the current form"),
+]
+
+
 class HomeView(ToolView):
-    def __init__(self, push_route, pop_route):
+    def __init__(self, push_route):
         super().__init__(
             push_route,
-            pop_route,
             route="/home",
             title="Home",
             subtitle="Pick a tool to get started.",
@@ -50,16 +62,74 @@ class HomeView(ToolView):
         self._build_ui()
 
     def _build_ui(self):
-        # Three tall tiles that fill the content area down to the bottom.
+        # Three equal tool tiles at a fixed height (stretching them to the
+        # window bottom left them mostly empty), then the shortcut reference.
         cards_row = ft.Row(
             [self._tool_card(*t) for t in _TOOLS],
             spacing=theme.SPACE_LG,
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
-            expand=True,
+            height=_CARD_HEIGHT,
         )
-        self.mount(cards_row)
+        self.mount(
+            ft.Column(
+                [cards_row, self._shortcuts_card()],
+                spacing=theme.SPACE_LG,
+                scroll=ft.ScrollMode.AUTO,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            )
+        )
+
+    def _shortcuts_card(self) -> ft.Control:
+        def shortcut(keys: str, action: str) -> ft.Control:
+            return ft.Row(
+                [
+                    ft.Container(
+                        content=ft.Text(
+                            keys,
+                            size=theme.FONT_CAPTION,
+                            color=theme.TEXT_PRIMARY,
+                            weight=theme.WEIGHT_MEDIUM,
+                            font_family=theme.FONT_MONO,
+                        ),
+                        bgcolor=theme.SURFACE_VARIANT,
+                        border=ft.Border.all(1, theme.BORDER),
+                        border_radius=theme.RADIUS_MD,
+                        padding=ft.Padding.symmetric(
+                            horizontal=theme.SPACE_SM, vertical=2
+                        ),
+                    ),
+                    ft.Text(action, size=theme.FONT_BODY, color=theme.TEXT_SECONDARY),
+                ],
+                spacing=theme.SPACE_SM,
+                tight=True,
+            )
+
+        return card(
+            ft.Column(
+                [
+                    ft.Text(
+                        "Keyboard shortcuts",
+                        size=theme.FONT_BODY,
+                        color=theme.TEXT_PRIMARY,
+                        weight=theme.WEIGHT_SEMIBOLD,
+                    ),
+                    ft.Row(
+                        [
+                            shortcut(keys, action)
+                            for keys, action in _SHORTCUTS
+                        ],
+                        spacing=theme.SPACE_2XL,
+                        wrap=True,
+                        run_spacing=theme.SPACE_SM,
+                    ),
+                ],
+                spacing=theme.SPACE_MD,
+            ),
+            padding=theme.SPACE_XL,
+        )
 
     def _tool_card(self, route, title, icon, brand, description) -> ft.Control:
+        brand = getattr(theme, brand)
         inner = card(
             ft.Column(
                 [

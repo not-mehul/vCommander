@@ -1,15 +1,19 @@
 """vCommander entry point.
 
-Configures the Flet `Page`, defines a tiny `push/pop` route stack
-(Flet's built-in router was overkill for the half-dozen screens here),
-and mounts the LoginView. Each view receives `push_route` and
-`pop_route` callbacks so it can navigate without importing the others.
+Configures the Flet `Page` and owns navigation. Public screens (login, 2FA)
+replace the whole view; authenticated tools are hosted inside one persistent
+`AppShell` whose content area swaps per route. Every view receives a single
+`push_route(route)` callback so it can navigate without importing the others.
+
+Navigation, theme switches and logout all pass through a run guard: while a
+long-running job (commission, decommission scan/delete, invite batch) is in
+progress, the user is asked before it is abandoned, and leaving cancels it
+cooperatively instead of letting it keep calling the API in the background.
 """
 
 import asyncio
-import webbrowser
-
 import sys
+import webbrowser
 
 import flet as ft
 
@@ -39,16 +43,28 @@ from pages.home_view import HomeView
 from pages.login_view import LoginView
 from pages.two_factor_view import TwoFactorView
 from pages.users_view import UsersView
-from utils import prefs, ui_utils
-from utils.logger import get_log_path, log_api_call
-from utils.session import clear_session, is_session_expired, session_active
+from utils import prefs
+from utils.logger import (
+    LOG_RETENTION_DAYS,
+    get_log_path,
+    log_api_call,
+    prune_old_entries,
+)
+from utils.session import (
+    cancel_run,
+    clear_session,
+    is_session_expired,
+    running_job,
+    session_active,
+)
+from utils.tasks import spawn
+from utils.ui_utils import show_confirm
 from utils.version_check import check_for_update
 
 # Modules that imported flat color names by value and therefore need their
 # globals re-pointed at the active palette on a theme switch.
 _THEMED_MODULES = [
     constants,
-    ui_utils,
     login_view,
     two_factor_view,
     home_view,
@@ -62,24 +78,15 @@ _THEMED_MODULES = [
 # the user is inside a tool or the window is backgrounded.
 _SESSION_WATCHDOG_INTERVAL = 5
 
-# Strong references to app-lifetime background tasks. asyncio keeps only a weak
-# reference to a bare create_task() result, so without this the version check
-# or — critically — the session watchdog (auto-logout enforcement) could be
-# garbage-collected mid-run.
-_BACKGROUND_TASKS: set[asyncio.Task] = set()
-
-
-def _spawn(coro) -> asyncio.Task:
-    """Start a background task and keep a strong reference until it finishes."""
-    task = asyncio.create_task(coro)
-    _BACKGROUND_TASKS.add(task)
-    task.add_done_callback(_BACKGROUND_TASKS.discard)
-    return task
-
 
 async def main(page: ft.Page):
     """Flet app entry point. Sets window chrome and pushes the login screen."""
-    log_api_call("APP", "startup", "{}", "200", f"vCommander v{APP_VERSION}")
+    pruned = prune_old_entries()
+    log_api_call(
+        "APP", "startup", "{}", "200",
+        f"vCommander v{APP_VERSION}"
+        + (f"; dropped {pruned} log lines older than {LOG_RETENTION_DAYS} days" if pruned else ""),
+    )
     print(f"Logs → {get_log_path()}")
 
     page.title = f"vCommander {BUILD_VARIANT_LABEL}v{APP_VERSION}"
@@ -111,11 +118,44 @@ async def main(page: ft.Page):
         )
         page.bgcolor = theme.BG
 
-    def make_tool(route):
-        return TOOL_ROUTES[route](push_route=navigate, pop_route=back)
+    def guarded(action: str, proceed):
+        """Run `proceed()` now, or after confirming that the active job stops.
 
-    def navigate(route: str):
-        """Single navigation entry point.
+        `action` completes the sentence "<Leaving> will cancel it…".
+        """
+        job = running_job()
+        if job is None:
+            proceed()
+            return
+
+        def stop_and_proceed():
+            cancel_run()
+            proceed()
+
+        show_confirm(
+            page,
+            f"{job} in progress",
+            f"{action} will cancel it after the current step finishes. "
+            "Steps already done are not undone.",
+            confirm_label="Stop and continue",
+            cancel_label="Keep running",
+            on_confirm=stop_and_proceed,
+        )
+
+    def make_tool(route):
+        return TOOL_ROUTES[route](push_route=navigate)
+
+    def _drop_shell():
+        """Discard the shell, letting the hosted tool release what it holds."""
+        shell = state["shell"]
+        state["shell"] = None
+        if shell is not None:
+            shell.leave()
+
+    def _go(route: str, restore=None):
+        """Unguarded navigation. Callers decide whether a job may be abandoned.
+
+        `restore` is handed to the new tool screen (see AppShell.show).
 
         Public routes (login/2FA) replace the whole view. Tool routes are
         shown inside the one persistent AppShell — only the content area
@@ -123,9 +163,9 @@ async def main(page: ft.Page):
         """
         if route in PUBLIC:
             # Leaving the app drops the shell (will_unmount cancels its timer).
-            state["shell"] = None
+            _drop_shell()
             page.views.clear()
-            page.views.append(PUBLIC[route](push_route=navigate, pop_route=back))
+            page.views.append(PUBLIC[route](push_route=navigate))
             current["route"] = route
             page.update()
             return
@@ -133,18 +173,24 @@ async def main(page: ft.Page):
         # Authenticated tool route — enforce the session clock lazily.
         if session_active() and is_session_expired():
             clear_session()
-            navigate("/login")
+            _go("/login")
             return
 
         shell = state["shell"]
         if shell is None or not page.views or page.views[-1] is not shell:
-            shell = app_shell.AppShell(navigate=navigate, tool_factory=make_tool)
+            shell = app_shell.AppShell(
+                navigate=navigate, tool_factory=make_tool, logout=logout
+            )
             state["shell"] = shell
             page.views.clear()
             page.views.append(shell)
             page.update()  # mounts shell; did_mount starts the session timer
-        shell.show(route)
+        shell.show(route, restore)
         current["route"] = route
+
+    def navigate(route: str):
+        """Single navigation entry point for views, the sidebar and shortcuts."""
+        guarded("Leaving this screen", lambda: _go(route))
 
     def back():
         """Esc / back without a growing history stack."""
@@ -155,16 +201,31 @@ async def main(page: ft.Page):
             navigate("/home")
         # On /home or /login, back is a no-op.
 
+    def logout():
+        def proceed():
+            clear_session()
+            _go("/login")
+
+        guarded("Logging out", proceed)
+
     def toggle_theme():
-        new_mode = "light" if theme.palette.mode == "dark" else "dark"
-        _set_palette(new_mode)
-        prefs.set_theme_pref(new_mode)
-        # Rebuild the current screen with the new palette (colors are captured
-        # at build time). Tool routes need a fresh shell.
-        route = current["route"]
-        if route in TOOL_ROUTES:
-            state["shell"] = None
-        navigate(route)
+        def proceed():
+            new_mode = "light" if theme.palette.mode == "dark" else "dark"
+            _set_palette(new_mode)
+            prefs.set_theme_pref(new_mode)
+            # Rebuild the current screen with the new palette (colors are
+            # captured at build time). Tool routes need a fresh shell; the
+            # old screen hands over what it holds (e.g. a Decommission scan)
+            # so the switch doesn't lose it.
+            route = current["route"]
+            handed_over = None
+            if route in TOOL_ROUTES:
+                shell = state["shell"]
+                handed_over = shell.detach_tool_state() if shell else None
+                _drop_shell()
+            _go(route, handed_over)
+
+        guarded("Switching theme", proceed)
 
     app_shell.set_theme_toggle(toggle_theme)
 
@@ -182,13 +243,14 @@ async def main(page: ft.Page):
             while True:
                 await asyncio.sleep(_SESSION_WATCHDOG_INTERVAL)
                 if session_active() and is_session_expired():
+                    # clear_session() also cancels any running job.
                     clear_session()
                     if current["route"] not in PUBLIC:
-                        navigate("/login")
+                        _go("/login")
         except asyncio.CancelledError:
             pass
 
-    navigate("/login")
+    _go("/login")
 
     def show_update_banner(latest: str, url: str):
         def dismiss(_):
@@ -225,11 +287,6 @@ async def main(page: ft.Page):
 
     def open_command_palette():
         """Build and show the Cmd/Ctrl-K palette (only inside the app)."""
-
-        def logout():
-            clear_session()
-            navigate("/login")
-
         commands = [
             ("Go to Home", ft.Icons.GRID_VIEW_ROUNDED, lambda: navigate("/home")),
             (
@@ -281,14 +338,14 @@ async def main(page: ft.Page):
             return
         if ctrl_or_meta and e.key == ",":
             if _in_app():
-                clear_session()
-                navigate("/login")
+                logout()
             return
 
     page.on_keyboard_event = on_key
 
-    _spawn(run_version_check())
-    _spawn(session_watchdog())
+    spawn(run_version_check())
+    spawn(session_watchdog())
 
 
-ft.run(main)
+if __name__ == "__main__":
+    ft.run(main)

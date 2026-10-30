@@ -7,6 +7,69 @@ class Endpoint(NamedTuple):
     path: str  # str.format template; {org_id}, {device_id}, ...
     payload: dict  # example request body (placeholder values)
     response: dict | list | None  # example response body (placeholder values)
+    # Fixed domain for shard-independent endpoints (e.g. GLOBAL_DOMAIN).
+    # None = served from the org's shard domain.
+    domain: str | None = None
+    # False for a request that must never be replayed after it may have
+    # reached the server (a PUT that creates, see apis/http.py). True lets
+    # the shared retry policy decide by method.
+    replayable: bool = True
+
+
+class OrgShard(NamedTuple):
+    """Where an org is hosted, as reported by org/validate_short_name.
+
+    Every internal service lives at `<service>.<domain>` (e.g.
+    vprovision.prod-us-ohio.verkada.com). Gateway endpoints use the
+    `api_gateway_endpoint` label instead of a service name.
+
+    `public_api_endpoint` is NOT the public API's host: Command's own shard
+    table sets it to "apiadmin" on every shard, the service that manages
+    API keys. The public API host is per shard (see `public_api_region`).
+    """
+
+    name: str  # shard id sent at login: "prod1", "prod-us-ohio", ...
+    domain: str  # e.g. "command.verkada.com", "prod-us-ohio.verkada.com"
+    api_gateway_endpoint: str = "api"
+    public_api_endpoint: str = "apiadmin"  # informational only, see above
+    readable_name: str = ""  # region: "US", "EU", "AU"
+    org_name: str = ""  # display name, e.g. "SSS Alpha"
+
+    @property
+    def public_api_region(self) -> str:
+        """Public-API host label (https://<label>.verkada.com) for the shard.
+
+        Looked up by shard name first: prod1 and prod-us-ohio both read "US"
+        but have separate public APIs, and an API key only works on its own
+        shard's host (api.verkada.com answers an Ohio key with 409
+        "Authentication error"). An unknown shard falls back to its region.
+        """
+        label = PUBLIC_API_SHARDS.get(self.name)
+        if label is None:
+            label = PUBLIC_API_REGIONS.get(self.readable_name.strip().upper(), "api")
+        return label
+
+
+# Public API host label per shard and, as a fallback, per region
+# (readable_name). From Verkada's API docs (Service Regions): api.verkada.com
+# (US default), api.oh.verkada.com (additional US region), api.eu.verkada.com,
+# api.au.verkada.com.
+PUBLIC_API_SHARDS = {
+    "prod1": "api",
+    "prod-us-ohio": "api.oh",
+    "prod2": "api.eu",
+    "prod-ap-syd": "api.au",
+}
+PUBLIC_API_REGIONS = {"US": "api", "EU": "api.eu", "AU": "api.au"}
+
+
+# The original US shard. Used before an org's shard is known (and by the dev
+# login bypass); matches the hosts vCommander used before shards were
+# resolved per org.
+DEFAULT_SHARD = OrgShard(name="prod1", domain="command.verkada.com", readable_name="US")
+
+# Domain of the shard-independent services (vglobal).
+GLOBAL_DOMAIN = "global-prod.verkada.com"
 
 
 class Address(NamedTuple):
@@ -63,7 +126,11 @@ class MFARequiredError(Exception):
         self.qr_enabled = qr_enabled
 
 
-api_region = "api"
+# Subdomain marker for API-gateway endpoints. Most internal endpoints live on
+# a named service host (vprovision, vcerberus, …); the ones registered with
+# API_GATEWAY_SUBDOMAIN use the shard's `api_gateway_endpoint` label instead
+# (build_url swaps it in).
+API_GATEWAY_SUBDOMAIN = "api"
 
 _LPR_DOOR_CREATE_CONFIGS = [
     {"paramName": "default-unlock-time", "paramValue": "10"},
@@ -92,7 +159,6 @@ _LPR_DOOR_CREATE_CONFIGS = [
     {"paramName": "lpr-unlock-cooldown-time", "paramValue": "0"},
     {"paramName": "ignore-outbound-reader-ac", "paramValue": "False"},
     {"paramName": "lf-card-reading-enabled", "paramValue": "True"},
-    {"paramName": "polling-frequency-ms", "paramValue": "10000"},
     {"paramName": "c3po-in1-type", "paramValue": "NONE"},
     {"paramName": "c3po-in2-type", "paramValue": "NONE"},
     {"paramName": "replace-ios-with-security-relay", "paramValue": "False"},
@@ -101,7 +167,7 @@ _LPR_DOOR_CREATE_CONFIGS = [
 _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS = [
     {"paramName": "default-unlock-time", "paramValue": "10"},
     {"paramName": "assa-extended-unlock-time", "paramValue": "20"},
-    {"paramName": "has-door-sensor", "paramValue": "True"},
+    {"paramName": "has-door-sensor", "paramValue": "False"},
     {"paramName": "ignore-dpi-relock", "paramValue": "False"},
     {"paramName": "passthrough-dpi-enabled", "paramValue": "False"},
     {"paramName": "dho-enabled", "paramValue": "False"},
@@ -128,7 +194,16 @@ _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS = [
     {"paramName": "c3po-in1-type", "paramValue": "NONE"},
     {"paramName": "c3po-in2-type", "paramValue": "NONE"},
     {"paramName": "replace-ios-with-security-relay", "paramValue": False},
-    {"paramName": "face-unlock-enabled", "paramValue": "true"},
+    {"paramName": "face-unlock-enabled", "paramValue": "True"},
+]
+
+# Two-factor modes a door accepts once a 2FA schedule applies. The Command
+# web app sends them with door/create (its defaults: face + card and face +
+# code on, card + code off) instead of setting them afterwards.
+_DOOR_MFA_CREATE_CONFIGS = [
+    {"paramName": "mfa-card-code-enabled", "paramValue": "True"},
+    {"paramName": "mfa-face-card-enabled", "paramValue": "True"},
+    {"paramName": "mfa-face-code-enabled", "paramValue": "True"},
 ]
 
 _DOOR_CREATE_CONFIGS = [
@@ -158,7 +233,6 @@ _DOOR_CREATE_CONFIGS = [
     {"paramName": "lpr-unlock-cooldown-time", "paramValue": "0"},
     {"paramName": "ignore-outbound-reader-ac", "paramValue": "False"},
     {"paramName": "lf-card-reading-enabled", "paramValue": "True"},
-    {"paramName": "polling-frequency-ms", "paramValue": "10000"},
     {"paramName": "c3po-in1-type", "paramValue": "NONE"},
     {"paramName": "c3po-in2-type", "paramValue": "NONE"},
     {"paramName": "replace-ios-with-security-relay", "paramValue": "False"},
@@ -329,15 +403,53 @@ def resolve(endpoint_key: str, path_params: dict | None = None) -> tuple[Endpoin
     return endpoint, formatted
 
 
-def build_url(endpoint: Endpoint, org_short_name: str, formatted_path: str) -> str:
-    """Compose the full request URL from an endpoint and a pre-formatted path."""
-    return (
-        f"https://{endpoint.subdomain}.command.verkada.com/__v/"
-        f"{org_short_name}/{formatted_path}"
-    )
+def build_url(
+    endpoint: Endpoint,
+    org_short_name: str,
+    formatted_path: str,
+    shard: OrgShard = DEFAULT_SHARD,
+) -> str:
+    """Compose the full request URL from an endpoint and a pre-formatted path.
+
+    The host is `<service>.<shard domain>`: gateway endpoints
+    (API_GATEWAY_SUBDOMAIN) take the shard's gateway label, and endpoints
+    with a fixed `domain` (global services) ignore the shard.
+    """
+    subdomain = endpoint.subdomain
+    if subdomain == API_GATEWAY_SUBDOMAIN:
+        subdomain = shard.api_gateway_endpoint
+    domain = endpoint.domain or shard.domain
+    return f"https://{subdomain}.{domain}/__v/{org_short_name}/{formatted_path}"
 
 
 ENDPOINTS: dict[str, Endpoint] = {
+    # ── Org discovery (pre-auth, shard-independent) ──────────────────
+    # Resolves which shard hosts an org and which API hosts it uses, so
+    # login can be routed without asking the user for a shard or region.
+    "org.validate_short_name": Endpoint(
+        method="POST",
+        subdomain="vglobal",
+        path="org/validate_short_name",
+        payload={"orgShortName": "<org_short_name>"},
+        response={
+            "name": "<org_display_name>",
+            "shard": {
+                "name": "prod-us-ohio",
+                "readable_name": "US",
+                "host_metadata": {
+                    "domain": "prod-us-ohio.verkada.com",
+                    "guest_domain": "prod-us-ohio.my.verkada.com",
+                    "local_camera_domain": "prod-us-ohio.verkada-lan.com",
+                    "public_api_endpoint": "api",
+                    "api_gateway_endpoint": "api",
+                    "saml_endpoint": "https://saml.prod-us-ohio.verkada.com",
+                    "scim_endpoint": "https://scim.prod-us-ohio.verkada.com",
+                },
+                "enum_value": 13,
+            },
+        },
+        domain=GLOBAL_DOMAIN,
+    ),
     # ── Auth ─────────────────────────────────────────────────────────
     "login": Endpoint(
         method="POST",
@@ -393,6 +505,51 @@ ENDPOINTS: dict[str, Endpoint] = {
         payload={
             "organizationId": "<org_id>",
             "settings": {"globalSiteAdmin": False},
+        },
+        response={},
+    ),
+    # Read-only use of set_user_permissions: nothing granted or revoked, and
+    # returnPermissions on, so the response lists the user's roles
+    # (roleGrant[].roleKey) and permissions.
+    "permissions.user_roles.get": Endpoint(
+        method="POST",
+        subdomain="vprovision",
+        path="org/set_user_permissions",
+        payload={
+            "organizationId": "<org_id>",
+            "targetUserId": "<user_id>",
+            "returnPermissions": True,
+            "grant": [],
+            "revoke": [],
+        },
+        response={
+            "roleGrant": [
+                {
+                    "roleKey": "ACCESS_CONTROL_SYSTEM_ADMIN",
+                    "targetEntityType": "organization",
+                    "entityId": "<org_id>",
+                },
+            ],
+            "role": [{"key": "ACCESS_CONTROL_SYSTEM_ADMIN", "roleId": "<role_id>"}],
+            "permissions": [{"permission": "ADMIN", "entityId": "<entity_id>"}],
+        },
+    ),
+    # Grant and/or revoke any org-level roles on a user in one call; the
+    # Command web app batches every role changed in a Manage dialog (Org
+    # Admin is ORG_MANAGER). The per-role keys below are single-role uses.
+    "permissions.user_roles.set": Endpoint(
+        method="POST",
+        subdomain="vprovision",
+        path="org/set_user_permissions",
+        payload={
+            "organizationId": "<org_id>",
+            "targetUserId": "<user_id>",
+            "returnPermissions": False,
+            "grant": [
+                {"entityId": "<org_id>", "permission": "ACCESS_CONTROL_SYSTEM_ADMIN"},
+                {"entityId": "<org_id>", "permission": "ACCESS_CONTROL_USER_ADMIN"},
+            ],
+            "revoke": [],
         },
         response={},
     ),
@@ -608,7 +765,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "org.allow_face_unlock": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="organization/config/set",
         payload={
             "organizationId": "<org_id>",
@@ -777,13 +934,23 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "user.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="users/delete",
         payload={
             "organizationId": "<org_id>",
             "userIds": ["<user_id>"],
         },
         response={},
+    ),
+    # What the Command web app calls for User Management → user → Delete
+    # User (recorded 2026-10-27). Takes several userIds in one call.
+    "user.delete.batch": Endpoint(
+        method="POST",
+        subdomain="vcorgi",
+        path="org/{org_id}/users/delete",
+        payload={"userIds": ["<user_id>"]},
+        # Asynchronous: users/search shows the user for a few seconds more.
+        response={"operationId": "<operation_id>"},
     ),
     "user.hard_delete": Endpoint(
         method="POST",
@@ -808,7 +975,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "user.add_license_plate": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="access/v2/user/license_plate",
         payload={
             "userId": "<user_id>",
@@ -820,6 +987,29 @@ ENDPOINTS: dict[str, Endpoint] = {
             "organizationId": "<org_id>",
             "userId": "<user_id>",
         },
+    ),
+    # Who holds a license plate (the web app checks this before adding one).
+    # 404 "No such license plate registered" when nobody does.
+    "user.license_plate.get": Endpoint(
+        method="GET",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="access/v2/user/license_plate/{license_plate}",
+        payload={},
+        response={
+            "licensePlateNumber": "<license_plate_number>",
+            "userId": "<user_id>",
+            "organizationId": "<org_id>",
+            "active": True,
+        },
+    ),
+    # Remove a plate from its user (Access → user → Profile → Remove License
+    # Plate in the web app).
+    "user.license_plate.delete": Endpoint(
+        method="POST",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="access/v2/user/license_plate/delete",
+        payload={"licensePlateNumber": "<license_plate_number>"},
+        response={},
     ),
     "group.create": Endpoint(
         method="POST",
@@ -1105,7 +1295,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     # ── Intercoms ────────────────────────────────────────────────────
     "intercom.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="vinter/v1/user/organization/{org_id}/device",
         payload={},
         response={
@@ -1120,14 +1310,14 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "intercom.delete": Endpoint(
         method="DELETE",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="vinter/v1/user/async/organization/{org_id}/device/{object_id}",
         payload={"sharding": True},
         response={},
     ),
     "desk_station.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="vinter/v1/user/organization/{org_id}/device",
         payload={},
         response={
@@ -1142,7 +1332,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "desk_station.delete": Endpoint(
         method="DELETE",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="vinter/v1/user/async/organization/{org_id}/device/{object_id}",
         payload={"sharding": True},
         response={},
@@ -1194,7 +1384,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_controller.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="access/v3/user/access_controllers",
         payload={},
         response={
@@ -1238,7 +1428,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_station_pro.door.create": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="door/create",
         payload={
             "name": "<door_name>",
@@ -1266,7 +1456,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_station_pro.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="access/v3/user/access_controllers",
         payload={},
         response={
@@ -1290,7 +1480,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.create": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="door/create",
         payload={
             "name": "<door_name>",
@@ -1313,7 +1503,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="access/v3/user/doors",
         payload={},
         response={
@@ -1329,7 +1519,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="door/delete",
         payload={
             "doorId": "<door_id>",
@@ -1338,7 +1528,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.pair_lpr_camera": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="door/{door_id}/device_io",
         payload={
             "configs": {"lprCameraId": "<camera_id>"},
@@ -1354,7 +1544,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.enable_face_unlock": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="door/config/set",
         payload={
             "doorId": "<door_id>",
@@ -1374,7 +1564,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.mfa.card-code": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="door/config/set",
         payload={
             "doorId": "<door_id>",
@@ -1394,7 +1584,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.mfa.face-card": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="door/config/set",
         payload={
             "doorId": "<door_id>",
@@ -1414,7 +1604,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "door.mfa.face-code": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="door/config/set",
         payload={
             "doorId": "<door_id>",
@@ -1568,7 +1758,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "visitor.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="users/delete",
         payload={
             "organizationId": "<org_id>",
@@ -1578,16 +1768,77 @@ ENDPOINTS: dict[str, Endpoint] = {
         },
         response={},
     ),
+    "access_card.list": Endpoint(
+        method="POST",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="user/access_card/get",
+        payload={
+            "organizationId": "<org_id>",
+            "userId": "<user_id>"
+        },
+        response={
+            "accessCards": [
+                {
+                    "activationState": "active",
+                    "active": True,
+                    "autoExpiredTimestamp": None,
+                    "cacheId": "<access_card_cache_id>",
+                    "cardId": "<access_card_id>",
+                    "cardParams": {
+                        "cardNumber": 12345,
+                        "facilityCode": 123
+                    },
+                    "cardType": "<card_type>",
+                    "expirationPeriodBegin": 1786554036,
+                    "lastUsed": "2026-08-12T18:53:43.530118",
+                    "lastUsedEvent": "<last_event_id>",
+                    "modified": 1786554036,
+                    "organizationId": "<org_id>",
+                    "scimManaged": False,
+                    "systemManaged": None,
+                    "systemManagedId": None,
+                    "userId": "<user_id>"
+                }
+            ]
+        }
+    ),
+    "access_card.delete": Endpoint(
+        method="POST",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="user/access_card/delete",
+        payload={
+            "activationState": "active",
+            "active": True,
+            "autoExpiredTimestamp": None,
+            "cacheId": "<access_card_cache_id>",
+            "cardId": "<access_card_id>",
+            "cardParams": {
+                "cardNumber": 12345,
+                "facilityCode": 123
+            },
+            "cardType": "<card_type>",
+            "expirationPeriodBegin": 1786554036,
+            "lastUsed": "2026-08-12T18:53:43.530118",
+            "lastUsedEvent": "<last_event_id>",
+            "modified": 1786554036,
+            "organizationId": "<org_id>",
+            "scimManaged": False,
+            "systemManaged": None,
+            "systemManagedId": None,
+            "userId": "<user_id>"
+        },
+        response={}
+    ),
     "access_group.create": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="user_groups/add_group",
         payload={"organizationId": "<org_id>", "groupName": "<access_group_name>"},
         response={"groupId": "<access_group_id>"},
     ),
     "access_group.list": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="user_groups/get",
         payload={"organizationId": "<org_id>"},
         response={
@@ -1600,14 +1851,14 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "access_group.delete": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="user_groups/remove_group",
         payload={"groupId": "<access_group_id>", "organizationId": "<org_id>"},
         response={},
     ),
     "access_group.add_user": Endpoint(
         method="POST",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="user_groups/bulk_add_users",
         payload={
             "userIds": ["<user_id>"],
@@ -1645,9 +1896,27 @@ ENDPOINTS: dict[str, Endpoint] = {
             ],
         },
     ),
+    "access_level.update": Endpoint(
+        # Edit an access level, as the web app's Save → Confirm does: the
+        # level's own fields (as access_level.list returns them, without
+        # events) with the full userGroups list; doors and sites as
+        # {add, remove} changes.
+        method="PATCH",
+        subdomain="vcerberus",
+        path="access/v2/user/schedules/{schedule_id}",
+        payload={
+            "scheduleId": "<schedule_id>",
+            "name": "<access_level_name>",
+            "type": "USER",
+            "userGroups": ["<access_group_id>"],
+            "doors": {"add": [], "remove": []},
+            "sites": {"add": [], "remove": []},
+        },
+        response={"schedules": [{"scheduleId": "<schedule_id>"}]},
+    ),
     "access_level.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="organizations/{org_id}/schedules",
         payload={},
         response={
@@ -1670,7 +1939,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "visitor_access_type.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="access/v3/user/visit_types",
         payload={},
         response={
@@ -1685,7 +1954,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "visitor_access_type.delete": Endpoint(
         method="DELETE",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="access/v2/user/visit_types/{visitor_access_type_id}",
         payload={},
         response={
@@ -1698,7 +1967,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     "visit.list": Endpoint(
         method="GET",
         subdomain="vcerberus",
-        path="access/v3/user/visits?page_size=99",
+        path="access/v3/user/visits?page_size={page_size}",
         payload={},
         response={
             "visits": [
@@ -1713,7 +1982,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "visit.delete": Endpoint(
         method="DELETE",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="access/v2/user/visits/{visit_id}",
         payload={},
         response={
@@ -1753,7 +2022,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "scenario.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="organizations/{org_id}/lockdowns",
         payload={},
         response={
@@ -1779,7 +2048,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     ),
     "schedule.create.mfa": Endpoint(
         method="PUT",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="organizations/{org_id}/schedules",
         payload={
             "sitesEnabled": True,
@@ -1795,10 +2064,12 @@ ENDPOINTS: dict[str, Endpoint] = {
             ],
         },
         response={},
+        # A PUT that creates (no scheduleId): a replay would duplicate it.
+        replayable=False,
     ),
     "schedule.list": Endpoint(
         method="GET",
-        subdomain=api_region,
+        subdomain=API_GATEWAY_SUBDOMAIN,
         path="organizations/{org_id}/schedules",
         # Shared with access_level.list. `type` distinguishes the rows:
         #   DOOR       → door schedule (this category)
@@ -1864,7 +2135,15 @@ ENDPOINTS: dict[str, Endpoint] = {
             }
         },
     ),
-    # "guest.list" - Handled by External API Call
+    "guest.list": Endpoint(
+        # Guest sites, as the Guest app lists them (internal; replaces the
+        # public API's guest/v1/sites for Decommission).
+        method="GET",
+        subdomain="vdoorman",
+        path="site/org/{org_id}",
+        payload={},
+        response={"sites": [{"siteId": "<site_id>", "siteName": "<site_name>"}]},
+    ),
     "guest.delete": Endpoint(
         method="DELETE",
         subdomain="vdoorman",
@@ -2426,6 +2705,36 @@ ENDPOINTS: dict[str, Endpoint] = {
         payload={"siteId": "<site_id>"},
         response={},
     ),
+    "alarm.sites.list": Endpoint(
+        # Every response site in the org with its response configs, in one
+        # call (siteIds: [] = all); the web app's Alarm Sites list uses it.
+        method="POST",
+        subdomain="vagent",
+        path="response/site/list",
+        payload={"includeResponseConfigs": True, "siteIds": []},
+        response={
+            "responseSites": [
+                {
+                    "id": "<alarm_site_id>",
+                    "siteId": "<site_id>",
+                    "orgId": "<org_id>",
+                    "businessName": "<business_name>",
+                    "locationId": "<location_id>",
+                    "alarmSystemId": "<alarm_system_id>",
+                    "dispatchEnabled": True,
+                }
+            ],
+            "locations": [{"id": "<location_id>", "street1": "<street>"}],
+            "responseConfigs": [
+                {
+                    "id": "<response_config_id>",
+                    "responseSiteId": "<alarm_site_id>",
+                    "responseLevel": "RESPONSE_LEVEL_SELF_MONITORED",
+                    "name": "Default Response",
+                }
+            ],
+        },
+    ),
     "alarm.site.list": Endpoint(
         method="POST",
         subdomain="vagent",
@@ -2479,6 +2788,26 @@ ENDPOINTS: dict[str, Endpoint] = {
             "location": {
                 "id": "<location_id>",
             },
+        },
+    ),
+    "alarm.response.set_outputs": Endpoint(
+        # The output devices (e.g. a wired strobe) a response activates —
+        # Response → Automated Alarm Actions → Output devices. SET replaces
+        # the whole list.
+        method="POST",
+        subdomain="vagent",
+        path="response/config/update",
+        payload={
+            "siteId": "<site_id>",
+            "responseConfigId": "<alarm_response_id>",
+            "updateType": "CONFIG_UPDATE_TYPE_SET_OUTPUT_DEVICES",
+            "setOutputDevicesInput": {"deviceIds": ["<wired_output_id>"]},
+        },
+        response={
+            "responseConfig": {"id": "<alarm_response_id>"},
+            "outputDevices": [
+                {"responseConfigId": "<alarm_response_id>", "deviceId": "<wired_output_id>"}
+            ],
         },
     ),
     "alarm.site.delete": Endpoint(
@@ -3177,5 +3506,158 @@ ENDPOINTS: dict[str, Endpoint] = {
                 },
             }
         },
+    ),
+    # ── Observed in the Command web app (live recordings, 2026-10-27) ──
+    # Not called by vCommander; registered so the calls are documented.
+    "org.features.get": Endpoint(
+        # Feature Manager state per feature (ENABLED / DISABLED, pending
+        # removal); the web app reads it before camera setup.
+        method="GET",
+        subdomain="vcorgi",
+        path="org/{org_id}/features",
+        payload={},
+        response={
+            "aiSummarization": {
+                "state": "ENABLED",
+                "pendingRemoval": False,
+                "lastUpdated": "<iso8601>",
+                "updatedBy": "<email>",
+            },
+        },
+    ),
+    "access_controller.list.v4": Endpoint(
+        method="GET",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="access/v4/user/access_controllers",
+        payload={},
+        response={"accessControllers": []},
+    ),
+    "door.list.v4": Endpoint(
+        method="GET",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="access/v4/user/doors",
+        payload={},
+        response={"doors": []},
+    ),
+    "door.set_nearby_cameras": Endpoint(
+        # After creating a door the web app attaches nearby cameras
+        # (position "doorway" / "interior" / "exterior").
+        method="POST",
+        subdomain=API_GATEWAY_SUBDOMAIN,
+        path="door/set_nearby_cameras",
+        payload={
+            "doorId": "<door_id>",
+            "cameras": [{"cameraId": "<camera_id>", "position": "doorway", "offset": 1}],
+        },
+        response={"doors": [{"doorId": "<door_id>"}]},
+    ),
+    "access.roles.modify": Endpoint(
+        # Access site roles. The web app grants the user Access Site Admin on
+        # a site when it sets up an access controller there; on a site Access
+        # doesn't know yet it fails 400 "Unknown entity" and the setup stops.
+        method="POST",
+        subdomain="vcerberus",
+        path="access/v2/user/roles/modify",
+        payload={
+            "grants": [
+                {
+                    "granteeId": "<user_id>",
+                    "entityId": "<site_id>",
+                    "roleKey": "ACCESS_CONTROL_SITE_ADMIN",
+                    "role": "ACCESS_CONTROL_SITE_ADMIN",
+                }
+            ],
+            "revokes": [],
+        },
+        response={},
+    ),
+    "camera.recommended_settings.apply": Endpoint(
+        # The camera Set Up dialog's Apply: codec, analytics features and
+        # wildcard settings in one call (vCommander uses camera.create.feature).
+        method="POST",
+        subdomain="vcorgi",
+        path="device/recommended_default_settings/apply",
+        payload={
+            "organizationId": "<org_id>",
+            "siteId": "<site_id>",
+            "deviceType": "camera",
+            "deviceIds": ["<camera_id>"],
+            "configs": [{"name": "stream-configs.high.stream-encoding", "value": "HEVC"}],
+            "features": [
+                {"name": "people-history", "value": True},
+                {"name": "person-attributes", "value": True},
+                {"name": "face-detection", "value": True},
+            ],
+            "wildcard": [{"name": "low-bandwidth-mode", "value": False}],
+        },
+        response={"configs": [], "features": [], "wildcard": []},
+    ),
+    "camera.rotate": Endpoint(
+        # Sent before LPR mode is turned on (LPR needs normal orientation).
+        method="POST",
+        subdomain="vprovision",
+        path="camera/rotate",
+        payload={"cameraId": "<camera_id>", "rotate": "0"},
+        response={"cameraConfigParams": [{"paramName": "camera-config.camera-rotate"}]},
+    ),
+    "camera.create.ptz_install.web": Endpoint(
+        # The web app's PTZ Installation Mode switch (vCommander's
+        # camera.create.ptz_install_disable uses vdeviceconfig with cameraIds).
+        method="POST",
+        subdomain="vprovision",
+        path="user/camera/config/set",
+        payload={
+            "cameraId": "<camera_id>",
+            "params": {"peripheral-motor-ctrl.disable-pan-tilt": False},
+        },
+        response={},
+    ),
+    "alarm.keycode.generate": Endpoint(
+        # A random unused code, used to pre-fill the Add Keycode dialog.
+        method="POST",
+        subdomain="vproconfig",
+        path="keycode/generate",
+        payload={"alarmSystemId": "<alarm_system_id>"},
+        response={"code": "<6 digits>"},
+    ),
+    # ── Persons of interest (videntity), as Cameras → People uses them ──
+    "poi.list": Endpoint(
+        method="POST",
+        subdomain="videntity",
+        path="identity/list",
+        payload={
+            "organizationId": "<org_id>",
+            "filter": {"isHidden": False},
+            "sort": {"field": "created", "sortDirection": "desc"},
+            "skipAuditLogAdd": True,
+            "paging": {"limit": 5000},
+        },
+        response={
+            "identities": [
+                {
+                    "personId": "<person_id>",
+                    "name": "<label>",
+                    "accessId": None,
+                    "guestId": None,
+                    "identityListIds": ["<list_id>"],
+                }
+            ],
+            "paging": {"nextToken": None, "totalItems": 1},
+        },
+    ),
+    "poi.delete": Endpoint(
+        # Several people per call (People → person → Remove this person).
+        method="POST",
+        subdomain="videntity",
+        path="identity/delete",
+        payload={"organizationId": "<org_id>", "personIds": ["<person_id>"]},
+        response={},
+    ),
+    "poi.lists": Endpoint(
+        method="POST",
+        subdomain="videntity",
+        path="identity_list/bulk",
+        payload={"organizationId": "<org_id>"},
+        response={"lists": [{"listId": "<list_id>", "name": "People of Interest"}]},
     ),
 }

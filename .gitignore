@@ -6,3 +6,4 @@ build
 assets/kits.internal.csv
 assets/users_invite.internal.json
 notes.md
+.coverage

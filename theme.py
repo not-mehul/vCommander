@@ -41,19 +41,12 @@ SPACE_MD = 12
 SPACE_LG = 16
 SPACE_XL = 24
 SPACE_2XL = 32
-SPACE_3XL = 48
-
-
-def space(units: int) -> int:
-    """Return `units` steps of the 4px base scale (space(3) -> 12)."""
-    return units * 4
 
 
 # ----------------------------------------------------------------------
 # Radius — standardize on one component radius (RADIUS_MD). The codebase
 # previously mixed 8 and 12; everything should round to RADIUS_MD now.
 # ----------------------------------------------------------------------
-RADIUS_SM = 6
 RADIUS_MD = 10
 RADIUS_LG = 14
 RADIUS_PILL = 999
@@ -65,7 +58,6 @@ RADIUS_PILL = 999
 FONT_DISPLAY = 28
 FONT_TITLE = 22
 FONT_HEADING = 18
-FONT_SUBTITLE = 15
 FONT_BODY = 14
 FONT_CAPTION = 12
 FONT_MICRO = 11
@@ -123,7 +115,7 @@ class Palette:
 
     # --- derived helpers -------------------------------------------------
     def tint(self, color: str, opacity: float = 0.14) -> str:
-        """A translucent version of `color` for badge/banner backgrounds."""
+        """A translucent version of `color` for banner/tile backgrounds."""
         return ft.Colors.with_opacity(opacity, color)
 
 

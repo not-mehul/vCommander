@@ -8,8 +8,9 @@ swaps only the content host — the sidebar stays put and there's no page-stack
 transition.
 
 Tool screens are lightweight `ToolView`s: they build a body control and expose
-`title`/`subtitle`/`body`; the shell hosts that body. The public screens
-(login, 2FA) remain standalone `ft.View`s with no shell.
+`title`/`subtitle`/`body`; the shell hosts that body and calls the tool's
+`on_leave()` when it is swapped out or the shell is torn down. The public
+screens (login, 2FA) remain standalone `ft.View`s with no shell.
 """
 
 from __future__ import annotations
@@ -20,27 +21,31 @@ import contextlib
 import flet as ft
 
 import theme
+from components.buttons import secondary_button
 from constants import APP_VERSION, SESSION_WARNING_MINUTES
 from utils.db import load_credentials
 from utils.session import (
     can_extend,
     clear_session,
     extend_session,
+    get_internal_client,
     get_session_remaining,
     start_session,
 )
 
-# Sidebar navigation model: (route, label, icon, brand tint). The brand color
-# is used only as a small icon tint — never as a dominant surface color.
+# Sidebar navigation model: (route, label, icon, brand tint token). The brand
+# color is used only as a small icon tint — never as a dominant surface color.
+# Tints are theme token names, resolved when the item is drawn so a light/dark
+# switch picks up the new palette.
 NAV_ITEMS = [
-    ("/home", "Home", ft.Icons.GRID_VIEW_ROUNDED, theme.ACCENT),
-    ("/commission", "Commission", ft.Icons.BUSINESS_ROUNDED, theme.BRAND_COMMISSION),
-    ("/users", "Users", ft.Icons.PEOPLE_ALT_ROUNDED, theme.BRAND_USERS),
+    ("/home", "Home", ft.Icons.GRID_VIEW_ROUNDED, "ACCENT"),
+    ("/commission", "Commission", ft.Icons.BUSINESS_ROUNDED, "BRAND_COMMISSION"),
+    ("/users", "Users", ft.Icons.PEOPLE_ALT_ROUNDED, "BRAND_USERS"),
     (
         "/decommission",
         "Decommission",
         ft.Icons.DELETE_SWEEP_ROUNDED,
-        theme.BRAND_DECOMMISSION,
+        "BRAND_DECOMMISSION",
     ),
 ]
 
@@ -63,19 +68,20 @@ class ToolView:
     A tool builds its body control and calls `mount(body)`. It is NOT an
     `ft.Control`; the shell hosts `self.body` and sets `self.page` so the
     tool's `getattr(self, "page", ...)` update guards keep working.
+
+    `push_route(route)` navigates (through main's run guard). Override
+    `on_leave()` to release anything the tool holds when it is swapped out.
     """
 
     def __init__(
         self,
         push_route,
-        pop_route,
         *,
         route: str,
         title: str,
         subtitle: str | None = None,
     ):
         self.push_route = push_route
-        self.pop_route = pop_route
         self.route = route
         self.title = title
         self.subtitle = subtitle
@@ -85,14 +91,29 @@ class ToolView:
     def mount(self, body: ft.Control):
         self.body = body
 
+    def on_leave(self) -> None:
+        """Called once when the shell stops hosting this tool."""
+
+    def detach_state(self):
+        """Hand over what this screen holds before it is rebuilt (e.g. for
+        a theme switch), or None. After a hand-over, on_leave must not
+        release it: the rebuilt screen owns it via restore_state()."""
+        return None
+
+    def restore_state(self, state) -> None:
+        """Take over what detach_state() handed over from the old screen."""
+
 
 class AppShell(ft.View):
-    def __init__(self, *, navigate, tool_factory):
+    def __init__(self, *, navigate, tool_factory, logout):
         super().__init__(route="/app", bgcolor=theme.BG, padding=0)
-        # navigate(route): nav clicks, logout, and session expiry route through
-        # this. tool_factory(route) -> ToolView builds the screen to host.
+        # navigate(route): nav clicks and session expiry route through this.
+        # logout(): the guarded logout from main. tool_factory(route) ->
+        # ToolView builds the screen to host.
         self._navigate = navigate
+        self._logout = logout
         self._tool_factory = tool_factory
+        self._tool: ToolView | None = None
         self._active_route: str | None = None
         self._timer_task: asyncio.Task | None = None
 
@@ -122,10 +143,18 @@ class AppShell(ft.View):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def show(self, route: str):
-        """Swap the content area to `route`'s tool (sidebar stays constant)."""
+    def show(self, route: str, restore=None):
+        """Swap the content area to `route`'s tool (sidebar stays constant).
+
+        `restore` is what the previous instance of this tool handed over
+        (detach_tool_state) when the screen is rebuilt, e.g. for a theme
+        switch."""
+        self.leave()
         tool = self._tool_factory(route)
+        self._tool = tool
         tool.page = self._get_page()
+        if restore is not None:
+            tool.restore_state(restore)
         self._title_text.value = tool.title
         self._subtitle_text.value = tool.subtitle or ""
         self._subtitle_text.visible = bool(tool.subtitle)
@@ -133,6 +162,16 @@ class AppShell(ft.View):
         self._active_route = route
         self._render_nav()
         self._safe_update()
+
+    def detach_tool_state(self):
+        """What the hosted tool hands over before a rebuild, or None."""
+        return self._tool.detach_state() if self._tool is not None else None
+
+    def leave(self):
+        """Tell the hosted tool it is going away (idempotent)."""
+        tool, self._tool = self._tool, None
+        if tool is not None:
+            tool.on_leave()
 
     # ------------------------------------------------------------------
     # Content area
@@ -218,6 +257,7 @@ class AppShell(ft.View):
                 ft.Divider(height=1, color=theme.BORDER_SUBTLE),
                 ft.Container(height=theme.SPACE_SM),
                 self._chip(ft.Icons.CORPORATE_FARE_ROUNDED, self._org_name()),
+                self._chip(ft.Icons.PUBLIC_ROUNDED, self._shard_label()),
                 ft.Container(
                     content=ft.Row(
                         [
@@ -236,24 +276,11 @@ class AppShell(ft.View):
                     ),
                 ),
                 ft.Container(height=theme.SPACE_SM),
-                ft.OutlinedButton(
-                    content=ft.Row(
-                        [
-                            ft.Icon(
-                                ft.Icons.LOGOUT_ROUNDED,
-                                size=16,
-                                color=theme.TEXT_SECONDARY,
-                            ),
-                            ft.Text("Logout", color=theme.TEXT_SECONDARY),
-                        ],
-                        spacing=theme.SPACE_SM,
-                        alignment=ft.MainAxisAlignment.CENTER,
-                    ),
-                    style=ft.ButtonStyle(
-                        side=ft.BorderSide(1, theme.BORDER),
-                        shape=ft.RoundedRectangleBorder(radius=theme.RADIUS_MD),
-                    ),
+                secondary_button(
+                    "Logout",
                     on_click=self._on_logout,
+                    icon=ft.Icons.LOGOUT_ROUNDED,
+                    height=40,
                 ),
             ],
             spacing=0,
@@ -296,7 +323,7 @@ class AppShell(ft.View):
             ),
             content=ft.Row(
                 [
-                    ft.Icon(icon, size=20, color=brand),
+                    ft.Icon(icon, size=20, color=getattr(theme, brand)),
                     ft.Text(
                         label,
                         size=16,
@@ -361,9 +388,28 @@ class AppShell(ft.View):
         if _THEME_TOGGLE is not None:
             _THEME_TOGGLE()
 
+    @staticmethod
+    def _client():
+        try:
+            return get_internal_client()
+        except RuntimeError:
+            return None
+
     def _org_name(self) -> str:
+        """The org's display name from the shard lookup, else its short name."""
+        client = self._client()
+        if client is not None and client.shard and client.shard.org_name:
+            return client.shard.org_name
         creds = load_credentials() or {}
         return creds.get("org_short_name") or "—"
+
+    def _shard_label(self) -> str:
+        """e.g. "US · prod-us-ohio" — where the session's org is hosted."""
+        client = self._client()
+        if client is None or client.shard is None:
+            return "—"
+        shard = client.shard
+        return " · ".join(p for p in (shard.readable_name, shard.name) if p)
 
     def _get_page(self):
         """Return the page, or None if not mounted yet (0.85 raises otherwise)."""
@@ -388,6 +434,7 @@ class AppShell(ft.View):
     def will_unmount(self):
         if self._timer_task and not self._timer_task.done():
             self._timer_task.cancel()
+        self.leave()
 
     async def _run_timer(self):
         try:
@@ -429,7 +476,4 @@ class AppShell(ft.View):
             self._safe_update()
 
     def _on_logout(self, e):
-        if self._timer_task and not self._timer_task.done():
-            self._timer_task.cancel()
-        clear_session()
-        self._navigate("/login")
+        self._logout()

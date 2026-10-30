@@ -2,7 +2,7 @@
 
 Four variants cover every button in the app:
   - primary    : filled accent, the screen's main action
-  - secondary  : outlined, neutral secondary action
+  - secondary  : outlined secondary action (neutral / accent / danger tone)
   - danger     : filled danger, destructive confirmation (Decommission)
   - ghost      : text-only, low-emphasis (links, "Add participant")
 
@@ -30,9 +30,9 @@ def primary_button(
     height: int = _DEFAULT_HEIGHT,
     expand=None,
     width=None,
-) -> ft.ElevatedButton:
+) -> ft.Button:
     """Filled accent button for the primary action on a screen."""
-    return ft.ElevatedButton(
+    return ft.Button(
         content=ft.Text(
             label, color=theme.ON_ACCENT, weight=theme.WEIGHT_SEMIBOLD
         ),
@@ -52,14 +52,34 @@ def secondary_button(
     height: int = _DEFAULT_HEIGHT,
     expand=None,
     width=None,
+    icon: str | None = None,
+    tone: str = "neutral",
 ) -> ft.OutlinedButton:
-    """Outlined neutral button for secondary actions."""
+    """Outlined button for secondary actions.
+
+    `tone` is "neutral" (default), "accent" (a highlighted secondary action,
+    e.g. an export) or "danger" (e.g. Cancel during a run). `icon` adds a
+    leading Material icon.
+    """
+    fg, edge = {
+        "accent": (theme.ACCENT, theme.ACCENT),
+        "danger": (theme.DANGER, theme.DANGER),
+    }.get(tone, (theme.TEXT_SECONDARY, theme.BORDER))
+    text = ft.Text(label, color=fg, weight=theme.WEIGHT_SEMIBOLD)
+    content = (
+        text
+        if icon is None
+        else ft.Row(
+            [ft.Icon(icon, size=16, color=fg), text],
+            spacing=theme.SPACE_SM,
+            tight=True,
+            alignment=ft.MainAxisAlignment.CENTER,
+        )
+    )
     return ft.OutlinedButton(
-        content=ft.Text(
-            label, color=theme.TEXT_SECONDARY, weight=theme.WEIGHT_SEMIBOLD
-        ),
+        content=content,
         style=ft.ButtonStyle(
-            side=ft.BorderSide(1, theme.BORDER),
+            side=ft.BorderSide(1, edge),
             shape=_shape(),
         ),
         height=height,
@@ -76,10 +96,12 @@ def danger_button(
     height: int = _DEFAULT_HEIGHT,
     expand=None,
     width=None,
-) -> ft.ElevatedButton:
+) -> ft.Button:
     """Filled danger button for destructive confirmations."""
-    return ft.ElevatedButton(
-        content=ft.Text(label, color="#ffffff", weight=theme.WEIGHT_SEMIBOLD),
+    return ft.Button(
+        # ON_ACCENT, not white: white on the dark palette's pastel red is
+        # 2.7:1; ON_ACCENT clears 4.5:1 on DANGER in both themes.
+        content=ft.Text(label, color=theme.ON_ACCENT, weight=theme.WEIGHT_SEMIBOLD),
         bgcolor=theme.DANGER,
         style=ft.ButtonStyle(shape=_shape()),
         height=height,
@@ -120,7 +142,7 @@ def ghost_button(
 
 
 def set_button_loading(
-    btn: ft.ElevatedButton, loading: bool, label: str, auto_update: bool = True
+    btn: ft.Button, loading: bool, label: str, auto_update: bool = True
 ):
     """Toggle a button between a spinner state and its normal label.
 
@@ -152,6 +174,9 @@ def set_button_loading(
         )
         btn.disabled = False
     if auto_update:
-        page = getattr(btn, "page", None)
+        try:
+            page = btn.page
+        except RuntimeError:  # flet raises (not AttributeError) when unmounted
+            page = None
         if page:
             page.update()

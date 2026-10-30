@@ -13,32 +13,27 @@ headless browser.
 
 import contextlib
 import os
+import sys
 
-import flet as ft
+# Runnable as `python tools/shoot_app.py` from anywhere: put the repo root
+# (not tools/) on the import path.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import constants
-import theme
-from constants import TEMPLATE_FIELDS
-from pages import app_shell
-from pages import (
-    commission_view as cv,
+import flet as ft  # noqa: E402
+
+import constants  # noqa: E402
+import theme  # noqa: E402
+from constants import TEMPLATE_FIELDS  # noqa: E402
+from pages import (  # noqa: E402
+    app_shell,
 )
-from pages import (
-    decommission_view as dv,
-)
-from pages import (
-    home_view as hv,
-)
-from pages import (
-    login_view as lv,
-)
-from pages import (
-    two_factor_view as tv,
-)
-from pages import (
-    users_view as uv,
-)
-from utils import session, ui_utils
+from pages import commission_view as cv  # noqa: E402
+from pages import decommission_view as dv  # noqa: E402
+from pages import home_view as hv  # noqa: E402
+from pages import login_view as lv  # noqa: E402
+from pages import two_factor_view as tv  # noqa: E402
+from pages import users_view as uv  # noqa: E402
+from utils import session  # noqa: E402
 
 VIEW = os.environ.get("SHOT_VIEW", "login")
 STATE = os.environ.get("SHOT_STATE", "")
@@ -51,14 +46,14 @@ _SERIAL = "ABCD-12345678"
 
 
 _PUBLIC_BUILDERS = {
-    "login": lambda: lv.LoginView(_noop, _noop),
-    "twofa": lambda: tv.TwoFactorView(_noop, _noop),
+    "login": lambda: lv.LoginView(_noop),
+    "twofa": lambda: tv.TwoFactorView(_noop),
 }
 _TOOL_BUILDERS = {
-    "home": lambda: hv.HomeView(_noop, _noop),
-    "commission": lambda: cv.CommissionView(_noop, _noop),
-    "decommission": lambda: dv.DecommissionView(_noop, _noop),
-    "users": lambda: uv.UsersView(_noop, _noop),
+    "home": lambda: hv.HomeView(_noop),
+    "commission": lambda: cv.CommissionView(_noop),
+    "decommission": lambda: dv.DecommissionView(_noop),
+    "users": lambda: uv.UsersView(_noop),
 }
 
 
@@ -116,9 +111,10 @@ def _drive(page, view, key, state):
                     + ["[ok]   Configuring device"] * 14
                     + ["[FAIL] Adding PTZ camera: device offline (timeout)"]
                 )
-                view._render_summary(page, all_success=False)
+                view._render_summary(page)
         elif key == "decommission":
             view._assets = _fake_assets()
+            view._selected = {c: set(range(len(i))) for c, i in view._assets.items()}
             if state == "scanning":
                 # Simulate the mid-scan UI (spinner button + progress bar).
                 view._scan_btn.disabled = True
@@ -135,9 +131,16 @@ def _drive(page, view, key, state):
             elif state == "select":
                 view._state = dv.SELECT
                 view._render_state()
+            elif state == "select-items":
+                view._show_items = True
+                view._search_query = "camera 1"
+                view._selected["Cameras"] = {1}
+                view._state = dv.SELECT
+                view._render_state()
+                view._search_field.value = "camera 1"
             elif state == "confirm":
-                view._selected_categories = {
-                    "Cameras": True, "Doors": True, "Command Users": True
+                view._selected = {
+                    "Cameras": {0, 1, 2}, "Doors": {0, 1}, "Command Users": {0}
                 }
                 view._state = dv.CONFIRM
                 view._render_state()
@@ -149,6 +152,10 @@ def _drive(page, view, key, state):
                     "Access Controllers": (1, 1),
                 }
                 view._cancelled_at = None
+                view._cleanup = [
+                    ("done", "Global Site Admin turned back off"),
+                    ("done", "Temporary API key deleted"),
+                ]
                 view._stepper.set_active(dv._STATE_STEP[dv.COMPLETE])
                 view._render_complete()
         elif key == "users":
@@ -171,7 +178,7 @@ def _drive(page, view, key, state):
 
 def main(page: ft.Page):
     theme.set_theme_mode(MODE)
-    theme.apply_to([constants, ui_utils, lv, tv, hv, cv, dv, uv])
+    theme.apply_to([constants, lv, tv, hv, cv, dv, uv])
     page.theme_mode = ft.ThemeMode.DARK if MODE == "dark" else ft.ThemeMode.LIGHT
     page.bgcolor = theme.BG
     page.padding = 0
@@ -190,7 +197,7 @@ def main(page: ft.Page):
         holder["tool"] = tool
         return tool
 
-    shell = app_shell.AppShell(navigate=_noop, tool_factory=factory)
+    shell = app_shell.AppShell(navigate=_noop, tool_factory=factory, logout=_noop)
     page.views.append(shell)
     page.update()
     shell.show("/" + VIEW)
@@ -198,4 +205,10 @@ def main(page: ft.Page):
     page.update()
 
 
-ft.run(main, port=PORT, web_renderer=ft.WebRenderer.CANVAS_KIT, no_cdn=True)
+ft.run(
+    main,
+    port=PORT,
+    view=ft.AppView.WEB_BROWSER,
+    web_renderer=ft.WebRenderer.CANVAS_KIT,
+    no_cdn=True,
+)

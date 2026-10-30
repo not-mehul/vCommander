@@ -1,22 +1,52 @@
 """Commission screen.
 
-Drives one of the predefined org-setup flows (ESS / VSSL / VSSE / AS /
-ACS — see TEMPLATE_FIELDS in constants.py). The user picks a template
+Drives one of the predefined org-setup flows (ESS / ACSL / ACSE / VSSL /
+VSSE / AS — see TEMPLATE_FIELDS in constants.py). The user picks a template
 and a kit (assets/kits.csv), confirms the auto-filled device serials
 and supporting users, then `_run_step` walks through site/building/
 device creation against the internal API. Each step's success/failure
-is rendered in the live progress panel on the right."""
+is rendered in the live progress panel.
+
+The run's outcome is derived from the step counters, never tracked by
+hand. Every step goes through the internal API, as the Command web app
+does, so a run needs no temporary public-API key."""
 
 import asyncio
 import csv
 import functools
 import os
+from typing import Any
 
 import flet as ft
 
 import theme
-from apis.external_api import VerkadaExternalAPIClient
+from apis.internal_api import PARALLEL_REQUESTS, normalize_serial
+from components import (
+    ProgressHeader,
+    RawLogPanel,
+    Stepper,
+    StepRow,
+    banner,
+    card,
+    dropdown,
+    ghost_button,
+    primary_button,
+    run_step,
+    scroll_area,
+    secondary_button,
+    section_header,
+    stat_row,
+    status_row,
+    text_field,
+)
 from constants import (
+    ACSL_ACCESS_STATION_PRO_DOOR_NAME,
+    ACSL_ACCESS_STATION_PRO_NAME,
+    ACSL_ADDRESS,
+    ACSL_BUILDING_NAME,
+    ACSL_FLOORS,
+    ACSL_MFA_DOOR_SCHEDULE_NAME,
+    ACSL_SITE_NAME,
     AS_ACCESS_LEVEL_NAME,
     AS_ADDRESS,
     AS_ALARM_ADDRESS,
@@ -28,35 +58,29 @@ from constants import (
     AS_KEYPAD_NAME,
     AS_PANEL_NAME,
     AS_SITE_NAME,
-    ACSL_MFA_DOOR_SCHEDULE_NAME,
-    ACSL_ACCESS_STATION_PRO_DOOR_NAME,
-    ACSL_ACCESS_STATION_PRO_NAME,
-    ACSL_BUILDING_NAME,
-    ACSL_FLOORS,
-    ACSL_ADDRESS,
-    ACSL_SITE_NAME,
     BORDER,
-    BUILDING_PROVISION_SECONDS,
     CARD_PADDING,
-    CARD_SHADOW,
     ERROR,
+    ESS_ACCESS_STATION_PRO_DOOR_NAME,
+    ESS_ACCESS_STATION_PRO_NAME,
     ESS_ADDRESS,
+    ESS_AF64_ACCESS_LEVEL_NAME,
     ESS_ALARM_ADDRESS,
     ESS_BUILDING_NAME,
     ESS_CAMERA_NAME,
     ESS_FLOORS,
     ESS_GUEST_ADDRESS,
     ESS_PANEL_NAME,
-    ESS_ACCESS_STATION_PRO_NAME,
-    ESS_ACCESS_STATION_PRO_DOOR_NAME,
     ESS_SITE_NAME,
     FIELD_SPACING,
     HQ_TIMEZONE,
     LICENSE_PLATE_FIELD,
+    PARTICIPANTS_GROUP_NAME,
     PRIMARY,
     ROLE_PROPAGATION_SECONDS,
     SECONDARY,
-    SURFACE,
+    STROBE_OUTPUT_NAME,
+    STROBE_OUTPUT_PIN,
     TEMPLATE_DISPLAY_NAMES,
     TEMPLATE_FIELDS,
     TEXT_PRIMARY,
@@ -78,26 +102,17 @@ from constants import (
     VSS_SITE_NAME,
     WARNING,
 )
-from components import (
-    ProgressHeader,
-    RawLogPanel,
-    Stepper,
-    banner,
-    ghost_button,
-    section_header,
-    status_row,
-    stat_row,
-)
 from pages.app_shell import ToolView
 from utils.cancellation import CancellationToken
-from utils.executor import _executor
 from utils.export import export_csv
-from utils.session import get_internal_client, set_external_client
+from utils.logger import log_system
+from utils.session import begin_run, end_run, get_internal_client
 from utils.ui_utils import show_alert, show_toast
 from utils.validation import (
     SERIAL_DISPLAY_LEN,
     SERIAL_PLACEHOLDER,
     format_serial,
+    is_valid_email,
     is_valid_serial,
 )
 
@@ -109,12 +124,13 @@ _COMMISSION_STEPS = ["Configure", "Review", "Run", "Report"]
 
 
 class CommissionView(ToolView):
-    def __init__(self, push_route, pop_route):
+    def __init__(self, push_route):
         super().__init__(
             push_route,
-            pop_route,
             route="/commission",
             title="Commission Organization",
+            subtitle="Build a training org from a template, then invite "
+            "supporting users.",
         )
         self._kits: dict[str, dict[str, str]] = {}
         self._device_fields: dict[str, ft.TextField] = {}
@@ -134,16 +150,28 @@ class CommissionView(ToolView):
     # ------------------------------------------------------------------
 
     def _load_kits(self):
+        """Read kits (Kit Name, Device Type, Serial Number) into self._kits.
+
+        Tolerates files edited in Excel: a byte-order mark (utf-8-sig),
+        separator rows such as ",," (skipped — they used to show up as a
+        blank kit in the dropdown), and stray spaces around values. A
+        missing or malformed file leaves the kit list empty instead of
+        stopping Commission from opening.
+        """
         internal = os.path.join(_ASSETS_DIR, "kits.internal.csv")
         public = os.path.join(_ASSETS_DIR, "kits.csv")
         path = internal if os.path.exists(internal) else public
-        with open(path, newline="") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                kit_name = r["Kit Name"]
-                if kit_name not in self._kits:
-                    self._kits[kit_name] = {}
-                self._kits[kit_name][r["Device Type"]] = r["Serial Number"]
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    kit_name, device_type, serial = (
+                        (r.get(col) or "").strip()
+                        for col in ("Kit Name", "Device Type", "Serial Number")
+                    )
+                    if kit_name and device_type and serial:
+                        self._kits.setdefault(kit_name, {})[device_type] = serial
+        except (OSError, csv.Error, UnicodeDecodeError) as ex:
+            log_system(f"Couldn't read kits from {path}: {ex}", level="WARN")
 
     # ------------------------------------------------------------------
     # UI construction
@@ -154,32 +182,19 @@ class CommissionView(ToolView):
             ft.dropdown.Option(key=code, text=TEMPLATE_DISPLAY_NAMES[code])
             for code in TEMPLATE_FIELDS
         ]
-        self.template_dropdown = ft.Dropdown(
-            label="Template",
-            options=template_options,
-            expand=1,
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            on_select=self._on_template_change,
+        self.template_dropdown = dropdown(
+            "Template", template_options, on_select=self._on_template_change
         )
 
-        kit_options = [ft.dropdown.Option("")] + [
-            ft.dropdown.Option(k) for k in self._kits
-        ]
-        self.kit_dropdown = ft.Dropdown(
-            label="Kit",
-            options=kit_options,
-            expand=1,
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            on_select=self._on_kit_change,
-        )
+        kit_options = [
+            ft.dropdown.Option(key="", text="No kit — enter serials manually")
+        ] + [ft.dropdown.Option(k) for k in self._kits]
+        self.kit_dropdown = dropdown("Kit", kit_options, on_select=self._on_kit_change)
 
-        self._devices_column = ft.Column(spacing=FIELD_SPACING)
+        self._devices_column = ft.Column(
+            [self._devices_hint("Choose a template to see the devices it needs.")],
+            spacing=FIELD_SPACING,
+        )
 
         self.face_analytics_switch = ft.Switch(
             label=" Face Analytics",
@@ -189,38 +204,36 @@ class CommissionView(ToolView):
             visible=False,
         )
 
+        self.reset_permissions_switch = ft.Switch(
+            label=" Remove existing user permissions (keeps Org Admin)",
+            value=True,
+            active_color=PRIMARY,
+            label_text_style=ft.TextStyle(color=TEXT_PRIMARY),
+            visible=False,
+        )
+
         self._users_column = ft.Column(spacing=10)
-        add_user_btn = ft.TextButton(
-            content=ft.Text("+ Add Supporting User", color=PRIMARY),
-            on_click=self._add_user_row,
+        add_user_btn = ft.Row(
+            [
+                ghost_button(
+                    "Add supporting user",
+                    on_click=self._add_user_row,
+                    icon=ft.Icons.PERSON_ADD_ALT_1,
+                )
+            ]
         )
 
         # Configure-step primary action advances to the Review summary
         # rather than running immediately.
-        self.commission_btn = ft.ElevatedButton(
-            content=ft.Text(
-                "Review",
-                color=TEXT_PRIMARY,
-                weight=ft.FontWeight.W_600,
-            ),
-            bgcolor=PRIMARY,
-            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
-            height=45,
-            on_click=self._on_review,
-            expand=True,
+        self.commission_btn = primary_button(
+            "Review", on_click=self._on_review, height=45, expand=True
         )
         # Cancel is shown during the Run step (next to the live progress),
         # hidden otherwise.
-        self.cancel_btn = ft.OutlinedButton(
-            content=ft.Text("Cancel", color=ERROR, weight=ft.FontWeight.W_500),
-            style=ft.ButtonStyle(
-                side=ft.BorderSide(1, ERROR),
-                shape=ft.RoundedRectangleBorder(radius=8),
-            ),
-            height=45,
-            on_click=self._on_cancel,
-            visible=False,
+        self.cancel_btn = secondary_button(
+            "Cancel", on_click=self._on_cancel, tone="danger"
         )
+        self.cancel_btn.visible = False
         self._button_row = ft.Row([self.commission_btn], spacing=10)
 
         self._progress_column = ft.Column(spacing=8, visible=False)
@@ -234,12 +247,11 @@ class CommissionView(ToolView):
                 ft.Container(height=4),
                 self._devices_column,
                 self.face_analytics_switch,
+                self.reset_permissions_switch,
                 ft.Divider(color=BORDER, height=1),
-                ft.Text(
-                    "Supporting Users",
-                    size=14,
-                    color=TEXT_SECONDARY,
-                    weight=ft.FontWeight.W_500,
+                section_header(
+                    "Supporting users",
+                    "Optional. Invited as Org Admins once the org is set up.",
                 ),
                 self._users_column,
                 add_user_btn,
@@ -273,43 +285,40 @@ class CommissionView(ToolView):
             spacing=FIELD_SPACING,
         )
 
-        form_card = ft.Container(
-            bgcolor=SURFACE,
-            border_radius=12,
-            border=ft.Border.all(1, BORDER),
-            shadow=CARD_SHADOW,
-            padding=ft.Padding.all(CARD_PADDING),
-            content=ft.Column(
-                [
-                    ft.Container(
-                        content=self._stepper,
-                        padding=ft.Padding.only(bottom=FIELD_SPACING),
-                    ),
-                    self._form_section,
-                    self._review_section,
-                    self._run_section,
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-                scroll=ft.ScrollMode.ADAPTIVE,
-                spacing=FIELD_SPACING,
-            ),
-            expand=True,
+        sections = ft.Column(
+            [self._form_section, self._review_section, self._run_section],
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            spacing=FIELD_SPACING,
+        )
+        self.mount(
+            card(
+                ft.Column(
+                    [
+                        ft.Container(
+                            content=self._stepper,
+                            padding=ft.Padding.only(bottom=FIELD_SPACING),
+                        ),
+                        scroll_area(sections),
+                    ],
+                    expand=True,
+                ),
+                padding=CARD_PADDING,
+                expand=True,
+            )
         )
 
-        self.mount(form_card)
+    @staticmethod
+    def _devices_hint(text: str) -> ft.Control:
+        return ft.Text(text, size=theme.FONT_CAPTION, color=theme.TEXT_MUTED)
 
     def _make_device_field(self, device_type: str, expand=None) -> ft.TextField:
         # License Plate holds a plate string rather than a device serial, so
         # it keeps a plain free-text field — no mask, no length cap.
         is_serial = device_type != LICENSE_PLATE_FIELD
-        field = ft.TextField(
-            label=f"{device_type} S/N" if is_serial else device_type,
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
+        field = text_field(
+            f"{device_type} S/N" if is_serial else device_type,
             expand=expand,
-            hint_text=SERIAL_PLACEHOLDER if is_serial else None,
+            hint=SERIAL_PLACEHOLDER if is_serial else None,
             max_length=SERIAL_DISPLAY_LEN if is_serial else None,
             on_change=self._on_serial_change if is_serial else None,
         )
@@ -335,8 +344,11 @@ class CommissionView(ToolView):
     def _on_template_change(self, e):
         code = self.template_dropdown.value
         if not code or code not in TEMPLATE_FIELDS:
-            self._devices_column.controls.clear()
+            self._devices_column.controls = [
+                self._devices_hint("Choose a template to see the devices it needs.")
+            ]
             self.face_analytics_switch.visible = False
+            self.reset_permissions_switch.visible = False
             e.page.update()
             return
 
@@ -350,9 +362,13 @@ class CommissionView(ToolView):
                 self._make_device_field(d, expand=1) for d in pair
             ]
             rows.append(ft.Row(row_fields, spacing=FIELD_SPACING))
-        self._devices_column.controls = rows
+        self._devices_column.controls = rows or [
+            self._devices_hint("This template doesn't claim any devices.")
+        ]
         self.face_analytics_switch.visible = config["face_analytics"]
         self.face_analytics_switch.value = config["face_analytics"]
+        self.reset_permissions_switch.visible = bool(config.get("reset_permissions"))
+        self.reset_permissions_switch.value = True
 
         if self.kit_dropdown.value:
             self._fill_from_kit(self.kit_dropdown.value)
@@ -384,39 +400,31 @@ class CommissionView(ToolView):
         e.page.update()
 
     def _create_user_row(self) -> ft.Row:
-        first = ft.TextField(
-            label="First Name",
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            expand=1,
-        )
-        last = ft.TextField(
-            label="Last Name",
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            expand=1,
-        )
-        email = ft.TextField(
-            label="Email",
-            border_color=BORDER,
-            focused_border_color=PRIMARY,
-            color=TEXT_PRIMARY,
-            label_style=ft.TextStyle(color=TEXT_SECONDARY),
-            expand=2,
-        )
+        def field(label: str, expand: int) -> ft.TextField:
+            return text_field(
+                label, expand=expand, compact=True, on_change=self._clear_field_error
+            )
 
         row = ft.Row(spacing=10)
         delete_btn = ft.IconButton(
             icon=ft.Icons.DELETE_OUTLINE,
             icon_color=ERROR,
+            tooltip="Remove",
             on_click=lambda _, r=row: self._remove_user_row(r),
         )
-        row.controls = [first, last, email, delete_btn]
+        row.controls = [
+            field("First name", 1),
+            field("Last name", 1),
+            field("Email", 2),
+            delete_btn,
+        ]
         return row
+
+    @staticmethod
+    def _clear_field_error(e) -> None:
+        if e.control.error:
+            e.control.error = None
+            e.page.update()
 
     def _remove_user_row(self, row):
         if row in self._users_column.controls:
@@ -468,22 +476,80 @@ class CommissionView(ToolView):
                 )
                 return False, None
 
+        # One device can't fill two fields: the batch claim would return the
+        # same device for both rows.
+        seen: dict[str, str] = {}
+        for device_type in config["devices"]:
+            if device_type == LICENSE_PLATE_FIELD:
+                continue
+            serial = normalize_serial(self._device_serial(device_type))
+            if serial in seen:
+                show_toast(
+                    e.page,
+                    f"{seen[serial]} and {device_type} have the same serial number.",
+                    kind="warning",
+                )
+                return False, None
+            seen[serial] = device_type
+
+        if not self._validate_supporting_users():
+            show_toast(
+                e.page,
+                "Fix the highlighted supporting users, or remove those rows.",
+                kind="warning",
+            )
+            e.page.update()
+            return False, None
+
         return True, code
+
+    def _user_rows(self) -> list[list[ft.TextField]]:
+        """[first, last, email] fields for each supporting-user row."""
+        rows = []
+        for row in self._users_column.controls:
+            fields = [c for c in row.controls if isinstance(c, ft.TextField)]
+            if len(fields) == 3:
+                rows.append(fields)
+        return rows
+
+    def _validate_supporting_users(self) -> bool:
+        """Flag rows that are partly filled or have a malformed email.
+
+        Fully empty rows are ignored. Anything else must be complete, so the
+        Review count always matches who is actually invited.
+        """
+        ok = True
+        for fields in self._user_rows():
+            values = [(f.value or "").strip() for f in fields]
+            if not any(values):
+                continue
+            for f, v in zip(fields, values, strict=True):
+                if not v:
+                    f.error = "Required"
+                    ok = False
+            email = fields[2]
+            if values[2] and not is_valid_email(values[2]):
+                email.error = "Enter a valid email"
+                ok = False
+        return ok
 
     # ------------------------------------------------------------------
     # Review step
     # ------------------------------------------------------------------
 
     def _collect_supporting_users(self) -> list[tuple[str, str, str]]:
-        """Pull (first, last, email) tuples from the non-empty user rows."""
+        """(first, last, email) for each complete supporting-user row.
+
+        Same rule as the invite step, so Review shows exactly who is invited.
+        """
         users: list[tuple[str, str, str]] = []
-        for row in self._users_column.controls:
-            if isinstance(row, ft.Row) and len(row.controls) >= 3:
-                first = (row.controls[0].value or "").strip()
-                last = (row.controls[1].value or "").strip()
-                email = (row.controls[2].value or "").strip()
-                if first or last or email:
-                    users.append((first, last, email))
+        emails: set[str] = set()
+        for fields in self._user_rows():
+            first, last, email = ((f.value or "").strip() for f in fields)
+            # A repeated email (any case) is one person, invited once.
+            if first and last and email and email.lower() not in emails:
+                emails.add(email.lower())
+                users.append((first, last, email))
         return users
 
     def _on_review(self, e):
@@ -523,6 +589,13 @@ class CommissionView(ToolView):
                     "On" if self.face_analytics_switch.value else "Off",
                 )
             )
+        if config.get("reset_permissions"):
+            rows.append(
+                stat_row(
+                    "Remove User Permissions",
+                    "On" if self.reset_permissions_switch.value else "Off",
+                )
+            )
         users = self._collect_supporting_users()
         rows.append(stat_row("Supporting Users", len(users)))
         for first, last, email in users:
@@ -542,16 +615,10 @@ class CommissionView(ToolView):
             content=ft.Column(rows, spacing=theme.SPACE_SM),
         )
 
-        confirm_btn = ft.ElevatedButton(
-            content=ft.Text(
-                "Commission Organization",
-                color=TEXT_PRIMARY,
-                weight=ft.FontWeight.W_600,
-            ),
-            bgcolor=PRIMARY,
-            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
-            height=45,
+        confirm_btn = primary_button(
+            "Commission Organization",
             on_click=self._on_commission,
+            height=45,
             expand=True,
         )
 
@@ -576,8 +643,22 @@ class CommissionView(ToolView):
     # ------------------------------------------------------------------
 
     async def _on_commission(self, e):
+        page = e.page
         ok, code = self._validate_form(e)
         if not ok:
+            return
+        try:
+            client = get_internal_client()
+        except RuntimeError as ex:
+            show_alert(page, "Not Logged In", str(ex))
+            return
+        token = CancellationToken()
+        if not begin_run("Commission", token):
+            show_toast(
+                page,
+                "Another run is still stopping — try again in a moment.",
+                kind="warning",
+            )
             return
 
         # Review -> Run: swap panels, advance the stepper, arm cancellation.
@@ -593,196 +674,162 @@ class CommissionView(ToolView):
         self._failures = []
         self._run_log = []
         self._progress_header.set_progress(0, failed=0)
-        self._cancel_token = CancellationToken()
+        self._cancel_token = token
         self.cancel_btn.visible = True
         self.cancel_btn.disabled = False
         if isinstance(self.cancel_btn.content, ft.Text):
             self.cancel_btn.content.value = "Cancel"
-        e.page.update()
+        page.update()
         await asyncio.sleep(0)
 
-        client = get_internal_client()
-        loop = asyncio.get_running_loop()
+        try:
+            await self._commission(page, code, client)
+        except Exception as ex:
+            # A bug in flow code must still end in a report, not a frozen
+            # Run screen; count it as a failed step.
+            self._record_step("Unexpected error", ok=False, error=ex)
+        finally:
+            end_run(token)
+        self._render_summary(page)
 
-        api_key = await loop.run_in_executor(_executor, client.create_external_api_key)
-        ext_client = await loop.run_in_executor(
-            _executor,
-            VerkadaExternalAPIClient,
-            api_key,
-            client.org_short_name,
-        )
-        set_external_client(ext_client)
+    async def _commission(self, page, code: str, client) -> None:
+        """Run the shared prelude, the template's flow and the user invites."""
 
-        page = e.page
+        async def step(label: str, fn, *args):
+            return await self._run_step(page, label, fn, *args)
 
-        async def step(label: str, fn, *args) -> tuple[bool, object]:
-            return await self._run_step(page, loop, label, fn, *args)
+        # ── Before anything else (ACSE): strip the users' permissions ──
+        if (
+            TEMPLATE_FIELDS[code].get("reset_permissions")
+            and self.reset_permissions_switch.value
+        ):
+            await self._reset_user_permissions(step, page, client)
 
-        all_success = True
-
-        def track(ok_value: bool) -> None:
-            nonlocal all_success
-            all_success = ok_value and all_success
-
-        # ── Common prelude ──
-        if code in ("ESS", "ACSL", "ACSE", "VSSL", "VSSE", "AS"):
-            ok, _ = await step("Enabling Custom Roles", client.enable_custom_roles)
-            track(ok)
-            self._progress_note(page, "Waiting for roles to propagate...")
-            await asyncio.sleep(ROLE_PROPAGATION_SECONDS)
-            ok, _ = await step(
-                "Disabling Global Site Admin", client.disable_global_site_admin
-            )
-            track(ok)
+        # ── Common prelude (every template) ──
+        await step("Enabling Custom Roles", client.enable_custom_roles)
+        self._progress_note(page, "Waiting for roles to propagate...")
+        await asyncio.sleep(ROLE_PROPAGATION_SECONDS)
+        await step("Disabling Global Site Admin", client.disable_global_site_admin)
 
         # ── Per-template flows ──
         if code == "ESS":
-            await self._run_ess_flow(step, track, page, client)
+            await self._run_ess_flow(step, page, client)
         elif code == "ACSL":
-            await self._run_acsl_flow(step, track, page, client)
+            await self._run_acsl_flow(step, page, client)
         elif code == "ACSE":
             # No additional steps beyond the prelude.
             pass
         elif code == "VSSL":
-            await self._run_vssl_flow(step, track, page, client, ext_client)
+            await self._run_vssl_flow(step, page, client)
         elif code == "VSSE":
-            await self._run_vsse_flow(step, track, page, client)
+            await self._run_vsse_flow(step, page, client)
         elif code == "AS":
-            await self._run_as_flow(step, track, page, client)
+            await self._run_as_flow(step, page, client)
 
         # ── Supporting users — shared across all templates ──
-        user_role = "Org Admin"
-        await self._invite_supporting_users(step, track, client, user_role)
-
-        # ── Final summary card ──
-        self._render_summary(page, all_success)
+        await self._invite_supporting_users(step, page, client, "Org Admin")
 
     # ------------------------------------------------------------------
     # Per-template flows
     # ------------------------------------------------------------------
 
-    async def _run_ess_flow(self, step, track, page, client) -> None:
+    async def _run_ess_flow(self, step, page, client) -> None:
         dome_serial = self._device_serial("Dome")
         panel_serial = self._device_serial("Alarm Panel")
         access_station_pro_serial = self._device_serial("Access Station Pro")
 
-        ok, site_id = await step("Creating Site", client.create_site, ESS_SITE_NAME)
-        track(ok)
+        site_id = await step("Creating Site", client.create_or_reuse_site, ESS_SITE_NAME)
 
-        ok, camera_id = await step(
-            f"Adding Camera ({dome_serial})",
-            client.add_device,
-            ESS_CAMERA_NAME,
-            dome_serial,
+        camera_id, panel_id, access_station_pro_id = await self._add_devices(
+            step,
+            client,
+            [
+                (f"Adding Camera ({dome_serial})", ESS_CAMERA_NAME, dome_serial),
+                (f"Adding Alarm Panel ({panel_serial})", ESS_PANEL_NAME, panel_serial),
+                (f"Adding Access Station Pro ({access_station_pro_serial})", ESS_ACCESS_STATION_PRO_NAME, access_station_pro_serial),
+            ],
         )
-        track(ok)
 
-        ok, panel_id = await step(
-            f"Adding Alarm Panel ({panel_serial})",
-            client.add_device,
-            ESS_PANEL_NAME,
-            panel_serial,
-        )
-        track(ok)
-
-        ok, access_station_pro_id = await step(
-            f"Adding Access Station Pro ({access_station_pro_serial})",
-            client.add_device,
-            ESS_ACCESS_STATION_PRO_NAME,
-            access_station_pro_serial,
-        )
-        track(ok)
-
-        ok, floor_id = await step(
+        floor_id = await step(
             "Creating Building",
-            client.create_building,
+            client.create_or_reuse_building,
             ESS_BUILDING_NAME,
             ESS_ADDRESS,
             ESS_FLOORS,
         )
-        track(ok)
-
-        self._progress_note(page, "Waiting for building to provision...")
-        await asyncio.sleep(BUILDING_PROVISION_SECONDS)
 
         if camera_id and site_id:
-            ok, _ = await step(
+            _ = await step(
                 "Configuring Camera",
-                client.configure_camera,
-                camera_id,
-                ESS_CAMERA_NAME,
+                client.configure_cameras,
+                [camera_id],
                 site_id,
                 ESS_ADDRESS,
             )
-            track(ok)
 
-        ok, _ = await step(
+        _ = await step(
             "Enabling Org Features",
             client.enable_org_features,
             self.face_analytics_switch.value,
         )
-        track(ok)
 
-        ok, _ = await step(
+        _ = await step(
             "Enabling Org Face-Unlock",
             client.enable_org_face_unlock,
         )
-        track(ok)
 
         if self.face_analytics_switch.value and camera_id:
-            ok, _ = await step(
+            _ = await step(
                 "Enabling Camera Analytics",
                 client.enable_camera_analytics,
                 [camera_id],
             )
-            track(ok)
 
+        alarm_response_id = None
         if site_id:
-            ok, alarm_response_id = await step(
+            alarm_response_id = await step(
                 "Creating Alarm Site",
                 client.create_alarm_site,
                 "Verkada",
                 ESS_ALARM_ADDRESS,
                 site_id,
             )
-            track(ok)
 
             if alarm_response_id:
-                ok, _ = await step(
+                _ = await step(
                     "Setting response to Self-Monitored",
                     client.set_alarm_self_monitored,
                     site_id,
                     alarm_response_id,
                 )
-                track(ok)
 
-            ok, _ = await step(
+            _ = await step(
                 "Creating Guest Site",
                 client.create_guest_site,
                 ESS_GUEST_ADDRESS,
                 site_id,
             )
-            track(ok)
 
         if panel_id and site_id:
-            ok, alarm_system_id = await step(
+            alarm_system_id = await step(
                 "Creating Alarm System",
                 client.create_alarm_system,
                 site_id,
             )
-            track(ok)
             if alarm_system_id:
-                ok, _ = await step(
+                _ = await step(
                     "Configuring Alarm Panel",
                     client.configure_alarm_panel,
                     panel_id,
                     ESS_PANEL_NAME,
                     alarm_system_id,
                 )
-                track(ok)
+                await self._add_strobe(
+                    step, client, alarm_system_id, panel_id, site_id, alarm_response_id
+                )
 
         if access_station_pro_id and site_id:
-            ok, access_station_pro_controller_id = await step(
+            access_station_pro_controller_id = await step(
                 "Configuring Access Station Pro",
                 client.configure_access_station_pro,
                 access_station_pro_id,
@@ -790,58 +837,61 @@ class CommissionView(ToolView):
                 site_id,
                 ESS_ADDRESS
             )
-            track(ok)
 
-            door_id = None
+            # No separate face-unlock step: the Access Station Pro door is
+            # created with face-unlock-enabled (as the Command web app does).
             if access_station_pro_controller_id:
-                ok, door_id = await step(
+                door_id = await step(
                     "Creating Door",
                     client.create_access_station_pro_door,
                     access_station_pro_controller_id,
                     ESS_ACCESS_STATION_PRO_DOOR_NAME,
                     floor_id,
                 )
-                track(ok)
+                if door_id:
+                    # Granted to the participants access group when it
+                    # already exists; the Users tool attaches it otherwise.
+                    group_id = await step(
+                        f"Looking up access group '{PARTICIPANTS_GROUP_NAME}'",
+                        client.find_access_group_id,
+                        PARTICIPANTS_GROUP_NAME,
+                    )
+                    _ = await step(
+                        "Creating Access Level",
+                        client.create_access_level,
+                        door_id,
+                        ESS_AF64_ACCESS_LEVEL_NAME,
+                        site_id,
+                        group_id or "",
+                    )
 
-            if door_id and access_station_pro_controller_id:
-                ok, _ = await step(
-                    "Enabling Face-Unlock on Door",
-                    client.enable_door_face_unlock,
-                    door_id,
-                )
-                track(ok)
-
-    async def _run_acsl_flow(self, step, track, page, client) -> None:
+    async def _run_acsl_flow(self, step, page, client) -> None:
         access_station_pro_serial = self._device_serial("Access Station Pro")
 
-        ok, site_id = await step("Creating Site", client.create_site, ACSL_SITE_NAME)
-        track(ok)
+        site_id = await step("Creating Site", client.create_or_reuse_site, ACSL_SITE_NAME)
 
-        ok, access_station_pro_id = await step(
+        access_station_pro_id = await step(
             f"Adding Access Station Pro ({access_station_pro_serial})",
             client.add_device,
             ACSL_ACCESS_STATION_PRO_NAME,
             access_station_pro_serial,
         )
-        track(ok)
 
-        ok, floor_id = await step(
+        floor_id = await step(
             "Creating Building",
-            client.create_building,
+            client.create_or_reuse_building,
             ACSL_BUILDING_NAME,
             ACSL_ADDRESS,
             ACSL_FLOORS,
         )
-        track(ok)
 
-        ok, _ = await step(
+        _ = await step(
             "Enabling Org Face-Unlock",
             client.enable_org_face_unlock,
         )
-        track(ok)
 
         if access_station_pro_id and site_id:
-            ok, access_station_pro_controller_id = await step(
+            access_station_pro_controller_id = await step(
                 "Configuring Access Station Pro",
                 client.configure_access_station_pro,
                 access_station_pro_id,
@@ -849,133 +899,67 @@ class CommissionView(ToolView):
                 site_id,
                 ACSL_ADDRESS
             )
-            track(ok)
             door_id = None
             if access_station_pro_controller_id:
-                ok, door_id = await step(
+                # Face unlock and the three two-factor modes (card + code,
+                # face + card, face + code) come with the door's create
+                # configs, as in the Command web app.
+                door_id = await step(
                     "Creating Door",
-                    client.create_access_station_pro_door,
+                    functools.partial(client.create_access_station_pro_door, mfa=True),
                     access_station_pro_controller_id,
                     ACSL_ACCESS_STATION_PRO_DOOR_NAME,
                     floor_id,
                 )
-                track(ok)
 
             if door_id and access_station_pro_controller_id:
-                ok, _ = await step(
-                    "Enabling Face-Unlock on Door",
-                    client.enable_door_face_unlock,
-                    door_id,
-                )
-                track(ok)
-
-                ok, _ = await step(
-                    "Enabling Card + Code",
-                    client.enable_door_mfa_card_code,
-                    door_id,
-                )
-                track(ok)
-
-                ok, _ = await step(
-                    "Enabling Face + Card",
-                    client.enable_door_mfa_face_card,
-                    door_id,
-                )
-                track(ok)
-
-                ok, _ = await step(
-                    "Enabling Face + Code",
-                    client.enable_door_mfa_face_code,
-                    door_id,
-                )
-                track(ok)
-
-                ok, _ = await step(
+                _ = await step(
                     "Creating MFA Door Schedule",
                     client.create_mfa_schedule,
                     door_id,
                     ACSL_MFA_DOOR_SCHEDULE_NAME,
                 )
-                track(ok)
 
-    async def _run_vssl_flow(self, step, track, page, client, ext_client) -> None:
+    async def _run_vssl_flow(self, step, page, client) -> None:
         bullet_serial = self._device_serial("Bullet")
         ptz_serial = self._device_serial("PTZ")
         connector_serial = self._device_serial("Command Connector")
         controller_serial = self._device_serial("Access Controller")
         license_plate = self._device_serial("License Plate")
 
-        ok, site_id = await step("Creating Site", client.create_site, VSS_SITE_NAME)
-        track(ok)
+        site_id = await step("Creating Site", client.create_or_reuse_site, VSS_SITE_NAME)
 
-        ok, bullet_id = await step(
-            f"Adding Camera ({bullet_serial})",
-            client.add_device,
-            VSS_BULLET_NAME,
-            bullet_serial,
+        bullet_id, ptz_id, connector_id, controller_id = await self._add_devices(
+            step,
+            client,
+            [
+                (f"Adding Camera ({bullet_serial})", VSS_BULLET_NAME, bullet_serial),
+                (f"Adding PTZ ({ptz_serial})", VSS_PTZ_NAME, ptz_serial),
+                (f"Adding Command Connector ({connector_serial})", VSS_CONNECTOR_NAME, connector_serial),
+                (f"Adding Access Controller ({controller_serial})", VSS_CONTROLLER_NAME, controller_serial),
+            ],
         )
-        track(ok)
 
-        ok, ptz_id = await step(
-            f"Adding PTZ ({ptz_serial})",
-            client.add_device,
-            VSS_PTZ_NAME,
-            ptz_serial,
-        )
-        track(ok)
-
-        ok, connector_id = await step(
-            f"Adding Command Connector ({connector_serial})",
-            client.add_device,
-            VSS_CONNECTOR_NAME,
-            connector_serial,
-        )
-        track(ok)
-
-        ok, controller_id = await step(
-            f"Adding Access Controller ({controller_serial})",
-            client.add_device,
-            VSS_CONTROLLER_NAME,
-            controller_serial,
-        )
-        track(ok)
-
-        ok, floor_id = await step(
+        floor_id = await step(
             "Creating Building",
-            client.create_building,
+            client.create_or_reuse_building,
             VSS_BUILDING_NAME,
             VSS_ADDRESS,
             VSS_FLOORS,
         )
-        track(ok)
 
-        self._progress_note(page, "Waiting for building to provision...")
-        await asyncio.sleep(BUILDING_PROVISION_SECONDS)
-
-        if bullet_id and site_id:
-            ok, _ = await step(
-                "Configuring Bullet",
-                client.configure_camera,
-                bullet_id,
-                VSS_BULLET_NAME,
+        cameras = [c for c in (bullet_id, ptz_id) if c]
+        if cameras and site_id:
+            _ = await step(
+                f"Configuring cameras ({len(cameras)})",
+                client.configure_cameras,
+                cameras,
                 site_id,
                 VSS_ADDRESS,
             )
-            track(ok)
-
-        if ptz_id and site_id:
-            ok, _ = await step(
-                "Configuring PTZ",
-                client.configure_camera,
-                ptz_id,
-                VSS_PTZ_NAME,
-                site_id,
-                VSS_ADDRESS,
-            )
-            track(ok)
 
         if connector_id and site_id:
-            ok, _ = await step(
+            _ = await step(
                 "Configuring Connector",
                 client.configure_connector,
                 connector_id,
@@ -983,11 +967,10 @@ class CommissionView(ToolView):
                 site_id,
                 VSS_ADDRESS,
             )
-            track(ok)
 
         door_id = None
         if controller_id and site_id:
-            ok, access_controller_id = await step(
+            access_controller_id = await step(
                 "Configuring Access Controller",
                 client.configure_access_controller,
                 controller_id,
@@ -996,11 +979,10 @@ class CommissionView(ToolView):
                 floor_id,
                 HQ_TIMEZONE,
             )
-            track(ok)
             if access_controller_id:
                 # LPR door: created with the LPR config up front (v2 has no
                 # retroactive flag-flip), then the camera is paired below.
-                ok, door_id = await step(
+                door_id = await step(
                     "Creating Door",
                     functools.partial(
                         client.create_door,
@@ -1010,73 +992,64 @@ class CommissionView(ToolView):
                         lpr=True,
                     ),
                 )
-                track(ok)
 
-        ok, _ = await step(
+        _ = await step(
             "Enabling Org Features",
             client.enable_org_features,
             self.face_analytics_switch.value,
         )
-        track(ok)
 
         if self.face_analytics_switch.value and ptz_id:
-            ok, _ = await step(
+            _ = await step(
                 "Enabling Camera Analytics",
                 client.enable_camera_analytics,
                 [ptz_id],
             )
-            track(ok)
 
         if bullet_id:
-            ok, _ = await step(
+            _ = await step(
                 "Enabling LPR mode",
                 client.enable_camera_lpr,
                 [bullet_id],
             )
-            track(ok)
 
         if ptz_id:
-            ok, _ = await step(
+            _ = await step(
                 "Disabling PTZ Installation Mode",
                 client.disable_camera_install_mode,
                 [ptz_id],
             )
-            track(ok)
 
         if door_id and bullet_id:
-            ok, _ = await step(
+            _ = await step(
                 "Linking LPR Camera to Door",
                 client.pair_lpr_camera,
                 door_id,
                 bullet_id,
             )
-            track(ok)
 
-        ok, group_id = await step(
+        group_id = await step(
             "Creating Access Group",
-            ext_client.create_access_group,
+            client.create_access_group,
             VSS_ACCESS_GROUP_NAME,
         )
-        track(ok)
 
-        ok, _ = await step(
+        _ = await step(
             "Adding User to Access Group",
-            ext_client.add_user_to_access_group,
+            client.add_user_to_access_group,
             client.user_id,
             group_id,
         )
-        track(ok)
 
-        ok, _ = await step(
+        _ = await step(
             "Adding License Plate to Access User",
-            ext_client.add_license_plate_to_user,
+            client.add_license_plate_to_user,
             client.user_id,
             license_plate,
         )
-        track(ok)
 
         if door_id:
-            ok, _ = await step(
+            _ = await step(
                 "Creating Access Level",
                 client.create_access_level,
                 door_id,
@@ -1084,139 +1057,88 @@ class CommissionView(ToolView):
                 site_id,
                 group_id,
             )
-            track(ok)
 
-    async def _run_vsse_flow(self, step, track, page, client) -> None:
+    async def _run_vsse_flow(self, step, page, client) -> None:
         dome_serial = self._device_serial("Dome")
         fisheye_serial = self._device_serial("Fisheye")
         bullet_serial = self._device_serial("Bullet")
 
-        ok, site_id = await step(
-            "Creating Site", client.create_site, VSS_EXAM_SITE_NAME
+        site_id = await step(
+            "Creating Site", client.create_or_reuse_site, VSS_EXAM_SITE_NAME
         )
-        track(ok)
 
-        ok, dome_id = await step(
-            f"Adding Dome ({dome_serial})",
-            client.add_device,
-            VSS_EXAM_DOME_NAME,
-            dome_serial,
+        dome_id, bullet_id, fisheye_id = await self._add_devices(
+            step,
+            client,
+            [
+                (f"Adding Dome ({dome_serial})", VSS_EXAM_DOME_NAME, dome_serial),
+                (f"Adding Bullet ({bullet_serial})", VSS_EXAM_BULLET_NAME, bullet_serial),
+                (f"Adding Fisheye ({fisheye_serial})", VSS_EXAM_FISHEYE_NAME, fisheye_serial),
+            ],
         )
-        track(ok)
 
-        ok, bullet_id = await step(
-            f"Adding Bullet ({bullet_serial})",
-            client.add_device,
-            VSS_EXAM_BULLET_NAME,
-            bullet_serial,
-        )
-        track(ok)
+        cameras = [c for c in (dome_id, fisheye_id, bullet_id) if c]
+        if cameras and site_id:
+            _ = await step(
+                f"Configuring cameras ({len(cameras)})",
+                client.configure_cameras,
+                cameras,
+                site_id,
+                VSS_ADDRESS,
+            )
 
-        ok, fisheye_id = await step(
-            f"Adding Fisheye ({fisheye_serial})",
-            client.add_device,
-            VSS_EXAM_FISHEYE_NAME,
-            fisheye_serial,
-        )
-        track(ok)
-
-        for cam_id, cam_name in (
-            (dome_id, VSS_EXAM_DOME_NAME),
-            (fisheye_id, VSS_EXAM_FISHEYE_NAME),
-            (bullet_id, VSS_EXAM_BULLET_NAME),
-        ):
-            if cam_id and site_id:
-                ok, _ = await step(
-                    f"Configuring {cam_name.lower()}",
-                    client.configure_camera,
-                    cam_id,
-                    cam_name,
-                    site_id,
-                    VSS_ADDRESS,
-                )
-                track(ok)
-
-        ok, _ = await step(
+        _ = await step(
             "Enabling Org Features",
             client.enable_org_features,
             self.face_analytics_switch.value,
         )
-        track(ok)
 
         if self.face_analytics_switch.value and (dome_id or fisheye_id):
             cams = [c for c in (dome_id, fisheye_id) if c]
-            ok, _ = await step(
+            _ = await step(
                 "Enabling Camera Analytics",
                 client.enable_camera_analytics,
                 cams,
             )
-            track(ok)
 
         if bullet_id:
-            ok, _ = await step(
+            _ = await step(
                 "Enabling LPR mode",
                 client.enable_camera_lpr,
                 [bullet_id],
             )
-            track(ok)
 
-    async def _run_as_flow(self, step, track, page, client) -> None:
+    async def _run_as_flow(self, step, page, client) -> None:
         dome_serial = self._device_serial("Dome")
         controller_serial = self._device_serial("Access Controller")
         panel_serial = self._device_serial("Alarm Panel")
         keypad_serial = self._device_serial("Keypad")
 
-        ok, site_id = await step("Creating Site", client.create_site, AS_SITE_NAME)
-        track(ok)
+        site_id = await step("Creating Site", client.create_or_reuse_site, AS_SITE_NAME)
 
-        ok, dome_id = await step(
-            f"Adding Camera ({dome_serial})",
-            client.add_device,
-            AS_DOME_NAME,
-            dome_serial,
+        dome_id, controller_id, panel_id, keypad_id = await self._add_devices(
+            step,
+            client,
+            [
+                (f"Adding Camera ({dome_serial})", AS_DOME_NAME, dome_serial),
+                (f"Adding Access Controller ({controller_serial})", AS_CONTROLLER_NAME, controller_serial),
+                (f"Adding Alarm Panel ({panel_serial})", AS_PANEL_NAME, panel_serial),
+                (f"Adding Alarm Keypad ({keypad_serial})", AS_KEYPAD_NAME, keypad_serial),
+            ],
         )
-        track(ok)
 
-        ok, controller_id = await step(
-            f"Adding Access Controller ({controller_serial})",
-            client.add_device,
-            AS_CONTROLLER_NAME,
-            controller_serial,
-        )
-        track(ok)
-
-        ok, panel_id = await step(
-            f"Adding Alarm Panel ({panel_serial})",
-            client.add_device,
-            AS_PANEL_NAME,
-            panel_serial,
-        )
-        track(ok)
-
-        ok, keypad_id = await step(
-            f"Adding Alarm Keypad ({keypad_serial})",
-            client.add_device,
-            AS_KEYPAD_NAME,
-            keypad_serial,
-        )
-        track(ok)
-
-        ok, floor_id = await step(
+        floor_id = await step(
             "Creating Building",
-            client.create_building,
+            client.create_or_reuse_building,
             AS_BUILDING_NAME,
             AS_ADDRESS,
             AS_FLOORS,
         )
-        track(ok)
-
-        self._progress_note(page, "Waiting for building to provision...")
-        await asyncio.sleep(BUILDING_PROVISION_SECONDS)
 
         door_id = None
         access_controller_id = None
         if controller_id and site_id:
-            ok, access_controller_id = await step(
+            access_controller_id = await step(
                 "Configuring Access Controller",
                 client.configure_access_controller,
                 controller_id,
@@ -1225,19 +1147,17 @@ class CommissionView(ToolView):
                 floor_id,
                 HQ_TIMEZONE,
             )
-            track(ok)
             if access_controller_id:
-                ok, door_id = await step(
+                door_id = await step(
                     "Creating Door",
                     client.create_door,
                     access_controller_id,
                     AS_DOOR_NAME,
                     floor_id,
                 )
-                track(ok)
 
         if door_id:
-            ok, _ = await step(
+            _ = await step(
                 "Creating Access Level",
                 client.create_access_level,
                 door_id,
@@ -1245,88 +1165,78 @@ class CommissionView(ToolView):
                 site_id,
                 "",
             )
-            track(ok)
 
-            ok, _ = await step(
+            _ = await step(
                 "Deleting Door",
                 client.delete_door,
                 door_id,
             )
-            track(ok)
 
-            ok, _ = await step(
+            _ = await step(
                 "Deleting Access Controller",
                 client.delete_access_controller,
                 access_controller_id
             )
-            track(ok)
 
         if dome_id and site_id:
-            ok, _ = await step(
+            _ = await step(
                 "Configuring Camera",
-                client.configure_camera,
-                dome_id,
-                AS_DOME_NAME,
+                client.configure_cameras,
+                [dome_id],
                 site_id,
                 AS_ADDRESS,
             )
-            track(ok)
 
-        ok, _ = await step(
+        _ = await step(
             "Enabling Org Features",
             client.enable_org_features,
             self.face_analytics_switch.value,
         )
-        track(ok)
 
         if self.face_analytics_switch.value and dome_id:
-            ok, _ = await step(
+            _ = await step(
                 "Enabling Camera Analytics",
                 client.enable_camera_analytics,
                 [dome_id],
             )
-            track(ok)
 
+        alarm_response_id = None
         if site_id:
-            ok, alarm_response_id = await step(
+            alarm_response_id = await step(
                 "Creating Alarm Site",
                 client.create_alarm_site,
                 "Verkada",
                 AS_ALARM_ADDRESS,
                 site_id,
             )
-            track(ok)
 
             if alarm_response_id:
-                ok, _ = await step(
+                _ = await step(
                     "Setting response to Self-Monitored",
                     client.set_alarm_self_monitored,
                     site_id,
                     alarm_response_id,
                 )
-                track(ok)
 
         if panel_id and keypad_id and site_id:
             # Alarm panels and keypads attach to an alarm system, which
             # must be created first. The keypad step needs the system id.
-            ok, alarm_system_id = await step(
+            alarm_system_id = await step(
                 "Creating Alarm System",
                 client.create_alarm_system,
                 site_id,
             )
-            track(ok)
 
             if alarm_system_id:
-                ok, _ = await step(
+                _ = await step(
                     "Configuring Alarm Panel",
                     client.configure_alarm_panel,
                     panel_id,
                     AS_PANEL_NAME,
                     alarm_system_id,
                 )
-                track(ok)
 
-                ok, _ = await step(
+                _ = await step(
                     "Configuring Alarm Keypad",
                     client.configure_keypad,
                     keypad_id,
@@ -1334,42 +1244,100 @@ class CommissionView(ToolView):
                     alarm_system_id,
                     keypad_serial,
                 )
-                track(ok)
 
-                ok, _ = await step(
+                await self._add_strobe(
+                    step, client, alarm_system_id, panel_id, site_id, alarm_response_id
+                )
+
+                _ = await step(
                     "Setting up General Keycode",
                     client.set_alarm_keycode,
                     alarm_system_id,
                 )
-                track(ok)
 
     # ------------------------------------------------------------------
     # Supporting steps
     # ------------------------------------------------------------------
 
-    async def _invite_supporting_users(self, step, track, client, role: str) -> None:
-        """Walk the user rows and invite each one with non-empty fields."""
-        for control in self._users_column.controls:
-            if not isinstance(control, ft.Row):
-                continue  # only ft.Row instances are added by _create_user_row
-            row: ft.Row = control
-            fields = [c for c in row.controls if isinstance(c, ft.TextField)]
-            if len(fields) < 3:
-                continue
-            first = (fields[0].value or "").strip()
-            last = (fields[1].value or "").strip()
-            email_val = (fields[2].value or "").strip()
-            if not (first and last and email_val):
-                continue
-            ok, _ = await step(
-                f"Adding user {first} {last}",
-                client.invite_user,
-                email_val,
-                first,
-                last,
-                role,
+    async def _add_strobe(
+        self, step, client, alarm_system_id, panel_id, site_id, response_config_id
+    ) -> None:
+        """Strobe on the panel's Output 1, activated by the Default Response
+        (Response → Automated Alarm Actions → Output devices)."""
+        strobe_id = await step(
+            "Configuring Wired Strobe",
+            client.create_wired_output,
+            STROBE_OUTPUT_NAME,
+            alarm_system_id,
+            panel_id,
+            STROBE_OUTPUT_PIN,
+        )
+        if strobe_id and response_config_id:
+            _ = await step(
+                "Linking Strobe to Default Response",
+                client.set_alarm_response_outputs,
+                site_id,
+                response_config_id,
+                [strobe_id],
             )
-            track(ok)
+
+    async def _reset_user_permissions(self, step, page, client) -> None:
+        """Remove every other user's organization, user management and site
+        roles (keeping Org Admin): one user list call, then one revoke call
+        per user, PARALLEL_REQUESTS at a time."""
+        users = await step("Checking user permissions", client.get_removable_permissions)
+        if users is None:
+            return  # the lookup failed; its row says why
+        if not users:
+            self._progress_note(page, "No user permissions to remove.")
+            return
+        for start in range(0, len(users), PARALLEL_REQUESTS):
+            await asyncio.gather(
+                *(
+                    step(
+                        f"Removing {len(u['revoke'])} permission"
+                        f"{'' if len(u['revoke']) == 1 else 's'} from {u['name']}",
+                        client.revoke_user_permissions,
+                        u["id"],
+                        u["revoke"],
+                    )
+                    for u in users[start : start + PARALLEL_REQUESTS]
+                )
+            )
+
+    async def _invite_supporting_users(self, step, page, client, role: str) -> None:
+        """Invite every complete supporting-user row (validated on Review),
+        PARALLEL_REQUESTS at a time, one progress row each. People already
+        in the org (one user list call) are reported, not re-invited."""
+        users = self._collect_supporting_users()
+        if not users:
+            return
+        existing = await step("Checking for existing users", client.get_user_ids_by_email)
+        to_invite = []
+        for first, last, email in users:
+            if email.lower() in (existing or {}):
+                label = f"Adding user {first} {last}"
+                row = StepRow(label)
+                row.succeed(f"{label} — already in the org")
+                self._progress_column.controls.append(row)
+                self._record_step(label, ok=True)
+            else:
+                to_invite.append((first, last, email))
+        page.update()
+        for start in range(0, len(to_invite), PARALLEL_REQUESTS):
+            await asyncio.gather(
+                *(
+                    step(
+                        f"Adding user {first} {last}",
+                        client.invite_user,
+                        email,
+                        first,
+                        last,
+                        role,
+                    )
+                    for first, last, email in to_invite[start : start + PARALLEL_REQUESTS]
+                )
+            )
 
     # ------------------------------------------------------------------
     # UI helpers used by the orchestrator
@@ -1386,11 +1354,12 @@ class CommissionView(ToolView):
         )
         page.update()
 
-    def _render_summary(self, page, all_success: bool) -> None:
+    def _render_summary(self, page) -> None:
         """Run -> Report: a structured result with failures surfaced first.
 
-        Branches on the cancel token so a user-aborted run shows a clear
-        "Cancelled" header instead of the success/partial-success line.
+        The outcome is derived from the step counters. Branches on the
+        cancel token so a user-aborted run shows a clear "Cancelled" header
+        instead of the success/partial-success line.
         """
         self._stepper.set_active(3)
 
@@ -1399,7 +1368,7 @@ class CommissionView(ToolView):
             kind = "warning"
             message = "Commission cancelled."
             bar_color = WARNING
-        elif all_success:
+        elif self._steps_failed == 0:
             kind = "success"
             message = f"Commission complete — {self._steps_done} steps, 0 failed."
             bar_color = SECONDARY
@@ -1442,36 +1411,18 @@ class CommissionView(ToolView):
         report.append(
             ft.Row(
                 [
-                    ft.OutlinedButton(
-                        content=ft.Text("Copy log", color=TEXT_SECONDARY),
-                        style=ft.ButtonStyle(
-                            side=ft.BorderSide(1, BORDER),
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                        ),
-                        height=42,
-                        on_click=self._on_copy_log,
+                    secondary_button(
+                        "Copy log", on_click=self._on_copy_log, height=42
                     ),
-                    ft.OutlinedButton(
-                        content=ft.Text("Export report (CSV)", color=TEXT_SECONDARY),
-                        style=ft.ButtonStyle(
-                            side=ft.BorderSide(1, BORDER),
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                        ),
-                        height=42,
+                    secondary_button(
+                        "Export report (CSV)",
                         on_click=self._on_export_report,
-                    ),
-                    ft.ElevatedButton(
-                        content=ft.Text(
-                            "Return to Home",
-                            color=TEXT_PRIMARY,
-                            weight=ft.FontWeight.W_600,
-                        ),
-                        bgcolor=SECONDARY,
-                        style=ft.ButtonStyle(
-                            shape=ft.RoundedRectangleBorder(radius=8)
-                        ),
                         height=42,
+                    ),
+                    primary_button(
+                        "Return to Home",
                         on_click=lambda _: self.push_route("/home"),
+                        height=42,
                     ),
                 ],
                 spacing=10,
@@ -1527,67 +1478,71 @@ class CommissionView(ToolView):
             "Cancelling — the current step will finish, then commission will stop.",
         )
 
-    async def _run_step(self, page, loop, label: str, fn, *args) -> tuple[bool, object]:
-        """
-        Run a single commissioning step in the executor with UI feedback.
-
-        Renders a spinner+label row, awaits the function (which should be a
-        sync callable from the API clients — it will be offloaded to the
-        thread executor), then swaps the spinner for a check or error icon.
-
-        Returns (ok, result). On failure result is None and the exception
-        text is shown in the row. When the cancel token has been tripped,
-        the step is skipped (renders as a grey "cancelled" row) and
-        returns (False, None) so the flow records it but moves on.
-        """
-        if self._cancel_token and self._cancel_token.is_cancelled:
-            cancelled_row = ft.Row(
-                [
-                    ft.Icon(ft.Icons.CANCEL, color=WARNING, size=18),
-                    ft.Text(
-                        f"{label} — skipped (cancelled)",
-                        color=WARNING,
-                        size=13,
-                    ),
-                ],
-                spacing=10,
-            )
-            self._progress_column.controls.append(cancelled_row)
-            page.update()
-            return False, None
-
-        step_icon = ft.ProgressRing(
-            width=16, height=16, stroke_width=2, color=TEXT_SECONDARY
-        )
-        step_text = ft.Text(f"{label}...", color=TEXT_SECONDARY, size=13)
-        step_row = ft.Row([step_icon, step_text], spacing=10)
-        self._progress_column.controls.append(step_row)
-        page.update()
-        await asyncio.sleep(0)
-
-        try:
-            result = await loop.run_in_executor(_executor, fn, *args)
-            step_row.controls[0] = ft.Icon(
-                ft.Icons.CHECK_CIRCLE, color=SECONDARY, size=18
-            )
-            step_text.value = f"{label} — done"
-            step_text.color = SECONDARY
+    def _record_step(self, label: str, *, ok: bool, error=None) -> None:
+        """Count one finished step; the report's outcome is derived from this."""
+        if ok:
             self._steps_done += 1
             self._run_log.append(f"[ok]   {label}")
-            self._progress_header.set_progress(
-                self._steps_done, failed=self._steps_failed
-            )
-            page.update()
-            return True, result
-        except Exception as ex:
-            step_row.controls[0] = ft.Icon(ft.Icons.ERROR, color=ERROR, size=18)
-            step_text.value = f"{label} — failed: {ex}"
-            step_text.color = ERROR
+        else:
             self._steps_failed += 1
-            self._failures.append((label, str(ex)))
-            self._run_log.append(f"[FAIL] {label}: {ex}")
-            self._progress_header.set_progress(
-                self._steps_done, failed=self._steps_failed
-            )
+            self._failures.append((label, str(error)))
+            self._run_log.append(f"[FAIL] {label}: {error}")
+        self._progress_header.set_progress(
+            self._steps_done, failed=self._steps_failed
+        )
+
+    async def _add_devices(self, step, client, devices) -> list:
+        """
+        Claim a template's devices with one batch/commission call, as the
+        Command web app does, while keeping one progress row per device.
+
+        `devices` is [(row label, device name, serial)]. The first row makes
+        the call; every row then reports its own device from the result.
+        Returns the device ids in order (None for a device that failed).
+        """
+        batch: dict[str, Any] = {}
+
+        def claim_all():
+            if "error" in batch:
+                raise batch["error"]
+            if "result" not in batch:
+                try:
+                    batch["result"] = client.add_devices([(n, s) for _, n, s in devices])
+                except Exception as ex:
+                    batch["error"] = ex
+                    raise
+            return batch["result"]
+
+        ids = []
+        for label, _name, serial in devices:
+            def one(serial=serial):
+                outcome = claim_all()[normalize_serial(serial)]
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+            ids.append(await step(label, one))
+        return ids
+
+    async def _run_step(self, page, label: str, fn, *args):
+        """
+        Run one commissioning step off the UI loop with a live progress row.
+
+        `fn` is a sync callable from the API clients. Returns its result,
+        or None when the step failed (the error is shown in the row and
+        recorded for the report) or was skipped because the run was
+        cancelled — the in-flight step always completes first.
+        """
+        if self._cancel_token and self._cancel_token.is_cancelled:
+            row = StepRow(label)
+            row.skip(f"{label} — skipped (cancelled)")
+            self._progress_column.controls.append(row)
             page.update()
-            return False, None
+            return None
+
+        ok, result, error = await run_step(
+            page, self._progress_column, label, fn, *args
+        )
+        self._record_step(label, ok=ok, error=error)
+        page.update()
+        return result if ok else None

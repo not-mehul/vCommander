@@ -1,32 +1,151 @@
+import copy
+import json
+import json as _json
+import re
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Any
 
+import requests
 from requests.exceptions import JSONDecodeError, RequestException
 
 from apis.endpoints import (
+    _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS,
     _DOOR_CREATE_CONFIGS,
     _DOOR_CREATE_IOS,
     _DOOR_EVENT,
-    _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS,
+    _DOOR_MFA_CREATE_CONFIGS,
     _LPR_DOOR_CREATE_CONFIGS,
     _MFA_DOOR_EVENT,
+    DEFAULT_SHARD,
     Address,
     AlarmAddress,
     GuestAddress,
     MFARequiredError,
+    OrgShard,
     build_url,
     resolve,
 )
 from apis.http import build_session
 from constants import (
-    API_NAME,
     AS_INSTRUCTOR_KEYCODE,
     AS_INSTRUCTOR_KEYCODE_NAME,
     DEFAULT_TIMEOUT,
     DEV_SKIP_LOGIN,
+    INTERNAL_PAGE_SIZE,
     SEARCH_DURATION,
 )
 from utils.logger import log_api_call
+
+# Independent calls sent at once (claims' locations, deletes, invites).
+PARALLEL_REQUESTS = 4
+
+
+def _is_read(endpoint_key: str, method: str) -> bool:
+    """A request that only reads: safe to share within read_cache()."""
+    return method == "GET" or endpoint_key.endswith((".list", ".get", ".list.v4"))
+
+
+def _is_kept_role(role_key: str) -> bool:
+    """Roles a permission reset keeps: Org Admin and org membership."""
+    return role_key in ("ORG_MANAGER", "ORG_MEMBER") or role_key.endswith("_ORG_MEMBER")
+
+
+def normalize_serial(serial: str) -> str:
+    """Serials compare without dashes or case ("abcd-efgh" == "ABCDEFGH")."""
+    return serial.replace("-", "").strip().upper()
+
+
+# Access-control admin roles Decommission needs: role key -> label.
+ACCESS_ADMIN_ROLES = {
+    "ACCESS_CONTROL_SYSTEM_ADMIN": "Access System Admin",
+    "ACCESS_CONTROL_USER_ADMIN": "Access User Admin",
+}
+
+
+class OrgNotFoundError(ValueError):
+    """org/validate_short_name doesn't know the org short name."""
+
+
+# A hostname (or label) as returned in shard host metadata. Anything else is
+# rejected rather than spliced into request URLs.
+_HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+
+
+def validate_org_short_name(
+    org_short_name: str, session: requests.Session | None = None
+) -> OrgShard:
+    """Look up which shard hosts an org (pre-auth, shard-independent).
+
+    POSTs org/validate_short_name on the global vglobal service. The
+    response names the shard and its host metadata, from which every
+    internal and public-API host for the org is built.
+
+    Raises:
+        OrgNotFoundError: the short name isn't a known org (4xx, or a 2xx
+            without shard details).
+        ConnectionError: transport failure, a 5xx, or malformed host data.
+    """
+    endpoint, path = resolve("org.validate_short_name")
+    url = build_url(endpoint, org_short_name, path)
+    log_label = f"{org_short_name}/{path}"
+    session = session or build_session()
+    try:
+        response = session.post(
+            url, json={"orgShortName": org_short_name}, timeout=DEFAULT_TIMEOUT
+        )
+    except RequestException as e:
+        raise ConnectionError(f"Couldn't look up org '{org_short_name}': {e}") from e
+
+    try:
+        data = response.json() if response.content else {}
+    except JSONDecodeError:
+        data = {}
+    shard = data.get("shard") if isinstance(data, dict) else None
+    shard_info = shard if isinstance(shard, dict) else {}
+    log_api_call(
+        "POST",
+        log_label,
+        f'{{"orgShortName": "{org_short_name}"}}',
+        str(response.status_code),
+        json.dumps(
+            {
+                "shard": shard_info.get("name"),
+                "region": shard_info.get("readable_name"),
+                "host_metadata": shard_info.get("host_metadata"),
+            }
+        ),
+    )
+    if response.status_code >= 500:
+        raise ConnectionError(
+            f"Couldn't look up org '{org_short_name}' (HTTP {response.status_code})."
+        )
+    if not response.ok or not isinstance(shard, dict):
+        raise OrgNotFoundError(f"No Verkada org named '{org_short_name}' was found.")
+
+    hosts = shard.get("host_metadata") or {}
+    result = OrgShard(
+        name=str(shard.get("name") or ""),
+        domain=str(hosts.get("domain") or ""),
+        api_gateway_endpoint=str(hosts.get("api_gateway_endpoint") or "api"),
+        public_api_endpoint=str(hosts.get("public_api_endpoint") or "apiadmin"),
+        readable_name=str(shard.get("readable_name") or ""),
+        org_name=str(data.get("name") or ""),
+    )
+    # public_api_endpoint isn't used to build any host, so it isn't checked.
+    for label in (result.domain, result.api_gateway_endpoint):
+        if not _HOSTNAME.match(label):
+            raise ConnectionError(
+                f"Org lookup for '{org_short_name}' returned an unusable host "
+                f"({label!r})."
+            )
+    if not result.name:
+        raise ConnectionError(
+            f"Org lookup for '{org_short_name}' returned no shard name."
+        )
+    return result
 
 
 class APIError(ConnectionError):
@@ -43,10 +162,8 @@ class APIError(ConnectionError):
         self.status_code = status_code
 
 
-# Wired-input device `type` strings. All of these are created on a panel
-# pin, listed by alarm.wired_input.list, and decommissioned via
-# alarm.wired_input.delete. Only WIRED_CONTACT_SENSOR carries an extra
-# sensorConfig; the rest send just name + type.
+# Wired-input device `type` strings: the device types get_wired_input lists
+# (alarm_system/get_devices returns every device; this filters to inputs).
 _WIRED_INPUT_TYPES = (
     "WIRED_CONTACT_SENSOR",
     "WIRED_GLASS_BREAK_SENSOR",
@@ -55,36 +172,6 @@ _WIRED_INPUT_TYPES = (
     "WIRED_PANIC_BUTTON",
     "WIRED_WATER_LEAK_SENSOR",
 )
-
-# Alarm device `type` strings (returned by alarm_system/get_devices) mapped
-# to the v2 delete endpoint key for that device. Panels/keypads/expanders/
-# wireless decommission; wired in/out use a different delete path. Every
-# wired-input subtype shares the one alarm.wired_input.delete endpoint.
-_ALARM_DEVICE_DELETE_KEYS = {
-    "COLOSSUS": "alarm.panel.delete",
-    "SYLVIE": "alarm.keypad.delete",
-    "KURIBO": "alarm.expander.delete",
-    "WIRELESS_CONTACT_SENSOR": "alarm.wireless_contact_sensor.delete",
-    "WIRELESS_PANIC_BUTTON": "alarm.wireless_panic_button.delete",
-    "UNIVERSAL_TRANSMITTER": "alarm.wireless_universal_transmitter.delete",
-    "WIRED_GENERIC_OUTPUT": "alarm.wired_output.delete",
-    **{t: "alarm.wired_input.delete" for t in _WIRED_INPUT_TYPES},
-}
-
-# Fixed overnight (23:30–06:30) arm schedule applied to every camera guard.
-# startMinute 1110 = 18.5h*60; endMinute 390 = 6.5h*60. Each entry spans
-# one night, rolling Sun→Mon … Sat→Sun.
-_GUARD_SCHEDULES = [
-    {
-        "startDay": day,
-        "startMinute": 1110,
-        "startSecond": 0,
-        "endDay": (day + 1) % 7,
-        "endMinute": 390,
-        "endSecond": 0,
-    }
-    for day in range(7)
-]
 
 
 class VerkadaInternalAPIClient:
@@ -105,16 +192,30 @@ class VerkadaInternalAPIClient:
     """
 
     def __init__(
-        self, email: str, password: str, org_short_name: str, shard: str = "prod1"
+        self,
+        email: str,
+        password: str,
+        org_short_name: str,
+        shard: OrgShard | None = None,
     ):
         self.email = email
         self.password = password
         self.org_short_name = org_short_name
+        # Where the org is hosted. Resolved from org/validate_short_name by
+        # login() unless given; every request URL is built from it.
         self.shard = shard
 
         # Persistent session keeps cookies alive across requests; the shared
         # factory adds retry on transient failures + a default timeout.
         self.session = build_session()
+
+        # For endpoints marked replayable=False; built on first use, sharing
+        # self.session's cookie jar (see _session_for).
+        self._no_replay_session: requests.Session | None = None
+
+        # Shared reads while read_cache() is active (a Decommission scan).
+        self._read_cache: dict | None = None
+        self._read_cache_lock = threading.Lock()
 
         # Populated by _parse_login_response() after successful auth
         self.auth_data: dict[str, str] | None = None
@@ -126,12 +227,41 @@ class VerkadaInternalAPIClient:
         # can prompt for the right factor (SMS vs authenticator/QR) and
         # offer a resend. None/False until an MFA challenge is seen.
         self.mfa_sms_enabled: bool = False
-        self.mfa_qr_enabled: bool = False
         self.mfa_sms_contact: str | None = None
 
     # ------------------------------------------------------------------
     # Identity helpers
     # ------------------------------------------------------------------
+
+    @contextmanager
+    def read_cache(self):
+        """
+        Within this block, identical read requests (GETs and *.list / *.get
+        endpoints) are sent once and their answer reused — e.g. the alarm
+        categories of a scan all share one alarm_system/list and one
+        get_devices per system. Writes are never cached.
+        """
+        self._read_cache = {}
+        try:
+            yield
+        finally:
+            self._read_cache = None
+
+    @property
+    def host_shard(self) -> OrgShard:
+        """The resolved shard, or the default US shard before resolution."""
+        return self.shard or DEFAULT_SHARD
+
+    @property
+    def public_api_region(self) -> str:
+        """Public-API host label for this org's region ("api", "api.eu", …)."""
+        return self.host_shard.public_api_region
+
+    def resolve_shard(self) -> OrgShard:
+        """Look up (once) which shard hosts this org."""
+        if self.shard is None:
+            self.shard = validate_org_short_name(self.org_short_name, self.session)
+        return self.shard
 
     @property
     def user_id(self) -> str | None:
@@ -202,7 +332,7 @@ class VerkadaInternalAPIClient:
     def _login_url(self) -> str:
         """Pre-auth helper: build the login URL from the registry."""
         endpoint, formatted_path = resolve("login")
-        return build_url(endpoint, self.org_short_name, formatted_path)
+        return build_url(endpoint, self.org_short_name, formatted_path, self.host_shard)
 
     def _set_global_site_admin(self, enabled: bool) -> None:
         key = (
@@ -221,39 +351,6 @@ class VerkadaInternalAPIClient:
             log_request=(f'{{"globalSiteAdmin": {str(enabled).lower()}}}'),
         )
 
-    def _set_user_permission(
-        self,
-        endpoint_key: str,
-        permission: str,
-        *,
-        grant: bool,
-        label: str,
-    ) -> None:
-        """
-        Grant or revoke a single org-scoped permission on the current user.
-
-        v2 splits the legacy multi-grant `access.roles.modify` endpoint
-        into per-permission enable/disable keys (each just a thin wrapper
-        around POST org/set_user_permissions with the grant/revoke arrays
-        swapped); this helper carries the payload shape so callers only
-        name the endpoint key and the permission string.
-        """
-        perms = [{"entityId": self.org_id, "permission": permission}]
-        self._request(
-            endpoint_key,
-            json={
-                "organizationId": self.org_id,
-                "targetUserId": self.user_id,
-                "returnPermissions": False,
-                "grant": perms if grant else [],
-                "revoke": [] if grant else perms,
-            },
-            error_context=f"Failed to {'grant' if grant else 'revoke'} {label}",
-            log_request=(
-                f'{{"targetUserId": "{self.user_id}", "permission": "{permission}"}}'
-            ),
-        )
-
     def _set_camera_features(
         self,
         camera_ids: list[str],
@@ -265,32 +362,6 @@ class VerkadaInternalAPIClient:
             json={"cameraIds": camera_ids, "params": feature_flags},
             error_context=f"Failed to enable {feature_label}",
             log_request=f'{{"cameraIds": {camera_ids}}}',
-        )
-
-    def _set_door_config(
-        self,
-        endpoint_key: str,
-        door_id: str,
-        param_name: str,
-        feature_label: str,
-    ) -> None:
-        """
-        Grant a single boolean door config param (POST door/config/set).
-
-        Backs the face-unlock and MFA toggles: those endpoint keys are the
-        same call with a different paramName, so callers name the key and
-        the param and this carries the payload shape.
-        """
-        self._request(
-            endpoint_key,
-            json={
-                "doorId": door_id,
-                "action": "grant",
-                "paramName": param_name,
-                "paramValue": True,
-            },
-            error_context=f"Failed to enable {feature_label} on door '{door_id}'",
-            log_request=f'{{"doorId": "{door_id}", "paramName": "{param_name}"}}',
         )
 
     def _create_door(
@@ -432,10 +503,53 @@ class VerkadaInternalAPIClient:
             raise PermissionError("Not authenticated. Please call login() first.")
 
         endpoint, formatted_path = resolve(endpoint_key, path_params)
-        url = build_url(endpoint, self.org_short_name, formatted_path)
+        url = build_url(endpoint, self.org_short_name, formatted_path, self.host_shard)
 
+        cache = self._read_cache
+        if cache is not None and _is_read(endpoint_key, endpoint.method):
+            # Inside read_cache(): identical reads are sent once, and callers
+            # asking at the same time wait for that one request.
+            key = (endpoint.method, url, _json.dumps(json, sort_keys=True, default=str))
+            with self._read_cache_lock:
+                future = cache.get(key)
+                owner = future is None
+                if owner:
+                    future = cache[key] = Future()
+            if owner:
+                try:
+                    future.set_result(
+                        self._send(endpoint, url, json, error_context, endpoint_key,
+                                   formatted_path, log_request, log_response, auto_log)
+                    )
+                except BaseException as ex:  # re-raised for every waiting caller
+                    # A failure is not kept: later callers send the read again.
+                    with self._read_cache_lock:
+                        if cache.get(key) is future:
+                            del cache[key]
+                    future.set_exception(ex)
+            data, status = future.result()
+            return copy.deepcopy(data), status
+
+        return self._send(endpoint, url, json, error_context, endpoint_key,
+                          formatted_path, log_request, log_response, auto_log)
+
+    def _session_for(self, endpoint) -> requests.Session:
+        """The session to send `endpoint` with: the shared one, or for an
+        endpoint that must not be replayed (a PUT that creates) one whose
+        retries never resend a request that may have reached the server.
+        Both use the same cookie jar, so the login applies to both."""
+        if endpoint.replayable:
+            return self.session
+        if self._no_replay_session is None:
+            self._no_replay_session = build_session(replay=False)
+        self._no_replay_session.cookies = self.session.cookies
+        return self._no_replay_session
+
+    def _send(self, endpoint, url, json, error_context, endpoint_key,
+              formatted_path, log_request, log_response, auto_log) -> tuple[dict, int]:
+        """Send one request and decode it (the body of _request)."""
         try:
-            response = self.session.request(
+            response = self._session_for(endpoint).request(
                 endpoint.method,
                 url,
                 json=json,
@@ -484,6 +598,30 @@ class VerkadaInternalAPIClient:
             )
 
         return data_dict, response.status_code
+
+    @staticmethod
+    def _parallel(fn, items, max_workers: int = PARALLEL_REQUESTS) -> list:
+        """
+        Run fn(item) for every item concurrently (the web app sends
+        independent calls in parallel too) and return the results in order.
+        Every call runs to completion; the first failure, if any, is raised
+        after all have finished.
+        """
+        items = list(items)
+        if len(items) <= 1:
+            return [fn(item) for item in items]
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+            futures = [pool.submit(fn, item) for item in items]
+        results, error = [], None
+        for future in futures:
+            try:
+                results.append(future.result())
+            except Exception as ex:  # noqa: BLE001 — re-raised below
+                results.append(None)
+                error = error or ex
+        if error:
+            raise error
+        return results
 
     def _log(
         self,
@@ -557,7 +695,7 @@ class VerkadaInternalAPIClient:
         decide whether a send failure should block the 2FA challenge.
         """
         endpoint, formatted_path = resolve("auth.twofactor.sms.new")
-        url = build_url(endpoint, self.org_short_name, formatted_path)
+        url = build_url(endpoint, self.org_short_name, formatted_path, self.host_shard)
         payload = {
             "email": self.email,
             "password": self.password,
@@ -620,13 +758,15 @@ class VerkadaInternalAPIClient:
             self.session.cookies.set("token", "dev-csrf")
             return
 
+        # Route the login (and everything after it) to the org's shard.
+        shard = self.resolve_shard()
         payload = {
             "email": self.email,
             "orgShortName": self.org_short_name,
             "termsAcked": False,
             "password": self.password,
             "loginMethod": "password",
-            "shard": self.shard,
+            "shard": shard.name,
             "subdomain": True,
         }
         log_label = f"{self.org_short_name}/user/login"
@@ -667,7 +807,6 @@ class VerkadaInternalAPIClient:
                     )
 
             self.mfa_sms_enabled = sms_enabled
-            self.mfa_qr_enabled = qr_enabled
             self.mfa_sms_contact = sms_contact
 
             log_api_call("POST", log_label, log_request, f"{status} (MFA)", msg)
@@ -718,13 +857,17 @@ class VerkadaInternalAPIClient:
     # Devices
     # ------------------------------------------------------------------
 
-    def add_device(self, device_name: str, serial_number: str) -> str:
+    def add_devices(self, devices: list[tuple[str, str]]) -> dict[str, Any]:
         """
-        Commissions a new device into the organization by serial number.
+        Claims several devices with one batch/commission call, as the Command
+        web app does. `devices` is [(name, serial)]; the name is applied at
+        claim time (no rename call is needed afterwards).
 
-        Returns:
-            The device ID string on success.
+        Returns {normalized serial: device_id, or the ConnectionError for a
+        serial Command rejected} — see normalize_serial(). Raises only when
+        the request itself fails.
         """
+        names = ", ".join(n for n, _ in devices)
         data, status = self._request(
             "org.add_device",
             json={
@@ -732,38 +875,61 @@ class VerkadaInternalAPIClient:
                 "devices": [
                     {
                         "deferUpdate": True,
-                        "name": device_name,
-                        "serialNumber": serial_number,
+                        "name": name,
+                        "serialNumber": serial,
                         "updateSchedule": None,
                     }
+                    for name, serial in devices
                 ],
             },
-            error_context=f"Failed to add device '{device_name}'",
-            log_request=f'{{"serialNumber": "{serial_number}", "name": "{device_name}"}}',
+            error_context=f"Failed to add devices ({names})",
+            log_request=f'{{"devices": {[s for _, s in devices]}}}',
             auto_log=False,
         )
-
-        successful = data.get("successfulDevices", [])
-        if not successful:
-            failed = data.get("failedSerials", [])
-            raise ConnectionError(
-                f"Failed to add device '{device_name}': "
-                f"no successful devices returned. Failed serials: {failed}"
-            )
-        device_id = successful[0].get("deviceId")
-        if not device_id:
-            raise ConnectionError(
-                f"Failed to add device '{device_name}': "
-                "successful response missing deviceId."
-            )
-
+        results: dict[str, Any] = {}
+        for item in data.get("successfulDevices") or []:
+            if item.get("serialNumber") and item.get("deviceId"):
+                results[normalize_serial(item["serialNumber"])] = item["deviceId"]
+        reasons = {}
+        for item in data.get("failedSerials") or []:
+            if isinstance(item, dict):
+                serial = item.get("serialNumber") or item.get("serial") or ""
+                reasons[normalize_serial(serial)] = item.get("reason") or item.get("message")
+            else:
+                reasons[normalize_serial(str(item))] = None
+        for name, serial in devices:
+            key = normalize_serial(serial)
+            if key not in results:
+                reason = reasons.get(key) or (
+                    "Command rejected the serial (mistyped, already set up, or claimed by another org)"
+                    if key in reasons
+                    else "missing from the response"
+                )
+                results[key] = ConnectionError(f"Failed to add device '{name}': {reason}")
         self._log(
             "org.add_device",
             status,
-            log_request=f'{{"serialNumber": "{serial_number}", "name": "{device_name}"}}',
-            log_response=f'{{"deviceId": "{device_id}"}}',
+            log_request=f'{{"devices": {len(devices)}}}',
+            log_response=(
+                f'{{"added": {sum(isinstance(v, str) for v in results.values())}, '
+                f'"failed": {sum(not isinstance(v, str) for v in results.values())}}}'
+            ),
         )
-        return device_id
+        return results
+
+    def add_device(self, device_name: str, serial_number: str) -> str:
+        """
+        Commissions a new device into the organization by serial number.
+
+        Returns:
+            The device ID string on success.
+        """
+        result = self.add_devices([(device_name, serial_number)])[
+            normalize_serial(serial_number)
+        ]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     def get_unassigned_device(self) -> list[dict[str, Any]]:
         return self._fetch_list(
@@ -776,32 +942,6 @@ class VerkadaInternalAPIClient:
                 "serial_number": x["serialNumber"],
             },
         )
-
-    def is_org_empty(self) -> bool:
-        """
-        Pre-flight check for destructive flows: returns True iff the org
-        holds no devices/sites/users (i.e. delete would succeed).
-        """
-        data, _ = self._request(
-            "org.check_empty",
-            json={"organizationId": self.org_id, "validateOnly": True},
-            error_context="Failed to check if org is empty",
-            log_request=f'{{"organizationId": "{self.org_id}"}}',
-        )
-        return bool(data.get("orgEmpty"))
-
-    def get_device_count(self) -> dict[str, int]:
-        """
-        Returns {device_type: quantity} across every device category Verkada
-        tracks. Useful for capacity dashboards / decommission accounting.
-        """
-        data, _ = self._request(
-            "org.device_count",
-            path_params={"org_id": self.org_id},
-            error_context="Failed to fetch device counts",
-            log_request=f'{{"organizationId": "{self.org_id}"}}',
-        )
-        return {d["deviceType"]: d["quantity"] for d in data.get("deviceCounts", [])}
 
     # ------------------------------------------------------------------
     # Users
@@ -884,87 +1024,202 @@ class VerkadaInternalAPIClient:
             "user.list",
             response_key="users",
             path_params={"org_id": self.org_id},
-            payload={
-                "paging": {"pageSize": 1000, "sortOrder": ["full_name:asc"]},
-                "isVisitor": False,
-                "status": ["active", "invited"],
-                "organizationId": self.org_id,
-                "userDirectoryIds": [],
-                "includeRoleGrants": True,
-                "includeGroups": True,
-                "useEs": True,
-            },
+            payload=self._user_list_payload(),
             mapping_func=lambda x: {
                 "id": x["userId"],
-                "email": x["email"],
+                "email": x.get("email"),
                 "first_name": x.get("firstName"),
                 "last_name": x.get("lastName"),
                 "is_org_admin": x.get("isOrganizationAdmin", False),
             },
         )
 
-    def delete_user(self, user_id: str) -> None:
-        self._delete(
-            "user.delete",
-            json={"organizationId": self.org_id, "userIds": [user_id]},
-            oid=user_id,
+    def _user_list_payload(self) -> dict[str, Any]:
+        return {
+            "paging": {"pageSize": 1000, "sortOrder": ["full_name:asc"]},
+            "isVisitor": False,
+            "status": ["active", "invited"],
+            "organizationId": self.org_id,
+            "userDirectoryIds": [],
+            "includeRoleGrants": True,
+            "includeGroups": True,
+            "useEs": True,
+        }
+
+    def get_removable_permissions(self) -> list[dict[str, Any]]:
+        """
+        Every other user's directly granted permissions, as one user list
+        call returns them (roleGrants): organization roles and user
+        management roles (granted on the org) and site roles (granted on a
+        site). Org Admin (ORG_MANAGER) and the org-membership roles
+        (ORG_MEMBER, *_ORG_MEMBER — not permissions; the user would lose
+        the org) are kept, and the signed-in user is never listed. Roles
+        a user inherits (from Org Admin, a group, ...) are not grants of
+        their own and can't be removed per user.
+
+        Returns [{id, name, revoke: [{entityId, permission}]}] for the users
+        with something to remove.
+        """
+        data, _ = self._request(
+            "user.list",
+            path_params={"org_id": self.org_id},
+            json=self._user_list_payload(),
+            error_context="Failed to fetch from user.list",
+        )
+        users = []
+        for user in data.get("users") or []:
+            user_id = user.get("userId")
+            if not user_id or user_id == self.user_id:
+                continue
+            revoke, seen = [], set()
+            for grant in user.get("roleGrants") or []:
+                key, entity = grant.get("roleKey"), grant.get("entityId")
+                if not key or not entity or _is_kept_role(key):
+                    continue
+                if grant.get("granteeId") not in (None, user_id):
+                    continue  # granted to a group the user is in
+                if (key, entity) not in seen:
+                    seen.add((key, entity))
+                    revoke.append({"entityId": entity, "permission": key})
+            if revoke:
+                name = " ".join(
+                    p for p in (user.get("firstName"), user.get("lastName")) if p
+                ) or user.get("email") or user_id
+                users.append({"id": user_id, "name": name, "revoke": revoke})
+        return users
+
+    def revoke_user_permissions(self, user_id: str, revoke: list[dict]) -> None:
+        """Revokes several of a user's permissions with one call
+        ([{entityId, permission}], from get_removable_permissions)."""
+        if user_id == self.user_id:
+            raise ValueError("Refusing to change the signed-in user's permissions.")
+        if not revoke:
+            return
+        self._request(
+            "permissions.user_roles.set",
+            json={
+                "organizationId": self.org_id,
+                "targetUserId": user_id,
+                "returnPermissions": False,
+                "grant": [],
+                "revoke": list(revoke),
+            },
+            error_context=f"Failed to remove permissions from user '{user_id}'",
+            log_request=(
+                f'{{"targetUserId": "{user_id}", '
+                f'"revoke": {[r["permission"] for r in revoke]}}}'
+            ),
+        )
+
+    def get_user_ids_by_email(self) -> dict[str, str]:
+        """{lower-cased email: user id} for every active or invited org user.
+
+        One user list call, so a batch of invites can skip the people
+        already in the org instead of sending an invite that is refused
+        (cannot_invite_existing) for each of them.
+        """
+        return {u["email"].lower(): u["id"] for u in self.get_user() if u.get("email")}
+
+    def get_command_users(self) -> list[dict[str, Any]]:
+        """Org users for Decommission ({id, name, email}), never including the
+        signed-in user."""
+        return [
+            {
+                "id": u["id"],
+                "name": " ".join(p for p in (u.get("first_name"), u.get("last_name")) if p)
+                or u.get("email"),
+                "email": u.get("email"),
+            }
+            for u in self.get_user()
+            if u["id"] != self.user_id
+        ]
+
+    def delete_users(self, user_ids: list[str]) -> None:
+        """
+        Deletes several users with one call, as the Command web app does
+        (vcorgi org/{id}/users/delete). The deletion is asynchronous: user
+        lists can show them for a few seconds more. Never deletes the
+        running user.
+        """
+        if self.user_id in user_ids:
+            raise ValueError("Refusing to delete the signed-in user.")
+        if not user_ids:
+            return
+        self._request(
+            "user.delete.batch",
+            path_params={"org_id": self.org_id},
+            json={"userIds": list(user_ids)},
+            error_context=f"Failed to delete {len(user_ids)} user(s)",
+            log_request=f'{{"userIds": {list(user_ids)}}}',
+        )
+
+    def get_person_of_interest(self) -> list[dict[str, Any]]:
+        """
+        Persons of interest ({id, name}), from videntity like the web app's
+        People pages. Identities tied to an access user (accessId) are that
+        user's face credential, not a person of interest, and are left out.
+        An org without cameras has none (videntity refuses the list there).
+        """
+        people: list[dict[str, Any]] = []
+        token = None
+        for _ in range(100):  # cursor paging guard
+            paging: dict[str, Any] = {"limit": 5000}
+            if token:
+                paging["nextToken"] = token
+            try:
+                data, status = self._request(
+                    "poi.list",
+                    json={
+                        "organizationId": self.org_id,
+                        "filter": {"isHidden": False},
+                        "sort": {"field": "created", "sortDirection": "desc"},
+                        "skipAuditLogAdd": True,
+                        "paging": paging,
+                    },
+                    error_context="Failed to fetch from poi.list",
+                    auto_log=False,
+                )
+            except APIError as e:
+                # videntity answers 403 in an org without cameras (persons of
+                # interest can be neither listed nor deleted there). Only
+                # then is it "none"; a 403 with cameras present is real.
+                if e.status_code == 403 and not people and not self.get_camera():
+                    self._log("poi.list", 403, log_response='{"count": 0, "cameras": 0}')
+                    return []
+                raise
+            people += [
+                {"id": x["personId"], "name": x.get("name")}
+                for x in data.get("identities") or []
+                if x.get("personId") and not x.get("accessId")
+            ]
+            token = (data.get("paging") or {}).get("nextToken")
+            if not token:
+                break
+        self._log("poi.list", status, log_response=f'{{"count": {len(people)}}}')
+        return people
+
+    def delete_persons_of_interest(self, person_ids: list[str]) -> None:
+        """Deletes several persons of interest with one call."""
+        if person_ids:
+            self._request(
+                "poi.delete",
+                json={"organizationId": self.org_id, "personIds": list(person_ids)},
+                error_context=f"Failed to delete {len(person_ids)} person(s) of interest",
+                log_request=f'{{"personIds": {list(person_ids)}}}',
+            )
+
+    def get_guest_site(self) -> list[dict[str, Any]]:
+        """Guest sites ({id, name}); id is the Command site id the delete takes."""
+        return self._fetch_list(
+            "guest.list",
+            response_key="sites",
+            path_params={"org_id": self.org_id},
+            mapping_func=lambda x: {"id": x["siteId"], "name": x.get("siteName")},
         )
 
     # ------------------------------------------------------------------
     # API Keys
     # ------------------------------------------------------------------
-
-    def create_external_api_key(self) -> str:
-        """
-        Generates a temporary External API Key (used to initialize the
-        VerkadaExternalAPIClient). Key expires in 1 hour.
-
-        Raises:
-            ConnectionError: If the API key limit (10) is exceeded.
-            APIError: On other API failures.
-        """
-        payload = {
-            "api_key_name": API_NAME + str(int(time.time())),
-            "expires_at": int(time.time() + 3600),
-            "roles": [
-                "PUBLIC_API_CAMERA_READ_WRITE",
-                "PUBLIC_API_SENSORS_READ_WRITE",
-                "PUBLIC_API_ACCESS_READ_WRITE",
-                "PUBLIC_API_ALARMS_READ_WRITE",
-                "PUBLIC_API_CORE_READ_WRITE",
-                "PUBLIC_API_HELIX_READ_WRITE",
-                "PUBLIC_API_WORKPLACE_READ_WRITE",
-                "PUBLIC_API_INTERCOM_READ_WRITE",
-                "PUBLIC_API_CAMERA_AUDIO",
-            ],
-        }
-        log_request = f'{{"api_key_name": "{payload["api_key_name"]}"}}'
-
-        try:
-            data, status = self._request(
-                "org.api_key.create",
-                path_params={"org_id": self.org_id},
-                json=payload,
-                error_context="Failed to create external API key",
-                log_request=log_request,
-                auto_log=False,
-            )
-        except APIError as e:
-            if e.status_code == 400 and "10 api keys limit" in str(e):
-                raise ConnectionError(
-                    "Failed to create external API key: exceeded 10 API keys limit."
-                ) from e
-            raise
-
-        api_key = data.get("apiKey", "")
-        self._log(
-            "org.api_key.create",
-            status,
-            path_params={"org_id": self.org_id},
-            log_request=log_request,
-            log_response=f'{{"apiKey": "{api_key}"}}',
-        )
-        return api_key
 
     def get_external_api_key(self) -> list[dict[str, Any]]:
         return self._fetch_list(
@@ -975,13 +1230,6 @@ class VerkadaInternalAPIClient:
                 "id": x["apiKeyId"],
                 "name": x["apiKeyName"],
             },
-        )
-
-    def delete_external_api_key(self, api_key_id: str) -> None:
-        self._delete(
-            "org.api_key.delete",
-            path_params={"org_id": self.org_id, "api_key_id": api_key_id},
-            oid=api_key_id,
         )
 
     # ------------------------------------------------------------------
@@ -996,27 +1244,66 @@ class VerkadaInternalAPIClient:
         """Disable globalSiteAdmin: per-site grants required."""
         self._set_global_site_admin(False)
 
-    def enable_access_admin(self) -> None:
+    def get_org_role_keys(self) -> set[str]:
+        """
+        The current user's org-level role keys (e.g. ACCESS_CONTROL_USER_ADMIN).
+
+        Read through set_user_permissions with nothing to grant or revoke and
+        returnPermissions on. The response's roleGrant list also carries
+        other users' grants, so only this user's own are kept: otherwise a
+        role someone else holds (e.g. an attendee's Access System Admin)
+        would count as held, and the caller would skip granting it.
+        """
+        data, _ = self._request(
+            "permissions.user_roles.get",
+            json={
+                "organizationId": self.org_id,
+                "targetUserId": self.user_id,
+                "returnPermissions": True,
+                "grant": [],
+                "revoke": [],
+            },
+            error_context="Failed to read the user's roles",
+            log_request=f'{{"targetUserId": "{self.user_id}"}}',
+        )
+        return {
+            g["roleKey"]
+            for g in data.get("roleGrant") or []
+            if g.get("roleKey")
+            and g.get("granteeId") == self.user_id
+            and g.get("targetEntityType", "organization") == "organization"
+        }
+
+    def enable_access_admin(self, roles: list[str] | None = None) -> None:
         """
         Grant the current user the elevated access-control admin roles
-        (ACCESS_CONTROL_SYSTEM_ADMIN + ACCESS_CONTROL_USER_ADMIN) required
-        to delete certain access control hardware.
-
-        Two API calls — atomicity note: if the second fails, the user is
-        left with SYSTEM_ADMIN but not USER_ADMIN. There's no rollback;
-        the caller surfaces the failure and retries.
+        (ACCESS_CONTROL_SYSTEM_ADMIN + ACCESS_CONTROL_USER_ADMIN, or the
+        given subset) required to delete certain access control hardware.
+        One call for all of them, as the Command web app does.
         """
-        self._set_user_permission(
-            "permissions.access_system_admin.enable",
-            "ACCESS_CONTROL_SYSTEM_ADMIN",
-            grant=True,
-            label="Access System Admin",
-        )
-        self._set_user_permission(
-            "permissions.access_user_admin.enable",
-            "ACCESS_CONTROL_USER_ADMIN",
-            grant=True,
-            label="Access User Admin",
+        self._set_user_permissions(roles, grant=True)
+
+    def disable_access_admin(self, roles: list[str] | None = None) -> None:
+        """Revoke the access-control admin roles (or the given subset)."""
+        self._set_user_permissions(roles, grant=False)
+
+    def _set_user_permissions(self, roles: list[str] | None, *, grant: bool) -> None:
+        roles = list(roles if roles is not None else ACCESS_ADMIN_ROLES)
+        if not roles:
+            return
+        perms = [{"entityId": self.org_id, "permission": r} for r in roles]
+        labels = ", ".join(ACCESS_ADMIN_ROLES.get(r, r) for r in roles)
+        self._request(
+            "permissions.user_roles.set",
+            json={
+                "organizationId": self.org_id,
+                "targetUserId": self.user_id,
+                "returnPermissions": False,
+                "grant": perms if grant else [],
+                "revoke": [] if grant else perms,
+            },
+            error_context=f"Failed to {'grant' if grant else 'revoke'} {labels}",
+            log_request=f'{{"targetUserId": "{self.user_id}", "permissions": {roles}}}',
         )
 
     # ------------------------------------------------------------------
@@ -1089,9 +1376,9 @@ class VerkadaInternalAPIClient:
         """
         Allow face unlock across the organization.
 
-        Org-level prerequisite for the per-door toggle — a door's
-        face-unlock-enabled config (enable_door_face_unlock) only takes
-        effect once the org flag is set.
+        Org-level prerequisite for face unlock on a door: the door's
+        face-unlock-enabled config (sent with door create) only takes effect
+        once the org flag is set.
         """
         self._request(
             "org.allow_face_unlock",
@@ -1139,6 +1426,26 @@ class VerkadaInternalAPIClient:
         )
         return site_id
 
+    def create_or_reuse_site(self, site_name: str) -> str:
+        """Create a site, or return the id of an existing one with that name.
+
+        Command never allows two sites with the same name under one parent
+        ("A sub-site with the name 'HQ' already exists under the same parent
+        site."). Most templates name their site "HQ", so commissioning a
+        second template into the same org would otherwise fail here and leave
+        its devices outside any site (where, with Global Site Admin off, later
+        camera calls are refused with "error authorizing user access").
+        """
+        try:
+            return self.create_site(site_name)
+        except ConnectionError as ex:
+            if "already exists" not in str(ex).lower():
+                raise
+            for site in self.get_site():
+                if site["name"] == site_name:
+                    return site["id"]
+            raise
+
     def get_site(self) -> list[dict[str, Any]]:
         return self._fetch_list(
             "site.list",
@@ -1178,7 +1485,19 @@ class VerkadaInternalAPIClient:
         Paging is fixed at size=1000: orgs with more than 1000 cameras
         will silently truncate. The endpoint supports cursor paging
         (searchAfter); wire it up if/when the cap becomes a real ceiling.
+
+        An org without sites has no cameras: the search answers 403 ("no
+        site permission for any device type") there, even with Global Site
+        Admin on. Only then is the 403 read as "none".
         """
+        try:
+            return self._list_cameras()
+        except APIError as e:
+            if e.status_code == 403 and not self.get_site():
+                return []
+            raise
+
+    def _list_cameras(self) -> list[dict[str, Any]]:
         return self._fetch_list(
             "camera.list",
             response_key="devices",
@@ -1198,43 +1517,36 @@ class VerkadaInternalAPIClient:
             },
         )
 
-    def configure_camera(
-        self,
-        camera_id: str,
-        camera_name: str,
-        site_id: str,
-        address: Address,
+    def configure_cameras(
+        self, camera_ids: list[str], site_id: str, address: Address
     ) -> None:
         """
-        Sets a camera's display name, site assignment, and location.
-        Three calls in sequence — any failure aborts the rest.
+        Puts freshly claimed cameras on a site and sets their location, as
+        the web app's Batch Setup does: one site call for all cameras, then
+        one location call per camera (sent in parallel). Names were set by
+        the claim (add_devices), so there is no rename call.
         """
         addr = address if isinstance(address, Address) else Address(*address)
-        log_req = f'{{"cameraId": "{camera_id}"}}'
-
-        self._request(
-            "camera.create.name",
-            json={"cameraId": camera_id, "name": camera_name},
-            error_context=f"Failed to configure name for camera '{camera_name}'",
-            log_request=log_req,
-        )
         self._request(
             "camera.create.site",
-            json={"cameraIds": [camera_id], "destinationSiteId": site_id},
-            error_context=f"Failed to assign camera '{camera_name}' to site",
-            log_request=log_req,
+            json={"cameraIds": list(camera_ids), "destinationSiteId": site_id},
+            error_context="Failed to assign cameras to site",
+            log_request=f'{{"cameraIds": {list(camera_ids)}}}',
         )
-        self._request(
-            "camera.create.location",
-            json={
-                "cameraId": camera_id,
-                "angle": 0,
-                "label": addr.label,
-                "lat": addr.latitude,
-                "lon": addr.longitude,
-            },
-            error_context=f"Failed to set location for camera '{camera_name}'",
-            log_request=log_req,
+        self._parallel(
+            lambda camera_id: self._request(
+                "camera.create.location",
+                json={
+                    "cameraId": camera_id,
+                    "angle": 0,
+                    "label": addr.label,
+                    "lat": addr.latitude,
+                    "lon": addr.longitude,
+                },
+                error_context=f"Failed to set location for camera '{camera_id}'",
+                log_request=f'{{"cameraId": "{camera_id}"}}',
+            ),
+            camera_ids,
         )
 
     def delete_camera(self, camera_id: str) -> None:
@@ -1561,9 +1873,9 @@ class VerkadaInternalAPIClient:
         mode (doorLockState ACCESS_CONTROL_2FA).
 
         The weekly event grid comes from the shared _MFA_DOOR_EVENT
-        default. Pair with the per-door MFA toggles: this schedule sets
-        *when* two-factor applies, while enable_door_mfa_* sets *which*
-        credential combination satisfies it.
+        default. Pairs with the door's MFA configs (sent with door create,
+        mfa=True): this schedule sets *when* two-factor applies, the
+        configs set *which* credential combinations satisfy it.
 
         Shares the upsert-style PUT that delete_schedule uses — schedules
         are keyed by scheduleId, so an object sent without one is created
@@ -1736,6 +2048,90 @@ class VerkadaInternalAPIClient:
             oid=group_id,
         )
 
+    def find_access_groups(self, names) -> dict[str, dict[str, Any]]:
+        """{name: {id, member_ids}} for the access groups with these names
+        (one call; names not found are left out). Needs an access admin
+        role."""
+        names = set(names)
+        data, _ = self._request(
+            "access_group.list",
+            json={"organizationId": self.org_id},
+            error_context="Failed to fetch from access_group.list",
+            log_request=f'{{"organizationId": "{self.org_id}"}}',
+        )
+        found: dict[str, dict[str, Any]] = {}
+        for group_id, info in (data.get("children") or {}).items():
+            name = (info or {}).get("name")
+            if name in names and name not in found:
+                found[name] = {
+                    "id": group_id,
+                    "member_ids": {
+                        u["userId"] for u in info.get("users") or [] if u.get("userId")
+                    },
+                }
+        return found
+
+    def find_access_group_id(self, group_name: str) -> str | None:
+        """Id of the access group with this name, or None — also None when
+        the user may not list access groups (no access admin role yet)."""
+        try:
+            group = self.find_access_groups([group_name]).get(group_name)
+        except APIError as e:
+            if e.status_code == 403:
+                return None
+            raise
+        return group["id"] if group else None
+
+    def find_access_levels(self, names) -> dict[str, dict[str, Any]]:
+        """{name: the raw access level} for the access levels (type USER)
+        with these names, as access_level.update takes them back."""
+        names = set(names)
+        data, _ = self._request(
+            "access_level.list",
+            path_params={"org_id": self.org_id},
+            error_context="Failed to fetch from access_level.list",
+        )
+        found: dict[str, dict[str, Any]] = {}
+        for level in data.get("schedules") or []:
+            name = level.get("name")
+            if level.get("type") == "USER" and not level.get("deleted") and name in names:
+                found.setdefault(name, level)
+        return found
+
+    def add_groups_to_access_level(self, level: dict, group_ids: list[str]) -> list[str]:
+        """Grants an access level to more access groups (one call, only for
+        groups not on it yet). `level` is a raw entry from
+        find_access_levels. Returns the group ids added."""
+        held = list(level.get("userGroups") or [])
+        missing = [g for g in dict.fromkeys(group_ids) if g not in held]
+        if not missing:
+            return []
+        body = {k: v for k, v in level.items() if k not in ("events", "doors", "sites")}
+        body["userGroups"] = held + missing
+        body["doors"] = {"add": [], "remove": []}
+        body["sites"] = {"add": [], "remove": []}
+        self._request(
+            "access_level.update",
+            path_params={"schedule_id": level["scheduleId"]},
+            json=body,
+            error_context=f"Failed to update access level '{level.get('name')}'",
+            log_request=f'{{"name": "{level.get("name")}", "addGroups": {missing}}}',
+        )
+        return missing
+
+    def add_users_to_access_group(self, user_ids: list[str], group_id: str) -> None:
+        """Adds several users to one access group with one call."""
+        self._request(
+            "access_group.add_user",
+            json={
+                "userIds": list(user_ids),
+                "groupIds": [group_id],
+                "organizationId": self.org_id,
+            },
+            error_context=f"Failed to add users to access group '{group_id}'",
+            log_request=f'{{"groupId": "{group_id}", "userCount": {len(user_ids)}}}',
+        )
+
     def add_user_to_access_group(self, user_id: str, group_id: str) -> None:
         """Adds a single user to a single access group (batch endpoint, 1-item lists)."""
         self._request(
@@ -1750,6 +2146,47 @@ class VerkadaInternalAPIClient:
             ),
             log_request=f'{{"userId": "{user_id}", "groupId": "{group_id}"}}',
         )
+
+    def add_license_plate_to_user(self, user_id: str, license_plate: str) -> str:
+        """
+        Gives an access user a license plate credential. Returns the plate.
+
+        Same calls as the Command web app: look the plate up first, and add
+        it only when nobody holds it. Idempotent: a plate already on this
+        user (Decommission keeps users, so a re-run finds it) is a success.
+
+        Raises:
+            ValueError: If another user already holds the plate.
+            APIError / ConnectionError: On other API failures.
+        """
+        try:
+            held, _ = self._request(
+                "user.license_plate.get",
+                path_params={"license_plate": license_plate},
+                error_context=f"Failed to look up license plate '{license_plate}'",
+                log_request=f'{{"licensePlateNumber": "{license_plate}"}}',
+            )
+        except APIError as ex:
+            if ex.status_code != 404:
+                raise
+            held = {}
+        if held.get("userId") == user_id:
+            return license_plate
+        if held.get("userId"):
+            raise ValueError(
+                f"License plate '{license_plate}' already belongs to another user."
+            )
+        self._request(
+            "user.add_license_plate",
+            json={
+                "userId": user_id,
+                "licensePlateNumber": license_plate,
+                "organizationId": self.org_id,
+            },
+            error_context=f"Failed to add license plate '{license_plate}'",
+            log_request=f'{{"userId": "{user_id}", "licensePlateNumber": "{license_plate}"}}',
+        )
+        return license_plate
 
     # ------------------------------------------------------------------
     # Security entity groups, access users, footage archives,
@@ -1803,6 +2240,30 @@ class VerkadaInternalAPIClient:
             log_request=f'{{"groupId": "{group_id}", "userIds": {user_ids}}}',
         )
 
+    def find_group(self, group_name: str) -> dict[str, Any] | None:
+        """{id, member_ids} of the Command group with this name, or None.
+
+        One security_entity_group/list call (it carries memberIds), so a
+        re-run can add only the people not yet in the group.
+        Verkada-managed groups are never matched.
+        """
+        data, _ = self._request(
+            "group.list",
+            json={
+                "organizationId": self.org_id,
+                "includeMembers": True,
+                "includeMemberCount": False,
+            },
+            error_context="Failed to fetch from group.list",
+        )
+        for group in data.get("securityEntityGroup") or []:
+            if not group.get("verkadaManaged") and group.get("name") == group_name:
+                return {
+                    "id": group["entityGroupId"],
+                    "member_ids": set(group.get("memberIds") or []),
+                }
+        return None
+
     def get_group(self) -> list[dict[str, Any]]:
         """List security entity groups the user can delete.
 
@@ -1834,7 +2295,8 @@ class VerkadaInternalAPIClient:
 
     def get_visitor(self) -> list[dict[str, Any]]:
         """List visitors — access users flagged is_visitor — with granted
-        access. Single page (pageSize 99). Deleted after Visits and before
+        access. One page of INTERNAL_PAGE_SIZE (decommission re-lists until
+        empty, see PAGED_CATEGORIES). Deleted after Visits and before
         Command Users.
         """
         return self._fetch_list(
@@ -1848,7 +2310,7 @@ class VerkadaInternalAPIClient:
                 "status": ["access_granted"],
                 "status_filter_v2": True,
                 "paging": {
-                    "pageSize": 99,
+                    "pageSize": INTERNAL_PAGE_SIZE,
                     "sortOrder": ["first_name:asc", "email:asc"],
                 },
             },
@@ -1864,7 +2326,7 @@ class VerkadaInternalAPIClient:
         )
 
     def get_visit(self) -> list[dict[str, Any]]:
-        """List active visits (single page, page_size 99).
+        """List active visits (one page of INTERNAL_PAGE_SIZE).
 
         Visits reference visitors, so they are deleted first — before
         Visitors and Command Users.
@@ -1872,6 +2334,7 @@ class VerkadaInternalAPIClient:
         return self._fetch_list(
             "visit.list",
             response_key="visits",
+            path_params={"page_size": INTERNAL_PAGE_SIZE},
             mapping_func=lambda v: {"id": v["visitId"], "name": v.get("name")},
         )
 
@@ -1888,7 +2351,7 @@ class VerkadaInternalAPIClient:
 
         The archive.list endpoint filters by footage time. footageTimeMin is
         the start of the window (SEARCH_DURATION days ago) and footageTimeMax
-        is the end (now), both epoch seconds. Single page (pageSize 99).
+        is the end (now), both epoch seconds. One page of INTERNAL_PAGE_SIZE.
         """
         now = int(time.time())
         window_start = now - SEARCH_DURATION * 86400
@@ -1897,7 +2360,7 @@ class VerkadaInternalAPIClient:
             response_key="instant",
             payload={
                 "organizationId": self.org_id,
-                "pageSize": 99,
+                "pageSize": INTERNAL_PAGE_SIZE,
                 "instantLastKey": None,
                 "legacyLastKey": None,
                 "first": True,
@@ -1920,11 +2383,11 @@ class VerkadaInternalAPIClient:
         )
 
     def get_incident(self) -> list[dict[str, Any]]:
-        """List investigation incidents in the org (single page, limit 99)."""
+        """List investigation incidents (one page of INTERNAL_PAGE_SIZE)."""
         return self._fetch_list(
             "incident.list",
             response_key="incidents",
-            payload={"organizationId": self.org_id, "limit": 99},
+            payload={"organizationId": self.org_id, "limit": INTERNAL_PAGE_SIZE},
             mapping_func=lambda x: {
                 "id": x["incidentId"],
                 "name": x.get("name") or x["incidentId"],
@@ -2013,6 +2476,25 @@ class VerkadaInternalAPIClient:
             )
         return floor_id
 
+    def create_or_reuse_building(
+        self, building_name: str, address: Address, floors: list
+    ) -> str:
+        """Return a floor id in the org's building of that name, creating the
+        building only when there is none.
+
+        Unlike sites, Command accepts duplicate building names, so a second
+        template run used to add another "HQ" building. The floor named
+        floors[0] is preferred, else the building's first floor.
+        """
+        building_ids = [b["id"] for b in self.get_building() if b["name"] == building_name]
+        if building_ids:
+            existing = [f for f in self.get_floor() if f["building_id"] in building_ids]
+            wanted = floors[0] if floors else None
+            match = next((f for f in existing if f["name"] == wanted), None)
+            if match or existing:
+                return (match or existing[0])["id"]
+        return self.create_building(building_name, address, floors)
+
     def get_building(self) -> list[dict[str, Any]]:
         return self._fetch_list(
             "building.list",
@@ -2086,6 +2568,8 @@ class VerkadaInternalAPIClient:
         access_controller_id: str,
         door_name: str,
         floor_id: str,
+        *,
+        mfa: bool = False,
     ) -> str:
         """
         Creates the door served by an Access Station Pro. Returns door_id.
@@ -2095,13 +2579,20 @@ class VerkadaInternalAPIClient:
         controller, so the door is created with doorType "moody_as_acu"
         and the Access Station Pro config profile (which already carries
         face-unlock-enabled).
+
+        Args:
+            mfa: When True, the door is created with all three two-factor
+                modes on (card + code, face + card, face + code), as the
+                Command web app does, instead of three door/config/set
+                calls afterwards.
         """
+        configs = _ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS
         return self._create_door(
             "access_station_pro.door.create",
             access_controller_id=access_controller_id,
             door_name=door_name,
             floor_id=floor_id,
-            configs=_ACCESS_STATION_PRO_DOOR_CREATE_CONFIGS,
+            configs=configs + _DOOR_MFA_CREATE_CONFIGS if mfa else configs,
             door_type="moody_as_acu",
         )
 
@@ -2146,51 +2637,9 @@ class VerkadaInternalAPIClient:
             log_request=f'{{"lprCameraId": "{lpr_camera_id}"}}',
         )
 
-    def enable_door_face_unlock(self, door_id: str) -> None:
-        """
-        Enable face unlock on a door.
-
-        Requires the org flag (enable_org_face_unlock) to already be set.
-        Doors created by create_access_station_pro_door() ship with this
-        config, so it is only needed for doors created another way.
-        """
-        self._set_door_config(
-            "door.enable_face_unlock",
-            door_id,
-            "face-unlock-enabled",
-            "face unlock",
-        )
-
     # Each MFA mode is its own door config param — the combination named
     # by the method is what the reader will accept as two factors. They
     # are independent flags, so more than one can be enabled on a door.
-
-    def enable_door_mfa_card_code(self, door_id: str) -> None:
-        """Require card + PIN code at the door."""
-        self._set_door_config(
-            "door.mfa.card-code",
-            door_id,
-            "mfa-card-code-enabled",
-            "card + code MFA",
-        )
-
-    def enable_door_mfa_face_card(self, door_id: str) -> None:
-        """Require face + card at the door."""
-        self._set_door_config(
-            "door.mfa.face-card",
-            door_id,
-            "mfa-face-card-enabled",
-            "face + card MFA",
-        )
-
-    def enable_door_mfa_face_code(self, door_id: str) -> None:
-        """Require face + PIN code at the door."""
-        self._set_door_config(
-            "door.mfa.face-code",
-            door_id,
-            "mfa-face-code-enabled",
-            "face + code MFA",
-        )
 
     def get_visitor_access_template(self) -> list[dict[str, Any]]:
         """List visitor access templates (visit types) in the org."""
@@ -2340,58 +2789,33 @@ class VerkadaInternalAPIClient:
 
     def get_alarm_site(self) -> list[dict[str, Any]]:
         """
-        Lists alarm (response) sites across the org.
-
-        v2 has no org-wide alarm-site endpoint — alarm.site.list resolves
-        one site by siteId — so enumerate the org's sites (site.list) and
-        probe each, keeping those that resolve to a response site. Sites
-        without an alarm site are skipped silently.
+        Lists alarm (response) sites across the org with one
+        response/site/list call (siteIds: [] returns every site), as the
+        web app does — rather than listing the org's sites and probing each
+        with alarm.site.list.
 
         response_config_id is surfaced in the mapping for callers that
         need it (e.g. set_alarm_self_monitored / partition assignment).
         """
-        site_ids = self._fetch_list(
-            "site.list",
-            response_key="sites",
-            payload={"orgId": self.org_id},
-            mapping_func=lambda x: x.get("siteId"),
+        data, _ = self._request(
+            "alarm.sites.list",
+            json={"includeResponseConfigs": True, "siteIds": []},
+            error_context="Failed to list alarm sites",
         )
-
-        results: list[dict[str, Any]] = []
-        for site_id in site_ids:
-            if not site_id:
-                continue
-            try:
-                data, _ = self._request(
-                    "alarm.site.list",
-                    json={
-                        "includeMonthlyAlarmCounts": True,
-                        "includePsapInfo": True,
-                        "siteId": site_id,
-                    },
-                    error_context=f"Failed to fetch alarm site for '{site_id}'",
-                    log_request=f'{{"siteId": "{site_id}"}}',
-                )
-            except APIError:
-                # Site has no alarm site — skip.
-                continue
-            response_site = data.get("responseSite") or {}
-            if not response_site.get("id"):
-                continue
-            response_configs = data.get("responseConfigs") or []
-            response_config_id = (
-                response_configs[0].get("id") if response_configs else None
-            )
-            results.append(
-                {
-                    "id": response_site.get("id"),
-                    "site_id": response_site.get("siteId"),
-                    "alarm_site_id": response_site.get("id"),
-                    "name": response_site.get("businessName"),
-                    "response_config_id": response_config_id,
-                }
-            )
-        return results
+        config_ids: dict[str, str] = {}
+        for config in data.get("responseConfigs") or []:
+            config_ids.setdefault(config.get("responseSiteId"), config.get("id"))
+        return [
+            {
+                "id": response_site["id"],
+                "site_id": response_site.get("siteId"),
+                "alarm_site_id": response_site["id"],
+                "name": response_site.get("businessName"),
+                "response_config_id": config_ids.get(response_site["id"]),
+            }
+            for response_site in data.get("responseSites") or []
+            if response_site.get("id")
+        ]
 
     def delete_alarm_site(self, alarm_site_id: str, site_id: str) -> None:
         """
@@ -2423,6 +2847,23 @@ class VerkadaInternalAPIClient:
         )
 
     # ── Alarm System ─────────────────────────────────────────────────
+
+    def set_alarm_response_outputs(
+        self, site_id: str, response_config_id: str, device_ids: list[str]
+    ) -> None:
+        """Sets the output devices (e.g. the strobe) a response activates.
+        Replaces the response's whole output list."""
+        self._request(
+            "alarm.response.set_outputs",
+            json={
+                "siteId": site_id,
+                "responseConfigId": response_config_id,
+                "updateType": "CONFIG_UPDATE_TYPE_SET_OUTPUT_DEVICES",
+                "setOutputDevicesInput": {"deviceIds": list(device_ids)},
+            },
+            error_context="Failed to set the response's output devices",
+            log_request=f'{{"responseConfigId": "{response_config_id}", "deviceIds": {list(device_ids)}}}',
+        )
 
     def create_alarm_system(self, site_id: str) -> str:
         """
@@ -2507,57 +2948,6 @@ class VerkadaInternalAPIClient:
 
     # ── Alarm Partition ──────────────────────────────────────────────
 
-    def create_alarm_partition(self, alarm_system_id: str, name: str) -> list[str]:
-        """Creates a partition on an alarm system.
-
-        Returns:
-            list[str]: A list containing [partition_id, alarm_response_id].
-        """
-        data, status = self._request(
-            "alarm.partition.create",
-            json={"alarmSystemId": alarm_system_id, "name": name},
-            error_context=f"Failed to create alarm partition '{name}'",
-            log_request=f'{{"alarmSystemId": "{alarm_system_id}", "name": "{name}"}}',
-            auto_log=False,
-        )
-        partition = data.get("partition") or {}
-        partition_id = partition.get("id")
-        alarm_response_id = partition.get("responseConfigId")
-        if not partition_id:
-            raise ConnectionError(
-                f"Failed to create alarm partition '{name}': no partition id."
-            )
-        if not alarm_response_id:
-            raise ConnectionError(
-                f"Failed to create alarm partition '{name}': no alarm response id."
-            )
-        self._log(
-            "alarm.partition.create",
-            status,
-            log_request=f'{{"name": "{name}"}}',
-            log_response=f'{{"partitionId": "{partition_id}", "alarm_response_id": "{alarm_response_id}"}}',
-        )
-        return [partition_id, alarm_response_id]
-
-    def assign_alarm_partition_response(
-        self, partition_id: str, response_config_id: str
-    ) -> None:
-        """Binds a partition to an alarm response config."""
-        self._request(
-            "alarm.partition.assign_response",
-            json={
-                "partitionId": partition_id,
-                "responseConfigId": response_config_id,
-            },
-            error_context=(
-                f"Failed to assign response config to partition '{partition_id}'"
-            ),
-            log_request=(
-                f'{{"partitionId": "{partition_id}", '
-                f'"responseConfigId": "{response_config_id}"}}'
-            ),
-        )
-
     def get_alarm_partition(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._fetch_list(
             "alarm.partition.list",
@@ -2578,53 +2968,6 @@ class VerkadaInternalAPIClient:
         )
 
     # ── Alarm Guard (camera-based) ───────────────────────────────────
-
-    def create_alarm_guard(
-        self,
-        site_id: str,
-        name: str,
-        camera_ids: list[str],
-        response_config_id: str,
-        timezone: str,
-    ) -> str:
-        """
-        Creates a camera guard on an alarm site. Returns guard_id.
-
-        Guards arm a set of cameras on the fixed overnight _GUARD_SCHEDULES
-        window. cameraType defaults to C_M42_SECURE for every camera (the
-        documented default); pass only secure-capable cameras.
-        """
-        data, status = self._request(
-            "alarm.guard.create",
-            json={
-                "siteId": site_id,
-                "organizationId": self.org_id,
-                "name": name,
-                "cameraIds": camera_ids,
-                "cameras": [
-                    {"cameraId": cid, "cameraType": "C_M42_SECURE"}
-                    for cid in camera_ids
-                ],
-                "schedules": _GUARD_SCHEDULES,
-                "responseConfigId": response_config_id,
-                "timezoneIana": timezone,
-            },
-            error_context=f"Failed to create alarm guard '{name}'",
-            log_request=f'{{"siteId": "{site_id}", "name": "{name}"}}',
-            auto_log=False,
-        )
-        guard_id = (data.get("guard") or {}).get("id")
-        if not guard_id:
-            raise ConnectionError(
-                f"Failed to create alarm guard '{name}': no guard id in response."
-            )
-        self._log(
-            "alarm.guard.create",
-            status,
-            log_request=f'{{"name": "{name}"}}',
-            log_response=f'{{"guardId": "{guard_id}"}}',
-        )
-        return guard_id
 
     def get_alarm_guard(self, site_id: str) -> list[dict[str, Any]]:
         return self._fetch_list(
@@ -2661,7 +3004,7 @@ class VerkadaInternalAPIClient:
         endpoint and returns ALL devices in the system; filtering by `type`
         client-side is what distinguishes panels from keypads from sensors.
         device_type may be a single type, a tuple of types (e.g. the wired
-        input family), or None to return every device (get_alarm_device).
+        input family), or None to return every device in the system.
         """
         if device_type is None:
             wanted: set[str] | None = None
@@ -2765,28 +3108,6 @@ class VerkadaInternalAPIClient:
 
     # ── Alarm Expander ───────────────────────────────────────────────
 
-    def configure_alarm_expander(
-        self,
-        device_id: str,
-        expander_name: str,
-        alarm_system_id: str,
-        serial_number: str,
-    ) -> None:
-        """Attaches an alarm output expander to an existing alarm system."""
-        self._request(
-            "alarm.expander.create",
-            json={
-                "alarmSystemId": alarm_system_id,
-                "deviceId": device_id,
-                "name": expander_name,
-                "serialNumber": serial_number,
-            },
-            error_context=f"Failed to configure alarm expander '{expander_name}'",
-            log_request=(
-                f'{{"deviceId": "{device_id}", "alarmSystemId": "{alarm_system_id}"}}'
-            ),
-        )
-
     def get_alarm_expander(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._list_alarm_devices(
             alarm_system_id, "alarm.expander.list", device_type="KURIBO"
@@ -2798,34 +3119,6 @@ class VerkadaInternalAPIClient:
         )
 
     # ── Alarm Wireless Devices ───────────────────────────────────────
-
-    def configure_wireless_contact_sensor(
-        self,
-        device_id: str,
-        name: str,
-        alarm_system_id: str,
-        partition_id: str,
-        serial_number: str,
-    ) -> None:
-        """Attaches a wireless contact (door) sensor to a partition."""
-        self._request(
-            "alarm.wireless_contact_sensor.create",
-            json={
-                "alarmSystemId": alarm_system_id,
-                "devices": [
-                    {
-                        "deviceId": device_id,
-                        "alarmSystemId": alarm_system_id,
-                        "serialNumber": serial_number,
-                        "name": name,
-                        "partitionId": partition_id,
-                        "contactSensorType": "DOOR",
-                    }
-                ],
-            },
-            error_context=f"Failed to configure wireless contact sensor '{name}'",
-            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
-        )
 
     def get_wireless_contact_sensor(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._list_alarm_devices(
@@ -2841,34 +3134,6 @@ class VerkadaInternalAPIClient:
             oid=device_id,
         )
 
-    def configure_wireless_panic_button(
-        self,
-        device_id: str,
-        name: str,
-        alarm_system_id: str,
-        partition_id: str,
-        serial_number: str,
-    ) -> None:
-        """Attaches a wireless panic button to a partition."""
-        self._request(
-            "alarm.wireless_panic_button.create",
-            json={
-                "alarmSystemId": alarm_system_id,
-                "devices": [
-                    {
-                        "deviceId": device_id,
-                        "alarmSystemId": alarm_system_id,
-                        "serialNumber": serial_number,
-                        "name": name,
-                        "partitionId": partition_id,
-                        "gestureType": "SINGLE_PRESS",
-                    }
-                ],
-            },
-            error_context=f"Failed to configure wireless panic button '{name}'",
-            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
-        )
-
     def get_wireless_panic_button(self, alarm_system_id: str) -> list[dict[str, Any]]:
         return self._list_alarm_devices(
             alarm_system_id,
@@ -2881,35 +3146,6 @@ class VerkadaInternalAPIClient:
             "alarm.wireless_panic_button.delete",
             json={"deviceId": device_id},
             oid=device_id,
-        )
-
-    def configure_wireless_universal_transmitter(
-        self,
-        device_id: str,
-        name: str,
-        alarm_system_id: str,
-        partition_id: str,
-        serial_number: str,
-    ) -> None:
-        """Attaches a wireless universal transmitter to a partition."""
-        self._request(
-            "alarm.wireless_universal_transmitter.create",
-            json={
-                "alarmSystemId": alarm_system_id,
-                "devices": [
-                    {
-                        "deviceId": device_id,
-                        "alarmSystemId": alarm_system_id,
-                        "serialNumber": serial_number,
-                        "name": name,
-                        "partitionId": partition_id,
-                    }
-                ],
-            },
-            error_context=(
-                f"Failed to configure wireless universal transmitter '{name}'"
-            ),
-            log_request=f'{{"deviceId": "{device_id}", "name": "{name}"}}',
         )
 
     def get_wireless_universal_transmitter(
@@ -2971,60 +3207,6 @@ class VerkadaInternalAPIClient:
             "alarm.wired_output.delete", json={"deviceId": device_id}, oid=device_id
         )
 
-    def create_wired_input(
-        self,
-        name: str,
-        alarm_system_id: str,
-        panel_id: str,
-        partition_id: str,
-        pin_num: int,
-        *,
-        device_type: str = "WIRED_CONTACT_SENSOR",
-        normal_state: str = "CLOSED",
-    ) -> str:
-        """Creates a wired input on a panel pin. Returns device_id.
-
-        device_type is one of _WIRED_INPUT_TYPES. Only WIRED_CONTACT_SENSOR
-        carries the extra wiredContactSensorConfig; glass-break/motion/
-        generic/panic/water-leak send just name + type.
-        """
-        if device_type not in _WIRED_INPUT_TYPES:
-            raise ValueError(
-                f"Unknown wired input type {device_type!r}; "
-                f"expected one of {_WIRED_INPUT_TYPES}"
-            )
-        device: dict[str, Any] = {"name": name, "type": device_type}
-        if device_type == "WIRED_CONTACT_SENSOR":
-            device["sensorConfig"] = {
-                "wiredContactSensorConfig": {"type": "DOOR", "doorHeldOpenDelay": 0}
-            }
-        data, status = self._request(
-            "alarm.wired_input.create",
-            json={
-                "device": device,
-                "alarmSystemId": alarm_system_id,
-                "partitionId": partition_id,
-                "hubId": panel_id,
-                "pinNum": pin_num,
-                "normalState": normal_state,
-            },
-            error_context=f"Failed to create wired input '{name}'",
-            log_request=f'{{"name": "{name}", "type": "{device_type}", "pinNum": {pin_num}}}',
-            auto_log=False,
-        )
-        device_id = (data.get("device") or {}).get("id")
-        if not device_id:
-            raise ConnectionError(
-                f"Failed to create wired input '{name}': no device id in response."
-            )
-        self._log(
-            "alarm.wired_input.create",
-            status,
-            log_request=f'{{"name": "{name}"}}',
-            log_response=f'{{"deviceId": "{device_id}"}}',
-        )
-        return device_id
-
     def get_wired_input(self, alarm_system_id: str) -> list[dict[str, Any]]:
         """Lists every wired-input subtype (contact/glass-break/motion/
         generic/panic/water-leak) on the system."""
@@ -3040,20 +3222,6 @@ class VerkadaInternalAPIClient:
         )
 
     # ── Alarm Devices: unified accessors (UI compatibility) ──────────
-
-    def get_alarm_device(self) -> list[dict[str, Any]]:
-        """
-        Lists every alarm device across all of the org's alarm systems.
-
-        v2 has no org-wide device endpoint — alarm_system/get_devices is
-        per-system — so list the systems (alarm.system.list) and aggregate
-        their devices. Each item carries its `type`, which delete_alarm_device
-        needs to pick the right delete endpoint.
-        """
-        results: list[dict[str, Any]] = []
-        for system in self.get_alarm_system():
-            results.extend(self._list_alarm_devices(system["id"], "alarm.panel.list"))
-        return results
 
     # ── Org-wide alarm accessors (no system/site arg) ────────────────
     # The per-type getters above all require an alarm_system_id (or
@@ -3104,20 +3272,6 @@ class VerkadaInternalAPIClient:
                 results.extend(self.get_alarm_guard(site_id))
         return results
 
-    def delete_alarm_device(self, device_id: str, device_type: str) -> None:
-        """
-        Deletes an alarm device, choosing the delete endpoint from its
-        type (panels/keypads/expanders/wireless decommission; wired in/out
-        use a different delete path). device_type comes from the `type`
-        field surfaced by get_alarm_device.
-        """
-        key = _ALARM_DEVICE_DELETE_KEYS.get(device_type)
-        if not key:
-            raise ValueError(
-                f"Unknown alarm device type {device_type!r} for device {device_id!r}"
-            )
-        self._delete(key, json={"deviceId": device_id}, oid=device_id)
-
     # ------------------------------------------------------------------
     # Workplace
     # ------------------------------------------------------------------
@@ -3164,54 +3318,6 @@ class VerkadaInternalAPIClient:
             path_params={"org_id": self.org_id, "site_id": site_id},
             oid=site_id,
         )
-
-    def create_mailroom_site(self, site_id: str, address: Address) -> str:
-        """
-        Activates the org mailroom trial, then creates a mailroom (package)
-        site. Returns the packageLocationId.
-
-        The trial is org-level (one-time) and re-runs harmlessly on each
-        call; site creation is per-site.
-        """
-        addr = address if isinstance(address, Address) else Address(*address)
-
-        # Step 1: activate the org-level mailroom trial
-        self._request(
-            "mailroom.activate_trial",
-            path_params={"org_id": self.org_id},
-            json={},
-            error_context="Failed to activate mailroom trial",
-            log_request=f'{{"organizationId": "{self.org_id}"}}',
-        )
-
-        # Step 2: create the mailroom site
-        data, status = self._request(
-            "mailroom.create",
-            path_params={"org_id": self.org_id},
-            json={
-                "siteId": site_id,
-                "latitude": addr.latitude,
-                "longitude": addr.longitude,
-                "fullAddress": addr.label,
-            },
-            error_context=f"Failed to create mailroom site on '{site_id}'",
-            log_request=f'{{"siteId": "{site_id}"}}',
-            auto_log=False,
-        )
-        location_id = data.get("packageLocationId")
-        if not location_id:
-            raise ConnectionError(
-                f"Failed to create mailroom site on '{site_id}': "
-                "no packageLocationId in response."
-            )
-        self._log(
-            "mailroom.create",
-            status,
-            path_params={"org_id": self.org_id},
-            log_request=f'{{"siteId": "{site_id}"}}',
-            log_response=f'{{"packageLocationId": "{location_id}"}}',
-        )
-        return location_id
 
     def get_mailroom_site(self) -> list[dict[str, Any]]:
         return self._fetch_list(

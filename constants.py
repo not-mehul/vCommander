@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 # App Info
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 GITHUB_REPO = "not-mehul/vCommander"
 
 _INTERNAL_MARKER = Path(__file__).parent / "assets" / "kits.internal.csv"
@@ -50,7 +50,6 @@ MIN_WIDTH = 1100
 MIN_HEIGHT = 800
 
 # Layout
-PAGE_PADDING = 30
 CARD_PADDING = 20
 FIELD_SPACING = 15
 
@@ -67,10 +66,10 @@ SESSION_MAX_EXTENSIONS = 2
 SEARCH_DURATION = 7
 
 # API
-# Used as a prefix for generated External API key names. The internal client
-# appends a unique suffix (e.g. a unix timestamp) at call time, producing
-# names like "vCommander - Automation API - v2.0.1 - 1714316400".
-API_NAME = "vCommander - Automation API - v" + APP_VERSION + " - "
+# Page size for the internal list endpoints that only return one page
+# (visitors, visits, archives, incidents). See PAGED_CATEGORIES.
+INTERNAL_PAGE_SIZE = 99
+
 
 # Card Shadow — re-exported from the design system (elevation level 1).
 from theme import CARD_SHADOW  # noqa: E402,F401
@@ -83,7 +82,7 @@ from theme import CARD_SHADOW  # noqa: E402,F401
 #   - create_alarm_site   (8-tuple: city, country, lat, lon, state, street1,
 #                          timezone, zipcode)
 #   - create_guest_site   (4-tuple: full_address, lat, lon, country_code)
-#   - configure_camera / configure_connector (3-tuple: label, lat, lon)
+#   - configure_cameras / configure_connector (3-tuple: label, lat, lon)
 # These calls unpack tuples into the matching NamedTuple internally.
 
 # ESS commission constants
@@ -92,6 +91,8 @@ ESS_CAMERA_NAME = "HQ CD62"
 ESS_PANEL_NAME = "HQ Alarm Panel"
 ESS_ACCESS_STATION_PRO_NAME = "HQ AF64"
 ESS_ACCESS_STATION_PRO_DOOR_NAME = "HQ Door"
+# Access level on the AF64 door, granted to the participants access group.
+ESS_AF64_ACCESS_LEVEL_NAME = "[DO NOT TOUCH] AF64"
 ESS_BUILDING_NAME = "HQ"
 ESS_FLOORS = ["G"]
 ESS_ADDRESS = (
@@ -115,10 +116,9 @@ ESS_GUEST_ADDRESS = (
     -122.3210929,
     "US",
 )
-ESS_PARTITION_NAME = "VCE Partition"
 
 # ACSL commission constants
-ACSL_SITE_NAME = "Trainers-HQ"
+ACSL_SITE_NAME = "HQ"
 ACSL_ACCESS_STATION_PRO_NAME = "[DO NOT TOUCH] HQ AF64"
 ACSL_MFA_DOOR_SCHEDULE_NAME = "[DO NOT TOUCH] AF64 2FA"
 ACSL_ACCESS_STATION_PRO_DOOR_NAME = "HQ Door"
@@ -181,8 +181,15 @@ AS_ALARM_ADDRESS = (
     "94401",
 )
 
+# Strobe on the alarm panel (ESS, AS), activated by the Default Response.
+STROBE_OUTPUT_NAME = "Strobe Light"
+# pinNum is 0-based: 0 is the panel's "Output 1" in Command.
+STROBE_OUTPUT_PIN = 0
+
 # USER INVITE Constants
-COMMAND_GROUP_NAME = "All Participants"
+# Name of both the Command group and the access group the Users tool
+# puts participants in.
+PARTICIPANTS_GROUP_NAME = "All Participants"
 
 # Default IANA timezone for HQ-located devices. Passed to
 # configure_access_controller() in the view.
@@ -199,7 +206,9 @@ LICENSE_PLATE_FIELD = "License Plate"
 TEMPLATE_FIELDS = {
     "ESS": {"devices": ["Dome", "Alarm Panel", "Access Station Pro"], "face_analytics": True},
     "ACSL": {"devices": ["Access Station Pro"], "face_analytics": False},
-    "ACSE": {"devices":[], "face_analytics": False},
+    # reset_permissions: offer the "remove existing user permissions" switch
+    # (on by default), run before anything else is commissioned.
+    "ACSE": {"devices": [], "face_analytics": False, "reset_permissions": True},
     "VSSL": {
         "devices": [
             "Bullet",
@@ -293,7 +302,8 @@ ASSET_CATEGORIES = [
 
 # Parent groups for the SELECT UI. Each parent renders one collapsible
 # tile with a checkbox that toggles all of its (non-empty) children.
-# Children are listed in their intended deletion sub-order.
+# Children are listed in display order; DELETION_ORDER (below) decides the
+# order they are actually deleted in.
 CATEGORY_GROUPS = {
     "Access Control": [
         "Doors",
@@ -353,6 +363,10 @@ DELETION_ORDER = [
     "Command Users",
     # Security entity groups — after Command Users, before Doors.
     "Groups",
+    # Persons of Interest first among the camera assets: the internal
+    # people endpoints (videntity) refuse every call once the org has no
+    # cameras left (403 "Insufficient permissions", even with GSA on).
+    "Persons of Interest",
     # Access devices that must precede Cameras
     "Doors",
     "Access Station Pro",
@@ -361,9 +375,6 @@ DELETION_ORDER = [
     "Desk Stations",
     "Sensors",
     "Cameras",
-    # Persons of Interest are a camera-tied watchlist (public API); delete
-    # alongside Cameras.
-    "Persons of Interest",
     "Command Connectors",
     # Footage / investigations — after Command Connectors, before Guest
     # Sites. Incidents reference footage, so delete them before Archives;
@@ -403,8 +414,18 @@ DELETION_ORDER = [
     "Sites",
 ]
 
+# Scanned for visibility but impossible to delete (Verkada exposes no delete
+# endpoint). Shown read-only in the SELECT step and never counted as
+# selected, so the Confirm total always matches what is deleted.
+READ_ONLY_CATEGORIES = frozenset({"Unassigned Devices"})
+
+# Categories whose getter returns at most INTERNAL_PAGE_SIZE items per call.
+# When a scan comes back full, the delete loop re-lists the category after
+# each pass and keeps deleting until nothing new appears, so larger orgs are
+# cleaned out completely.
+PAGED_CATEGORIES = frozenset({"Visits", "Visitors", "Archives", "Incidents"})
+
 ROLE_PROPAGATION_SECONDS = 3
-BUILDING_PROVISION_SECONDS = 3
 
 # Default HTTP timeout for every internal-API request (seconds).
 DEFAULT_TIMEOUT = 30
@@ -425,6 +446,10 @@ _INTERNAL_GETTERS = {
     "Archives": "get_archive",
     "Alerts": "get_alert",
     "Mailroom Sites": "get_mailroom_site",
+    "Cameras": "get_camera",
+    "Persons of Interest": "get_person_of_interest",
+    "Guest Sites": "get_guest_site",
+    "Command Users": "get_command_users",
     # Access Control
     "Doors": "get_door",
     "Access Station Pro": "get_access_station_pro",
@@ -437,6 +462,7 @@ _INTERNAL_GETTERS = {
     "Schedules": "get_schedule",
     "Access Levels": "get_access_level",
     "Scenarios": "get_scenario",
+    "Access Groups": "get_access_group",
     # Sites (camera groups)
     "Sites": "get_site",
     # Alarms (org-wide aggregators — no system/site arg)
@@ -484,6 +510,7 @@ _INTERNAL_DELETERS = {
     "Schedules": "delete_schedule",
     "Access Levels": "delete_access_level",
     "Scenarios": "delete_scenario",
+    "Access Groups": "delete_access_group",
     # Sites (camera groups) — _delete_one falls back to rename_site
     # ("<name>-<mm/dd/yy>") when the delete is rejected.
     "Sites": "delete_site",
@@ -502,15 +529,34 @@ _INTERNAL_DELETERS = {
     "Alarm Sites": "delete_alarm_site",
 }
 
-_EXTERNAL_GETTERS = {
-    "Cameras": "get_cameras",
-    "Persons of Interest": "get_person_of_interest",
-    "Guest Sites": "get_guest_sites",
-    "Access Groups": "get_access_groups",
-}
+# Categories deleted one item at a time: alarm devices share their alarm
+# system's configuration, and schedules are written back as a set. Every
+# other category deletes PARALLEL_REQUESTS items at once, as the Command web
+# app's bulk delete does.
+SEQUENTIAL_DELETE_CATEGORIES = frozenset(
+    {
+        "Schedules",
+        "Keypads",
+        "Expanders",
+        "Wireless Contact Sensors",
+        "Wireless Panic Buttons",
+        "Wireless Universal Transmitters",
+        "Wired Inputs",
+        "Wired Outputs",
+        "Guards",
+        "Partitions",
+        "Alarm Panels",
+        "Alarm Systems",
+        "Alarm Sites",
+    }
+)
 
-_EXTERNAL_DELETERS = {
-    "Command Users": "delete_access_user",
+# Categories deleted many-at-once by one internal call taking a list of ids
+# (as the Command web app does): category -> client method.
+# Ids per batch delete call (Command users, persons of interest).
+BATCH_DELETE_SIZE = 100
+
+_BATCH_DELETERS = {
+    "Command Users": "delete_users",
     "Persons of Interest": "delete_persons_of_interest",
-    "Access Groups": "delete_access_group",
 }

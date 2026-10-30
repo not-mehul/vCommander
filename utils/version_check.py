@@ -15,10 +15,14 @@ from constants import APP_VERSION, GITHUB_REPO
 
 
 def _parse(version: str) -> tuple[int, ...]:
-    """Turn '3.1.2' or 'v3.1' into (3, 1, 2) / (3, 1). Non-numeric parts are dropped."""
+    """Turn '3.1.2' or 'v3.1' into (3, 1, 2) / (3, 1). Non-numeric parts are
+    dropped, and so are trailing zeros, so 'v3.5.0' and '3.5' compare equal
+    (a tuple comparison would otherwise call (3, 5, 0) newer than (3, 5))."""
     cleaned = version[1:] if version.startswith(("v", "V")) else version
-    parts = re.findall(r"\d+", cleaned)
-    return tuple(int(p) for p in parts)
+    parts = [int(p) for p in re.findall(r"\d+", cleaned)]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
 
 
 def check_for_update(timeout: float = 3.0) -> tuple[str, str] | None:
