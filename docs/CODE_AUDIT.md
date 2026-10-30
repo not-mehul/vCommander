@@ -17,6 +17,19 @@ repeated.
 | Coverage | `pytest --cov` over the 223 tests. |
 | Reproduction | Findings marked **(verified)** were reproduced with a script against the real code; the role finding also against the live test org (read-only). |
 
+## Status (fixes after the audit)
+
+| Item | Status |
+|---|---|
+| H1 role check | **Fixed** (`3d2710e`): only grants with `granteeId == user_id` count. |
+| M1 schedule-create replay | **Fixed** (`6b2bd5b`): registry entries can be `replayable=False`; such requests go through a session that only retries connection errors and 429. Live: ACSL made exactly one schedule. |
+| M6 theme switch | **Fixed** (`acfd2e3`): the Decommission scan, selection and pending org release are handed to the rebuilt screen. |
+| M7 client tests | **Fixed** (`87ed383`): contract tests for every call the app makes; `internal_api.py` coverage 57% → 85%. |
+| Dead code | **Removed** (`3925b73`): about 1,100 lines; the endpoint registry keeps every entry. |
+| L1 update check | **Fixed** (`8223850`). |
+| L12 log growth | **Fixed** (`8223850`): entries older than 30 days are dropped at startup. PII in the log remains. |
+| Everything else | Open. |
+
 ## Summary
 
 | Severity | Count | Items |
