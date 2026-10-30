@@ -26,6 +26,7 @@ repeated.
 | M6 theme switch | **Fixed** (`acfd2e3`): the Decommission scan, selection and pending org release are handed to the rebuilt screen. |
 | M7 client tests | **Fixed** (`87ed383`): contract tests for every call the app makes; `internal_api.py` coverage 57% → 85%. |
 | Dead code | **Removed** (`3925b73`): about 1,100 lines; the endpoint registry keeps every entry. |
+| M2 kits file | **Fixed**: kits are read as UTF-8 with or without a BOM; separator and incomplete rows (which showed as a blank Kit option) are skipped; an unreadable file means no kits, not a broken screen. |
 | L1 update check | **Fixed** (`8223850`). |
 | L12 log growth | **Fixed** (`8223850`): entries older than 30 days are dropped at startup. PII in the log remains. |
 | Everything else | Open. |

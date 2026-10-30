@@ -64,6 +64,7 @@ v3.5
 - (Bug fix) Switching light/dark theme on Decommission's Review or Select step keeps the scan
 - (Bug fix) A release tagged v3.5.0 no longer shows "Update available" on v3.5
 - (New feature) The API log drops entries older than 30 days when the app starts
+- (Bug fix) Commission's Kit dropdown no longer shows a blank entry for separator rows in the kits file; a kits file saved by Excel, or a missing one, no longer stops Commission from opening
 - (Cleanup) Removed unused public-API and client code (about 1,100 lines); added contract tests for every API call
 
 --- NEWS ---

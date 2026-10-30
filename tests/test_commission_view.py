@@ -327,3 +327,42 @@ def test_acse_permission_reset_is_skipped_when_switched_off(view, page, monkeypa
 def test_permission_reset_is_only_offered_for_acse(view, page):
     _fill(view, page, "VSSL")
     assert not view.reset_permissions_switch.visible
+
+
+def _kits_view(tmp_path, monkeypatch, page, text, *, encoding="utf-8"):
+    (tmp_path / "kits.csv").write_text(text, encoding=encoding)
+    monkeypatch.setattr(cv, "_ASSETS_DIR", str(tmp_path))
+    v = cv.CommissionView(lambda r: None)
+    v.page = page
+    return v
+
+
+def test_separator_rows_in_the_kits_file_add_no_blank_kit(tmp_path, monkeypatch, page):
+    # Excel separator rows (",,") used to show up as a blank dropdown option.
+    v = _kits_view(tmp_path, monkeypatch, page, (
+        "Kit Name,Device Type,Serial Number\n"
+        "Kit A,Dome,AAAA-BBBB-CCC1\n"
+        ",,\n"
+        " , , \n"
+        "Kit B ,Dome, AAAA-BBBB-CCC2 \n"
+        "Kit C,Dome,\n"
+    ))
+    assert list(v._kits) == ["Kit A", "Kit B"]
+    assert v._kits["Kit B"] == {"Dome": "AAAA-BBBB-CCC2"}
+    texts = [o.text or o.key for o in v.kit_dropdown.options]
+    assert texts == ["No kit — enter serials manually", "Kit A", "Kit B"]
+
+
+def test_kits_file_saved_by_excel_with_a_bom(tmp_path, monkeypatch, page):
+    v = _kits_view(
+        tmp_path, monkeypatch, page,
+        "Kit Name,Device Type,Serial Number\nKit A,Dome,AAAA-BBBB-CCC1\n",
+        encoding="utf-8-sig",
+    )
+    assert v._kits == {"Kit A": {"Dome": "AAAA-BBBB-CCC1"}}
+
+
+def test_a_missing_kits_file_still_opens_commission(tmp_path, monkeypatch, page):
+    monkeypatch.setattr(cv, "_ASSETS_DIR", str(tmp_path / "nowhere"))
+    v = cv.CommissionView(lambda r: None)
+    assert v._kits == {} and len(v.kit_dropdown.options) == 1

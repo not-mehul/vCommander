@@ -105,6 +105,7 @@ from constants import (
 from pages.app_shell import ToolView
 from utils.cancellation import CancellationToken
 from utils.export import export_csv
+from utils.logger import log_system
 from utils.session import begin_run, end_run, get_internal_client
 from utils.ui_utils import show_alert, show_toast
 from utils.validation import (
@@ -149,16 +150,28 @@ class CommissionView(ToolView):
     # ------------------------------------------------------------------
 
     def _load_kits(self):
+        """Read kits (Kit Name, Device Type, Serial Number) into self._kits.
+
+        Tolerates files edited in Excel: a byte-order mark (utf-8-sig),
+        separator rows such as ",," (skipped — they used to show up as a
+        blank kit in the dropdown), and stray spaces around values. A
+        missing or malformed file leaves the kit list empty instead of
+        stopping Commission from opening.
+        """
         internal = os.path.join(_ASSETS_DIR, "kits.internal.csv")
         public = os.path.join(_ASSETS_DIR, "kits.csv")
         path = internal if os.path.exists(internal) else public
-        with open(path, newline="") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                kit_name = r["Kit Name"]
-                if kit_name not in self._kits:
-                    self._kits[kit_name] = {}
-                self._kits[kit_name][r["Device Type"]] = r["Serial Number"]
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    kit_name, device_type, serial = (
+                        (r.get(col) or "").strip()
+                        for col in ("Kit Name", "Device Type", "Serial Number")
+                    )
+                    if kit_name and device_type and serial:
+                        self._kits.setdefault(kit_name, {})[device_type] = serial
+        except (OSError, csv.Error, UnicodeDecodeError) as ex:
+            log_system(f"Couldn't read kits from {path}: {ex}", level="WARN")
 
     # ------------------------------------------------------------------
     # UI construction
