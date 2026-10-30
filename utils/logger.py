@@ -1,7 +1,13 @@
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 
 from utils.db import get_data_dir
+
+# Entries older than this (relative to when the tool starts) are dropped.
+LOG_RETENTION_DAYS = 30
+
+_STAMP = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
 
 
 def get_log_path() -> str:
@@ -47,3 +53,45 @@ def log_system(message: str, *, level: str = "INFO") -> None:
     print(line)
     with open(get_log_path(), "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def prune_old_entries(days: int = LOG_RETENTION_DAYS, now: datetime | None = None) -> int:
+    """Drop log entries older than `days` before `now` (default: the current
+    run). Returns how many lines were removed.
+
+    Every entry starts with a "[YYYY-MM-DD HH:MM:SS]" stamp; a line without
+    one (e.g. a server message that contained a newline) belongs to the entry
+    above it and is kept or dropped with it. Lines before the first stamp, or
+    with a stamp that doesn't parse, are kept. The file is rewritten through
+    a temporary file and os.replace, so an interrupted prune never truncates
+    the log. Best effort: an unreadable or unwritable log is left alone.
+    """
+    path = get_log_path()
+    cutoff = (now or datetime.now()) - timedelta(days=days)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return 0
+    kept: list[str] = []
+    keep = True
+    for line in lines:
+        match = _STAMP.match(line)
+        if match:
+            try:
+                keep = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S") >= cutoff
+            except ValueError:
+                keep = True
+        if keep:
+            kept.append(line)
+    removed = len(lines) - len(kept)
+    if not removed:
+        return 0
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(kept)
+        os.replace(tmp, path)
+    except OSError:
+        return 0
+    return removed

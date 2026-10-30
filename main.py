@@ -44,7 +44,12 @@ from pages.login_view import LoginView
 from pages.two_factor_view import TwoFactorView
 from pages.users_view import UsersView
 from utils import prefs
-from utils.logger import get_log_path, log_api_call
+from utils.logger import (
+    LOG_RETENTION_DAYS,
+    get_log_path,
+    log_api_call,
+    prune_old_entries,
+)
 from utils.session import (
     cancel_run,
     clear_session,
@@ -76,7 +81,12 @@ _SESSION_WATCHDOG_INTERVAL = 5
 
 async def main(page: ft.Page):
     """Flet app entry point. Sets window chrome and pushes the login screen."""
-    log_api_call("APP", "startup", "{}", "200", f"vCommander v{APP_VERSION}")
+    pruned = prune_old_entries()
+    log_api_call(
+        "APP", "startup", "{}", "200",
+        f"vCommander v{APP_VERSION}"
+        + (f"; dropped {pruned} log lines older than {LOG_RETENTION_DAYS} days" if pruned else ""),
+    )
     print(f"Logs → {get_log_path()}")
 
     page.title = f"vCommander {BUILD_VARIANT_LABEL}v{APP_VERSION}"
