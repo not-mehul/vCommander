@@ -10,6 +10,10 @@ class Endpoint(NamedTuple):
     # Fixed domain for shard-independent endpoints (e.g. GLOBAL_DOMAIN).
     # None = served from the org's shard domain.
     domain: str | None = None
+    # False for a request that must never be replayed after it may have
+    # reached the server (a PUT that creates, see apis/http.py). True lets
+    # the shared retry policy decide by method.
+    replayable: bool = True
 
 
 class OrgShard(NamedTuple):
@@ -2060,6 +2064,8 @@ ENDPOINTS: dict[str, Endpoint] = {
             ],
         },
         response={},
+        # A PUT that creates (no scheduleId): a replay would duplicate it.
+        replayable=False,
     ),
     "schedule.list": Endpoint(
         method="GET",

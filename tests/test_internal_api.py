@@ -895,3 +895,17 @@ def test_revoke_user_permissions_refuses_the_signed_in_user():
     client.auth_data = {"adminUserId": "me", "organizationId": "org"}
     with pytest.raises(ValueError):
         client.revoke_user_permissions("me", [{"entityId": "org", "permission": "X"}])
+
+
+def test_schedule_create_goes_through_the_no_replay_session():
+    from apis.endpoints import ENDPOINTS
+
+    assert ENDPOINTS["schedule.create.mfa"].replayable is False
+    assert all(e.replayable for k, e in ENDPOINTS.items() if k != "schedule.create.mfa")
+    client = _client()
+    client.session.cookies.set("auth", "token")
+    s = client._session_for(ENDPOINTS["schedule.create.mfa"])
+    assert s is not client.session and s.cookies is client.session.cookies
+    for adapter in s.adapters.values():
+        assert "PUT" not in adapter.max_retries.allowed_methods
+    assert client._session_for(ENDPOINTS["schedule.delete"]) is client.session

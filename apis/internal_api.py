@@ -249,6 +249,10 @@ class VerkadaInternalAPIClient:
         # factory adds retry on transient failures + a default timeout.
         self.session = build_session()
 
+        # For endpoints marked replayable=False; built on first use, sharing
+        # self.session's cookie jar (see _session_for).
+        self._no_replay_session: requests.Session | None = None
+
         # Shared reads while read_cache() is active (a Decommission scan).
         self._read_cache: dict | None = None
         self._read_cache_lock = threading.Lock()
@@ -595,11 +599,23 @@ class VerkadaInternalAPIClient:
         return self._send(endpoint, url, json, error_context, endpoint_key,
                           formatted_path, log_request, log_response, auto_log)
 
+    def _session_for(self, endpoint) -> requests.Session:
+        """The session to send `endpoint` with: the shared one, or for an
+        endpoint that must not be replayed (a PUT that creates) one whose
+        retries never resend a request that may have reached the server.
+        Both use the same cookie jar, so the login applies to both."""
+        if endpoint.replayable:
+            return self.session
+        if self._no_replay_session is None:
+            self._no_replay_session = build_session(replay=False)
+        self._no_replay_session.cookies = self.session.cookies
+        return self._no_replay_session
+
     def _send(self, endpoint, url, json, error_context, endpoint_key,
               formatted_path, log_request, log_response, auto_log) -> tuple[dict, int]:
         """Send one request and decode it (the body of _request)."""
         try:
-            response = self.session.request(
+            response = self._session_for(endpoint).request(
                 endpoint.method,
                 url,
                 json=json,
